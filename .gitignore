@@ -4,6 +4,9 @@
 *log2.txt
 *.log
 */
+staticbackup.py
+test_rest_output.py
+timer.py
 
 # Byte-compiled files
 __pycache__/

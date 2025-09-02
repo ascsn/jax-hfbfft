@@ -60,7 +60,8 @@ static:
     tdiag: false
     tlarge: false
     #maxiter: 4000
-    maxiter: 400
+    #maxiter: 400
+    maxiter: 300
     radinx: 3.1
     radiny: 3.1
     radinz: 3.1

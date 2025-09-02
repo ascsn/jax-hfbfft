@@ -353,7 +353,7 @@ def diagstep(energies, forces, grids, levels, static, diagonalize=False, constru
 def loewdin_orthonormalize(psi_2d, wxyz, nst):
     # 1. Calculate the overlap matrix S = psi_dagger * psi
     rhomatr_lin = jnp.dot(jnp.conjugate(psi_2d.T), psi_2d) * wxyz
-    sp_norm_diag = jnp.real(jnp.diagonal(rhomatr_lin)).astype(jnp.float64)
+    sp_norm_diag = jnp.real(jnp.diagonal(rhomatr_lin))
 
     # 2. Eigendecomposition: S * v = w * v
     w, v = jnp.linalg.eigh(rhomatr_lin, symmetrize_input=False)

@@ -14,7 +14,7 @@ import datetime
 from output import FortranOutputWriter, complete_sinfo_with_fortran_output
 from collections import defaultdict
 import time
-
+from scipy.optimize import brentq
 
 @jax.tree_util.register_dataclass
 @dataclass
@@ -804,6 +804,9 @@ def initialize_plane_wave(psi, state_idx, k, spin, grids, static):
 
 @jax.jit
 def hfb_natural(forces, grids, levels, meanfield, params, static, isospin, iternat):
+    """
+    Performs sub-iterations in configuration space to accelerate convergence.
+    """
     if isospin == 0:
         start, end = 0, levels.nneut
         nst = levels.nneut
@@ -811,118 +814,179 @@ def hfb_natural(forces, grids, levels, meanfield, params, static, isospin, itern
         start, end = levels.nneut, levels.nneut + levels.nprot
         nst = levels.nprot
     
-    # Initialize configuration matrix to identity
+    # Initialize configuration matrix cm as identity matrix
     cm = jnp.eye(nst, dtype=jnp.complex128)
     
     # Prepare damping coefficient
     if static.e0bas == 0.0:
-        range_sp_energy = jnp.max(levels.sp_energy[start:end]) - jnp.min(levels.sp_energy[start:end])
-        dampstep = static.delstepbas / range_sp_energy * jnp.ones(nst)
+        # Global damping coefficient
+        energy_range = jnp.max(levels.sp_energy[start:end]) - jnp.min(levels.sp_energy[start:end])
+        dampstep = jnp.full(nst, static.delstepbas / energy_range)
     else:
-        dampstep = static.delstepbas / (levels.sp_energy[start:end] - levels.sp_energy[start] + static.e0bas)
+        # State-dependent damping coefficient
+        min_energy = levels.sp_energy[start]
+        dampstep = static.delstepbas / (levels.sp_energy[start:end] - min_energy + static.e0bas)
     
-    # Perform sub-iterations
-    for i in range(iternat):
-        # Gradient step
+    # Extract relevant matrices for this isospin
+    hmat = static.hmatrix[isospin, :nst, :nst]
+    gapmat = static.gapmatrix[isospin, :nst, :nst]
+    
+    # Start sub-iterations
+    for iter_sub in range(iternat):
+        # Step 1: Gradient step using symcond matrix
+        # cm[j,:] = cm[j,:] - dampstep[j] * symcond[j,:]
         for j in range(nst):
-            cm = cm.at[j, :].set(cm[j, :] - dampstep[j] * static.symcond[isospin, j, :])
+            cm = cm.at[j, :].set(
+                cm[j, :] - dampstep[j] * static.symcond[isospin, j, :nst]
+            )
         
-        # Orthonormalization via QR factorization
+        # Step 2: QR factorization for orthonormalization
         q, r = jnp.linalg.qr(cm)
         cm = q
         
-        # Update matrices under new basis
-        htran = jnp.matmul(jnp.matmul(jnp.conjugate(cm.T), static.hmatrix[isospin, :nst, :nst]), cm)
-        gaptran = jnp.matmul(jnp.matmul(jnp.conjugate(cm.T), static.gapmatrix[isospin, :nst, :nst]), cm)
+        # Step 3: Calculate matrix transformations (calc_transform equivalent)
+        # htran = cm† * hmat * cm
+        htran = jnp.dot(jnp.dot(jnp.conjugate(cm.T), hmat), cm)
+        gaptran = jnp.dot(jnp.dot(jnp.conjugate(cm.T), gapmat), cm)
         
-        # Update sp_energy and deltaf
-        if (forces.ipair != 0) or (i == iternat - 1):
-            for j in range(nst):
-                levels.sp_energy = levels.sp_energy.at[start+j].set(jnp.real(htran[j, j]))
-                if forces.ipair != 0:
-                    levels.deltaf = levels.deltaf.at[start+j].set(jnp.real(gaptran[j, j]) * levels.pairwg[start+j])
+        # Also calculate hcm = hmat * cm and gapcm = gapmat * cm for later use
+        hcm = jnp.dot(hmat, cm)
+        gapcm = jnp.dot(gapmat, cm)
         
-        # Calculate lambda, lambdacm and symcond for next iteration
-        if i < iternat - 1:
-            lambda_matrix = jnp.zeros((nst, nst), dtype=jnp.complex128)
+        # Step 4: Update single-particle energies and pairing gaps
+        should_update = (forces.ipair != 0) or (iter_sub == iternat - 1)
+        
+        if should_update:
+            # Update sp_energy from diagonal of htran
+            new_sp_energies = jnp.real(jnp.diag(htran))
+            levels.sp_energy = levels.sp_energy.at[start:end].set(new_sp_energies)
             
-            # Build lambda matrix
+            # Update deltaf from diagonal of gaptran if pairing is active
+            if forces.ipair != 0:
+                new_deltaf = jnp.real(jnp.diag(gaptran)) * levels.pairwg[start:end]
+                levels.deltaf = levels.deltaf.at[start:end].set(new_deltaf)
+            
+            # Step 5: Redo pairing calculation if needed
+            if forces.ipair != 0:
+                if iter_sub != iternat - 1:
+                    # Sub-iteration pairing (for single isospin)
+                    levels = pair_subiter_single_isospin(levels, forces, isospin)
+                else:
+                    # Full pairing calculation at last iteration
+                    levels, _ = pair(levels, meanfield, forces, params, grids, None)
+        
+        # Step 6: Calculate lambda matrix and update symcond for next iteration
+        if iter_sub < iternat - 1:  # Not the last iteration
+            # Calculate lambda matrix (calc_lambda equivalent)
+            lambda_matrix = calculate_lambda_matrix(htran, gaptran, levels, start, end)
+            
+            # Calculate cmlambda = cm * lambda
+            cmlambda = jnp.dot(cm, lambda_matrix)
+            
+            # Update symcond matrix for next gradient step
+            # symcond = weight*hcm - weightuv*gapcm - cmlambda
+            new_symcond = jnp.zeros((nst, nst), dtype=jnp.complex128)
             for j in range(nst):
-                for k in range(nst):
-                    weight = levels.wocc[start+k] * levels.wstates[start+k]
-                    weightuv = levels.wguv[start+k] * levels.pairwg[start+k] * levels.wstates[start+k]
-                    lambda_matrix = lambda_matrix.at[j, k].set(weight * htran[j, k] - weightuv * gaptran[j, k])
+                idx = start + j
+                weight = levels.wocc[idx] * levels.wstates[idx]
+                weightuv = levels.wguv[idx] * levels.pairwg[idx] * levels.wstates[idx]
+                
+                new_symcond = new_symcond.at[:, j].set(
+                    weight * hcm[:, j] - weightuv * gapcm[:, j] - cmlambda[:, j]
+                )
             
-            # Update symcond for the next iteration
-            cmlambda = jnp.matmul(cm, lambda_matrix)
-            
-            for j in range(nst):
-                for k in range(nst):
-                    weight = levels.wocc[start+k] * levels.wstates[start+k]
-                    weightuv = levels.wguv[start+k] * levels.pairwg[start+k] * levels.wstates[start+k]
-                    static.symcond = static.symcond.at[isospin, j, k].set(
-                        weight * htran[j, k] - weightuv * gaptran[j, k] - cmlambda[j, k]
-                    )
+            # Update symcond in static
+            static.symcond = static.symcond.at[isospin, :nst, :nst].set(new_symcond)
     
-    # Update wave functions, lagrange, hmatrix and gapmatrix
-    # First, get transformed wave functions in configuration space
-    transformed_psi = jnp.matmul(levels.psi[start:end], cm)
+    # Step 7: Final updates after all sub-iterations
+    # Update wave functions in coordinate space
+    levels = update_wavefunctions_coordinate_space(levels, cm, htran, start, end, grids)
     
-    # Create lambda matrix for constructing Lagrange multipliers
-    lambda_matrix = jnp.zeros((nst, nst), dtype=jnp.complex128)
-    
-    # Build final lambda matrix
-    for j in range(nst):
-        for k in range(nst):
-            weight = levels.wocc[start+k] * levels.wstates[start+k]
-            weightuv = levels.wguv[start+k] * levels.pairwg[start+k] * levels.wstates[start+k]
-            lambda_matrix = lambda_matrix.at[j, k].set(weight * htran[j, k] - weightuv * gaptran[j, k])
-    
-    # Add small regularization to diagonal elements
-    lambda_matrix = lambda_matrix + jnp.eye(nst) * 1e-10
-
-    # Transform lagrange multipliers
-    transformed_lagrange = jnp.matmul(transformed_psi, lambda_matrix)
-    
-    # Update levels and static with transformed data
-    levels.psi = levels.psi.at[start:end].set(transformed_psi)
-    levels.lagrange = levels.lagrange.at[start:end].set(transformed_lagrange)
+    # Update hmatrix and gapmatrix with final transformed matrices
     static.hmatrix = static.hmatrix.at[isospin, :nst, :nst].set(htran)
     static.gapmatrix = static.gapmatrix.at[isospin, :nst, :nst].set(gaptran)
-    static.lambda_save = static.lambda_save.at[isospin, :nst, :nst].set(lambda_matrix)
+    
+    # Save lambda matrix for constraint calculations
+    lambda_final = calculate_lambda_matrix(htran, gaptran, levels, start, end)
+    static.lambda_save = static.lambda_save.at[isospin, :nst, :nst].set(lambda_final)
     
     return levels, static
 
-def lastdiag(forces, grids, levels, params, static, pairs, isospin):
-    """
-    Diagonalize the HFB Hamiltonian to extract quasiparticle energies.
-    """
+def calculate_lambda_matrix(hmatrix, gapmatrix, levels, start, end):
+    """Calculate lambda matrix following FORTRAN calc_lambda logic"""
+    nst = end - start
+    lambda_temp = jnp.zeros((nst, nst), dtype=jnp.complex128)
     
-    if isospin == 0:
-        start, end = 0, levels.nneut
-        nst = levels.nneut
-    else:
-        start, end = levels.nneut, levels.nneut + levels.nprot
-        nst = levels.nprot
+    for j in range(nst):
+        idx = start + j
+        weight = levels.wocc[idx] * levels.wstates[idx]
+        weightuv = levels.wguv[idx] * levels.pairwg[idx] * levels.wstates[idx]
+        lambda_temp = lambda_temp.at[:, j].set(
+            weight * hmatrix[:, j] - weightuv * gapmatrix[:, j]
+        )
     
-    # Use actual Fermi energy from pairs module
-    eferm = pairs.eferm[isospin]
+    # Lambda = 0.5 * (lambda_temp + lambda_temp†)
+    lambda_matrix = 0.5 * (lambda_temp + jnp.conjugate(lambda_temp.T))
     
-    # Build HFB matrix following FORTRAN
-    hfb_matrix = jnp.zeros((nst, nst), dtype=jnp.complex128)
+    return lambda_matrix
+
+def update_wavefunctions_coordinate_space(levels, cm, lambda_matrix, start, end, grids):
+    """Update wave functions from configuration space transformation back to coordinate space"""
+    nst = end - start
     
+    # Transform wave functions: psi_new = psi_old * cm
+    psi_old = levels.psi[start:end]
+    psi_new = jnp.zeros_like(psi_old)
     
     for i in range(nst):
         for j in range(nst):
-            # Calculate xi and eta factors
-            # xi = -sqrt(v_i * v_j) + sqrt(u_i * u_j)
-            # where v_i = sqrt(wocc_i), u_i = sqrt(1-wocc_i)
-            xi = (-jnp.sqrt(levels.wocc[start+i] * levels.wocc[start+j]) + 
-                  jnp.sqrt((1.0 - levels.wocc[start+i]) * (1.0 - levels.wocc[start+j])))
+            psi_new = psi_new.at[i].add(psi_old[j] * cm[j, i])
+    
+    # Update lagrange: lagrange = psi_transformed * lambda
+    lagrange_new = jnp.zeros_like(psi_old)
+    for i in range(nst):
+        for j in range(nst):
+            lagrange_new = lagrange_new.at[i].add(psi_new[j] * lambda_matrix[j, i])
+    
+    # Update levels object
+    levels.psi = levels.psi.at[start:end].set(psi_new)
+    levels.lagrange = levels.lagrange.at[start:end].set(lagrange_new)
+    
+    return levels
+
+def lastdiag(forces, grids, levels, params, static, pairs, isospin):
+    # Determine range of states for this isospin
+    if isospin == 0:
+        start, end = 0, levels.nneut
+        nst = levels.nneut
+        npmin = 0
+        npsi = levels.nneut
+    else:
+        start, end = levels.nneut, levels.nneut + levels.nprot
+        nst = levels.nprot
+        npmin = levels.nneut
+        npsi = levels.nneut + levels.nprot
+    
+    # Use actual Fermi energy
+    eferm = pairs.eferm[isospin]
+    
+    # Initialize matrices
+    hfb_matrix = jnp.zeros((nst, nst), dtype=jnp.complex128)
+    coeffmatrix = jnp.zeros((nst, nst), dtype=jnp.complex128)
+    
+    # Build HFB matri
+    for i in range(nst):
+        for j in range(nst):
+            # Get global indices
+            global_i = start + i
+            global_j = start + j
             
-            # eta = sqrt(v_i * u_j) + sqrt(v_j * u_i)
-            eta = (jnp.sqrt(levels.wocc[start+i] * (1.0 - levels.wocc[start+j])) + 
-                   jnp.sqrt(levels.wocc[start+j] * (1.0 - levels.wocc[start+i])))
+            # Calculate xi and eta factors
+            xi = (-jnp.sqrt(levels.wocc[global_i] * levels.wocc[global_j]) + 
+                  jnp.sqrt((1.0 - levels.wocc[global_i]) * (1.0 - levels.wocc[global_j])))
+            
+            eta = (jnp.sqrt(levels.wocc[global_i] * (1.0 - levels.wocc[global_j])) + 
+                   jnp.sqrt(levels.wocc[global_j] * (1.0 - levels.wocc[global_i])))
             
             # Get matrix elements from stored matrices
             h_term = static.hmatrix[isospin, i, j]
@@ -934,33 +998,51 @@ def lastdiag(forces, grids, levels, params, static, pairs, isospin):
             
             # Build HFB matrix: H_ij = (h_mf - eferm * delta_ij) * xi_ij + Delta_ij * eta_ij
             hfb_matrix = hfb_matrix.at[i, j].set(h_term * xi + delta_term * eta)
-        
+    
     # Diagonalize the HFB matrix
     try:
-        eigvals, eigvecs = jnp.linalg.eigh(hfb_matrix)
+        hfbegval, unitary_hfb = jnp.linalg.eigh(hfb_matrix)
         
+        # Build coefficient matrix for lower component calculation
+        noffset = npmin
+        coeffmatrix = jnp.zeros((nst, nst), dtype=jnp.complex128)
         
-        # Calculate quasiparticle norms
-        qp_norms = jnp.zeros_like(eigvals, dtype=jnp.float64)
+        for i in range(nst):
+            for j in range(nst):
+                global_i = start + i  
+                global_j = start + j
+                
+                if (global_i - global_j == 1) and (global_i % 2 == 0):
+                    coeffmatrix = coeffmatrix.at[i, j].set(-jnp.sqrt(levels.wocc[global_i]))
+                
+                if (global_j - global_i == 1) and (global_i % 2 == 1):
+                    coeffmatrix = coeffmatrix.at[i, j].set(jnp.sqrt(levels.wocc[global_i]))
         
-        # For proper HFB, we need to extract the lower components
-        # from the Bogoliubov eigenvectors and calculate their norms
-        for k in range(nst):
-            # Extract lower component of the k-th eigenvector
-            lower_norm = 0.0
-            for i in range(nst):
-                # Get the "lower" component corresponding to the v-amplitudes
-                if i % 2 == 1:  # Simplified check for v-components
-                    lower_norm += jnp.abs(eigvecs[i, k])**2
-            
-            qp_norms = qp_norms.at[k].set(jnp.sqrt(lower_norm))
+        # Calculate lower component matrix
+        lowmatrix = jnp.matmul(coeffmatrix, unitary_hfb)
         
-        # Sort eigenvalues and norms together
-        sort_indices = jnp.argsort(eigvals)
-        sorted_eigvals = eigvals[sort_indices]
-        sorted_norms = qp_norms[sort_indices]
+        # Calculate quasi-particle norms
+        qp_norm = jnp.zeros(nst, dtype=jnp.float64)
         
-        return sorted_eigvals, sorted_norms
+        for j in range(nst):  # Loop over eigenstates
+            for i in range(nst):  # Loop over components
+                # Square of lower component
+                lowmatrix_squared = lowmatrix[i, j] * jnp.conj(lowmatrix[i, j])
+                qp_norm = qp_norm.at[j].set(qp_norm[j] + jnp.real(lowmatrix_squared))
+        
+        qp_norm = jnp.sqrt(qp_norm)
+        
+        # Sort eigenvalues and norms together (eigenvalues should already be sorted from eigh)
+        sorted_indices = jnp.argsort(hfbegval)
+        hfbegval_sorted = hfbegval[sorted_indices]
+        qp_norm_sorted = qp_norm[sorted_indices]
+        
+        return hfbegval_sorted, qp_norm_sorted
+        
+    except Exception as e:
+        print(f"Error in lastdiag diagonalization: {e}")
+        # Return fallback values
+        return jnp.zeros(nst), jnp.zeros(nst)
         
     except Exception as e:
         print(f"ERROR: Failed to diagonalize HFB matrix: {e}")
@@ -969,6 +1051,174 @@ def lastdiag(forces, grids, levels, params, static, pairs, isospin):
         
         # Return dummy values on failure
         return jnp.ones(nst) * 1000.0, jnp.ones(nst)
+    
+def pair_subiter_single_isospin(levels, forces, pairs_data, isospin):
+    """
+    Solves the pairing problem for only one isospin, used in sub-iterations.
+    Based on the FORTRAN pair_subiter subroutine.
+    
+    Args:
+        levels: Levels object with current single-particle states
+        forces: Forces object with pairing parameters
+        pairs_data: Pairs object to store pairing results
+        isospin: 0 for neutrons, 1 for protons
+    
+    Returns:
+        Updated levels object
+    """
+    
+    # Determine particle number based on isospin
+    if isospin == 1:  # Protons
+        particle_number = float(levels.nprot)
+    else:  # Neutrons (isospin == 0)
+        particle_number = float(levels.nneut)
+    
+    # Skip pairgap calculation - gaps are already calculated in the sub-iteration
+    # This is the key difference from the full pair() function
+    
+    # Call pairdn equivalent for this specific isospin
+    levels = _pairdn_single_isospin(isospin, particle_number, levels, forces, pairs_data)
+    
+    return levels
+
+def _pairdn_single_isospin(iq, particle_number, levels, forces, pairs_data):
+    """
+    Equivalent to FORTRAN pairdn but for single isospin.
+    Determines pairing solution using Brent's method to find correct Fermi energy.
+    """
+    
+    # Get mask for this isospin
+    mask = (levels.isospin == iq)
+    indices = jnp.where(mask)[0]
+    
+    if len(indices) == 0:
+        return levels
+    
+    # Extract data for this isospin only
+    sp_energy_iso = levels.sp_energy[mask]
+    deltaf_iso = levels.deltaf[mask]
+    wstates_iso = levels.wstates[mask]
+    pairwg_iso = levels.pairwg[mask]
+    
+    # Start with non-pairing value of Fermi energy
+    # Following FORTRAN logic: it = npmin(iq) + NINT(particle_number) - 1
+    n_filled = int(round(particle_number)) - 1
+    if n_filled >= 0 and n_filled < len(sp_energy_iso) - 1:
+        eferm_initial = 0.5 * (sp_energy_iso[n_filled] + sp_energy_iso[n_filled + 1])
+    else:
+        eferm_initial = jnp.mean(sp_energy_iso)
+    
+    # Use Brent's method to find correct Fermi energy
+    def objective_func(eferm_trial):
+        particle_num = _bcs_occupation_single_isospin(
+            eferm_trial, sp_energy_iso, deltaf_iso, wstates_iso
+        )
+        return float(particle_num) - particle_number
+    
+    try:
+        eferm_found = brentq(
+            objective_func, 
+            a=-100.0, 
+            b=100.0, 
+            xtol=1e-14, 
+            rtol=1e-16
+        )
+    except ValueError:
+        # If Brent's method fails, use initial estimate
+        eferm_found = float(eferm_initial)
+    
+    # Calculate final BCS occupation numbers
+    edif = sp_energy_iso - eferm_found
+    deltaf_squared = deltaf_iso * pairwg_iso  # Include pairwg in deltaf
+    equasi = jnp.sqrt(edif**2 + deltaf_squared**2)
+    
+    # Avoid division by zero
+    equasi_safe = jnp.maximum(equasi, 1e-20)
+    
+    # BCS occupation probability v_k^2
+    v2 = 0.5 * (1.0 - edif / equasi_safe)
+    
+    # Clip to avoid exactly 0 or 1 (following FORTRAN smallp parameter)
+    smallp = 1e-6
+    v2 = jnp.clip(v2, smallp, 1.0 - smallp)
+    
+    # Calculate u_k * v_k = sqrt(v_k^2 * (1 - v_k^2))
+    wguv_new = jnp.sqrt(jnp.maximum(v2 * (1.0 - v2), smallp))
+    
+    # Apply soft cutoffs if configured
+    wstates_new = wstates_iso
+    pairwg_new = pairwg_iso
+    
+    if forces.pair_cutoff[iq] > 0.0:
+        ecut_pair = eferm_found + forces.pair_cutoff[iq]
+        cutwid_pair = forces.softcut_range * forces.pair_cutoff[iq]
+        pairwg_cutoff = _soft_cutoff(sp_energy_iso, ecut_pair, cutwid_pair)
+        pairwg_new = pairwg_new * pairwg_cutoff
+    
+    if forces.state_cutoff[iq] > 0.0:
+        ecut_state = eferm_found + forces.state_cutoff[iq]
+        cutwid_state = forces.softcut_range * forces.state_cutoff[iq]
+        wstates_cutoff = _soft_cutoff(sp_energy_iso, ecut_state, cutwid_state)
+        wstates_new = wstates_new * wstates_cutoff
+    
+    # Calculate pairing statistics
+    xsmall = 1e-20
+    vol = 0.5 * wguv_new * wstates_new  # No pairwg here as noted in FORTRAN
+    
+    sumuv = jnp.sum(vol)
+    sumuv = jnp.maximum(sumuv, xsmall)
+    
+    sumduv = jnp.sum(vol * deltaf_iso)
+    sumv2 = jnp.sum(v2 * wstates_new)
+    sumdv2 = jnp.sum(deltaf_iso * v2 * wstates_new)
+    
+    # Update pairs_data for this isospin
+    pairs_data.eferm = pairs_data.eferm.at[iq].set(eferm_found)
+    pairs_data.avdelt = pairs_data.avdelt.at[iq].set(sumduv / sumuv)
+    pairs_data.avdeltv2 = pairs_data.avdeltv2.at[iq].set(sumdv2 / sumv2)
+    pairs_data.epair = pairs_data.epair.at[iq].set(sumduv)
+    pairs_data.avg = pairs_data.avg.at[iq].set(sumduv / (sumuv * sumuv))
+    
+    # Update levels object for this isospin
+    levels.wocc = levels.wocc.at[mask].set(v2)
+    levels.wguv = levels.wguv.at[mask].set(wguv_new)
+    
+    # Update full arrays if cutoffs were applied
+    if forces.pair_cutoff[iq] > 0.0:
+        levels.pairwg = levels.pairwg.at[mask].set(pairwg_new)
+    
+    if forces.state_cutoff[iq] > 0.0:
+        levels.wstates = levels.wstates.at[mask].set(wstates_new)
+    
+    return levels
+
+def _bcs_occupation_single_isospin(efermi_trial, sp_energy, deltaf, wstates):
+    """
+    Calculates particle number for a given trial Fermi energy (single isospin).
+    """
+    edif = sp_energy - efermi_trial
+    equasi = jnp.sqrt(edif**2 + deltaf**2)
+    
+    # Avoid division by zero
+    equasi_safe = jnp.maximum(equasi, 1e-20)
+    
+    # BCS occupation probability
+    wocc_trial = 0.5 * (1.0 - edif / equasi_safe)
+    
+    # Clip to avoid exactly 0 or 1
+    smal = 1e-10
+    wocc_trial = jnp.clip(wocc_trial, smal, 1.0 - smal)
+    
+    # Sum occupations weighted by wstates
+    particle_number = jnp.sum(wocc_trial * wstates)
+    
+    return particle_number
+
+def _soft_cutoff(sp_energy, ecut, cutwid):
+    """
+    Calculates soft cutoff as Fermi profile.
+    """
+    return 1.0 / (1.0 + jnp.exp((sp_energy - ecut) / cutwid))
 
 @jax.jit
 def sort_states(forces, grids, levels, isospin):

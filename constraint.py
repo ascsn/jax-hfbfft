@@ -429,34 +429,3 @@ def get_constraint_summary(constraints: Constraints) -> Dict[str, Any]:
         summary["principal_axes"] = True
     
     return summary
-
-
-# Utility functions for common constraint setups
-
-def setup_prolate_constraint(beta20_target: float, mass_number: int) -> Dict[str, Any]:
-    """Setup parameters for prolate deformation constraint"""
-    # Convert β20 to α20 (approximate)
-    alpha20_target = beta20_target * 1.5  # Rough conversion factor
-    
-    return {
-        "alpha20_wanted": alpha20_target,
-        "alpha22_wanted": 0.0,  # Axially symmetric
-        "tq_prin_axes": False,
-        "qepsconstr": 0.2,  # Conservative update rate
-        "damprad": 1.2 * mass_number**(1.0/3.0) + 2.0  # Nuclear size + margin
-    }
-
-
-def setup_triaxial_constraint(beta20_target: float, gamma_target: float, mass_number: int) -> Dict[str, Any]:
-    """Setup parameters for triaxial deformation"""
-    # Convert β20, γ to α20, α22
-    alpha20_target = beta20_target * jnp.cos(gamma_target * jnp.pi / 180.0) * 1.5
-    alpha22_target = beta20_target * jnp.sin(gamma_target * jnp.pi / 180.0) * 1.5 / jnp.sqrt(2.0)
-    
-    return {
-        "alpha20_wanted": float(alpha20_target),
-        "alpha22_wanted": float(alpha22_target),
-        "tq_prin_axes": True,  # Ensure proper alignment
-        "qepsconstr": 0.15,  # More conservative for triaxial
-        "damprad": 1.2 * mass_number**(1.0/3.0) + 2.0
-    }

@@ -161,7 +161,7 @@ def hpsi01(grids, meanfield, iq, weight, weightuv, pinn):
 
 
 @jax.jit
-def skyrme(coulomb, densities, forces, grids, meanfield, params, static):
+def skyrme(coulomb, densities, forces, grids, meanfield, params, static, constraints = None):
 
     workden = jnp.zeros_like(densities.rho)
     # The shape for workvec in Python (2, 3, nx, ny, nz) matches the logic for aq, spot etc.
@@ -242,6 +242,10 @@ def skyrme(coulomb, densities, forces, grids, meanfield, params, static):
 
     # Assign final calculated upot to the meanfield object
     meanfield.upot = upot_calc
+
+    if constraints is not None and constraints.tconstraint:
+        from constraints import add_constraint_potential
+        meanfield.upot = add_constraint_potential(meanfield.upot, constraints)
 
     # ==============================================================================
     # Step 5: Effective mass 

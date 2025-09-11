@@ -259,17 +259,17 @@ def grstep(forces, grids, levels, meanfield, params, static):
     return levels, static
 
 #@partial(jax.jit, static_argnames=['diagonalize', 'construct'])
-def diagstep(energies, forces, grids, levels, static, diagonalize=False, construct=True):
+def diagstep(energies, forces, grids, levels, static, diagonalize=False, construct=True, npsi_neutron = None, npsi_proton = None):
 
     for iq in range(2):
         
         if iq == 0:  # Neutrons
-            nst = int(levels.npsi[0])  # Use the full neutron basis size
+            nst = levels.npsi[0]  # Use the full neutron basis size
             start, end = 0, nst
         else:  # Protons
-            nst = int(levels.npsi[1])  # Use the full proton basis size
+            nst = levels.npsi[1]  # Use the full proton basis size
             # Protons start after all neutron basis states
-            start = int(levels.npsi[0])
+            start = levels.npsi[0]
             end = start + nst
         
         # Step 1: Reshape wave functions to 2D layout
@@ -370,7 +370,7 @@ def loewdin_orthonormalize(psi_2d, wxyz, nst):
 
     return unitary_rho, sp_norm_diag
 
-@partial(jax.jit, static_argnames=['iq', 'start', 'end', 'nst'])
+#@jax.jit
 def construct_hfb_matrices(unitary, psi_2d, energies, forces, grids, levels, static, iq, start, end, nst):
 
     # Reshape H|psi_old> and Delta|psi_old>
@@ -1289,6 +1289,10 @@ def statichf(coulomb, densities, energies, forces, grids, levels, meanfield, mom
 
     """Main function for static iterations with added debugging."""
 
+    npsi_neutron=int(levels.npsi[0])
+    npsi_proton=int(levels.npsi[1])
+
+
     firstiter = 1
     addnew = 0.2
     addco = 1.0 - addnew
@@ -1298,7 +1302,7 @@ def statichf(coulomb, densities, energies, forces, grids, levels, meanfield, mom
         firstiter = params.iteration + 1
     else:
         params.iteration = 0
-        energies, levels, static = diagstep(energies, forces, grids, levels, static, False, True)
+        energies, levels, static = diagstep(energies, forces, grids, levels, static, False, True,npsi_neutron, npsi_proton)
 
 
     densities = add_density(densities, grids, levels)
@@ -1311,7 +1315,7 @@ def statichf(coulomb, densities, energies, forces, grids, levels, meanfield, mom
         levels, pairs = pair(levels, meanfield, forces, params, grids, pairs)
 
 
-    energies, levels, static = diagstep(energies, forces, grids, levels, static, False, True)
+    energies, levels, static = diagstep(energies, forces, grids, levels, static, False, True,npsi_neutron, npsi_proton)
 
 
     levels = sp_properties(forces, grids, levels, moment)
@@ -1376,7 +1380,7 @@ def statichf(coulomb, densities, energies, forces, grids, levels, meanfield, mom
         if forces.tbcs:
             static.tdiag = True
 
-        energies, levels, static = diagstep(energies, forces, grids, levels, static, static.tdiag, True)
+        energies, levels, static = diagstep(energies, forces, grids, levels, static, static.tdiag, True,npsi_neutron, npsi_proton)
 
 
         #do pairing
@@ -1545,6 +1549,8 @@ def write_convergence_log(file_path, iteration, energies, static, levels, densit
 def statichf_with_benchmark(coulomb, densities, energies, forces, grids, levels, meanfield, moment, params, static, pairs, output_writer=None, output_interval=5):
 
     log_file_path = "hfb_convergence.log"
+    npsi_neutron=int(levels.npsi[0])
+    npsi_proton=int(levels.npsi[1])
 
     # Create a clean log file at the start of a new calculation (not when restarting)
     if not params.trestart:
@@ -1578,7 +1584,7 @@ def statichf_with_benchmark(coulomb, densities, energies, forces, grids, levels,
         firstiter = params.iteration + 1
     else:
         params.iteration = 0
-        energies, levels, static = diagstep(energies, forces, grids, levels, static, False, True)
+        energies, levels, static = diagstep(energies, forces, grids, levels, static, False, True, npsi_neutron, npsi_proton)
 
 
     densities = add_density(densities, grids, levels)
@@ -1591,7 +1597,7 @@ def statichf_with_benchmark(coulomb, densities, energies, forces, grids, levels,
         levels, pairs = pair(levels, meanfield, forces, params, grids, pairs)
 
 
-    energies, levels, static = diagstep(energies, forces, grids, levels, static, False, True)
+    energies, levels, static = diagstep(energies, forces, grids, levels, static, False, True,npsi_neutron, npsi_proton)
 
 
     levels = sp_properties(forces, grids, levels, moment)
@@ -1661,7 +1667,7 @@ def statichf_with_benchmark(coulomb, densities, energies, forces, grids, levels,
         if forces.tbcs:
             static.tdiag = True
 
-        energies, levels, static = diagstep(energies, forces, grids, levels, static, static.tdiag, True)
+        energies, levels, static = diagstep(energies, forces, grids, levels, static, static.tdiag, True,npsi_neutron, npsi_proton)
 
 
         #do pairing
@@ -1862,6 +1868,9 @@ def print_detailed_timing_report(iteration_times, detailed_times=None):
 
 def statichf_with_detailed_benchmark(coulomb, densities, energies, forces, grids, levels, meanfield, moment, params, static, pairs, output_writer=None, output_interval=5, enable_detailed_timing=True):
    
+    npsi_neutron=int(levels.npsi[0])
+    npsi_proton=int(levels.npsi[1])
+
     # Generate unique filename based on nucleus properties
     def generate_unique_filename(base_name, levels, forces, grids):
         """Generate unique filename based on nucleus and calculation parameters."""
@@ -1919,7 +1928,7 @@ def statichf_with_detailed_benchmark(coulomb, densities, energies, forces, grids
         firstiter = params.iteration + 1
     else:
         params.iteration = 0
-        energies, levels, static = diagstep(energies, forces, grids, levels, static, False, True)
+        energies, levels, static = diagstep(energies, forces, grids, levels, static, False, True,npsi_neutron, npsi_proton)
 
     # Initial setup steps (not timed in detail since they're one-time)
     densities = add_density(densities, grids, levels)
@@ -1929,7 +1938,7 @@ def statichf_with_detailed_benchmark(coulomb, densities, energies, forces, grids
     if forces.ipair != 0:
         levels, pairs = pair(levels, meanfield, forces, params, grids, pairs)
 
-    energies, levels, static = diagstep(energies, forces, grids, levels, static, False, True)
+    energies, levels, static = diagstep(energies, forces, grids, levels, static, False, True,npsi_neutron, npsi_proton)
     levels = sp_properties(forces, grids, levels, moment)
     energies = integ_energy(coulomb, densities, energies, forces, grids, levels, params, pairs)
     energies = sum_energy(energies, levels, meanfield, pairs)
@@ -1998,7 +2007,7 @@ def statichf_with_detailed_benchmark(coulomb, densities, energies, forces, grids
 
         if forces.tbcs:
             static.tdiag = True
-        energies, levels, static = diagstep(energies, forces, grids, levels, static, static.tdiag, True)
+        energies, levels, static = diagstep(energies, forces, grids, levels, static, static.tdiag, True,npsi_neutron, npsi_proton)
 
         if enable_detailed_timing:
             jax.block_until_ready([levels.psi, energies.efluct1])

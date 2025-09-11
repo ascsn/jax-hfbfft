@@ -21,8 +21,8 @@ from dataclasses import asdict
 from functools import partial
 from output import FortranOutputWriter, complete_sinfo_with_fortran_output
 
-os.environ['JAX_PLATFORMS'] = 'cpu'
-os.environ['CUDA_VISIBLE_DEVICES'] = ''
+#os.environ['JAX_PLATFORMS'] = 'cpu'
+#os.environ['CUDA_VISIBLE_DEVICES'] = ''
 
 # Create output directory
 output_dir = "hfb_results_40Ca_detailed"

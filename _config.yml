@@ -52,16 +52,16 @@ levels:
     #nprot: 4
     #nneut: 4
     #npsi: [8,8]
-    nneut: 24
-    nprot: 24
-    npsi: [48,48]
+    nneut: 10
+    nprot: 10
+    npsi: [20,20]
 
 static:
     tdiag: false
     tlarge: false
     #maxiter: 4000
     #maxiter: 400
-    maxiter: 2
+    maxiter: 40
     radinx: 3.1
     radiny: 3.1
     radinz: 3.1

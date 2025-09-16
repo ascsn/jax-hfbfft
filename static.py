@@ -1336,7 +1336,8 @@ def statichf(coulomb, densities, energies, forces, grids, levels, meanfield, mom
             meanfield, moment, params, static, pairs, output_writer
         )
     else:
-        energies = sinfo(coulomb, densities, energies, forces, grids, levels, meanfield, moment, params, static, pairs)
+        if i % 10 == 0:
+            energies = sinfo(coulomb, densities, energies, forces, grids, levels, meanfield, moment, params, static, pairs)
     write_convergence_log(log_file_path, params.iteration, energies, static, levels, densities, meanfield, grids, forces, pairs)
     
     # Set x0dmp to 3* its value to get faster convergence
@@ -1437,7 +1438,8 @@ def statichf(coulomb, densities, energies, forces, grids, levels, meanfield, mom
             )
         
         # Calculate and print information
-        energies = sinfo(coulomb, densities, energies, forces, grids, levels, meanfield, moment, params, static, pairs)
+        if i % 10 == 0:
+            energies = sinfo(coulomb, densities, energies, forces, grids, levels, meanfield, moment, params, static, pairs)
 
         #write_convergence_log(log_file_path, params.iteration, energies, static, levels, densities, meanfield, grids, forces, pairs)
 
@@ -1546,7 +1548,7 @@ def write_convergence_log(file_path, iteration, energies, static, levels, densit
             
             f.write("#" + "-"*110 + "\n\n")
 
-def statichf_with_benchmark(coulomb, densities, energies, forces, grids, levels, meanfield, moment, params, static, pairs, output_writer=None, output_interval=5):
+def statichf_with_benchmark(coulomb, densities, energies, forces, grids, levels, meanfield, moment, params, static, pairs, output_writer=None, output_interval=10):
 
     log_file_path = "hfb_convergence.log"
     npsi_neutron=int(levels.npsi[0])
@@ -1618,7 +1620,8 @@ def statichf_with_benchmark(coulomb, densities, energies, forces, grids, levels,
             meanfield, moment, params, static, pairs, output_writer
         )
     else:
-        energies = sinfo(coulomb, densities, energies, forces, grids, levels, meanfield, moment, params, static, pairs)
+        if i % 10 == 0:
+            energies = sinfo(coulomb, densities, energies, forces, grids, levels, meanfield, moment, params, static, pairs)
     #write_convergence_log(log_file_path, params.iteration, energies, static, levels, densities, meanfield, grids, forces, pairs)
     
     # Set x0dmp to 3* its value to get faster convergence
@@ -1724,7 +1727,8 @@ def statichf_with_benchmark(coulomb, densities, energies, forces, grids, levels,
             )
         
         # Calculate and print information
-        energies = sinfo(coulomb, densities, energies, forces, grids, levels, meanfield, moment, params, static, pairs)
+        if i % 10 == 0:
+            energies = sinfo(coulomb, densities, energies, forces, grids, levels, meanfield, moment, params, static, pairs)
 
         #write_convergence_log(log_file_path, params.iteration, energies, static, levels, densities, meanfield, grids, forces, pairs)
 

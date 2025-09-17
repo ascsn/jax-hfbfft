@@ -267,9 +267,9 @@ def diagstep(energies, forces, grids, levels, static, diagonalize=False, constru
             nst = npsi_neutron  # Use the full neutron basis size
             start, end = 0, nst
         else:  # Protons
-            nst = levels.npsi[1]  # Use the full proton basis size
+            nst = npsi_proton  # Use the full proton basis size
             # Protons start after all neutron basis states
-            start = npsi_proton
+            start = npsi_neutron
             end = start + nst
         
         # Step 1: Reshape wave functions to 2D layout

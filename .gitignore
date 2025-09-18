@@ -3,6 +3,8 @@
 *perf.txt
 *log2.txt
 *.log
+*log.txt
+*before.txt
 */
 staticbackup.py
 test_res_output.py

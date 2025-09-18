@@ -258,24 +258,25 @@ def grstep(forces, grids, levels, meanfield, params, static):
 
     return levels, static
 
-#@partial(jax.jit, static_argnames=['diagonalize', 'construct'])
+@partial(jax.jit, static_argnames=['diagonalize', 'construct', 'npsi_neutron', 'npsi_proton'])
 def diagstep(energies, forces, grids, levels, static, diagonalize=False, construct=True, npsi_neutron = None, npsi_proton = None):
 
-    for iq in range(2):
         
-        if iq == 0:  # Neutrons
-            nst = npsi_neutron  # Use the full neutron basis size
-            start, end = 0, nst
+    def process_neutrons(carry):
+        iq=0
+        energies, levels, static = carry
+        
+        if iq == 0:  # Neutrons - JAX will convert this to jax.lax.cond automatically
+            nst = npsi_neutron
+            start, end = 0, npsi_neutron
         else:  # Protons
-            nst = npsi_proton  # Use the full proton basis size
-            # Protons start after all neutron basis states
-            start = npsi_neutron
-            end = start + nst
+            nst = npsi_proton
+            start, end = npsi_neutron, npsi_neutron + npsi_proton
         
-        # Step 1: Reshape wave functions to 2D layout
+        # Now start:end are statically determinable, so regular slicing works
         psi_2d = jnp.reshape(
             jnp.transpose(
-                levels.psi[start:end,...],
+                levels.psi[start:end,...],  # This now works!
                 axes=(2, 3, 4, 1, 0)
             ),
             shape=(-1, nst),
@@ -284,32 +285,32 @@ def diagstep(energies, forces, grids, levels, static, diagonalize=False, constru
         
         hampsi_2d = jnp.reshape(
             jnp.transpose(
-                levels.hampsi[start:end,...],
+                levels.hampsi[start:end,...],  # This now works!
                 axes=(2, 3, 4, 1, 0)
             ),
             shape=(-1, nst),
             order='F'
         )
-               
+        
         # Step 2 & 3: Perform Loewdin Orthonormalization
         unitary_rho, sp_norm_diag = loewdin_orthonormalize(psi_2d, grids.wxyz, nst)
         levels.sp_norm = levels.sp_norm.at[start:end].set(sp_norm_diag)
 
-        # Calculate lambda matrix if needed
-        if diagonalize:
+        # Step 4: Handle lambda diagonalization if requested
+        def compute_diagonalized_unitary():
             lambda_lin = jnp.dot(jnp.conjugate(psi_2d.T), hampsi_2d) * grids.wxyz
             _, unitary_lam = jnp.linalg.eigh(lambda_lin, symmetrize_input=False)
-            unitary = jnp.dot(unitary_rho, unitary_lam)
-        else:
-            unitary = unitary_rho
+            return jnp.dot(unitary_rho, unitary_lam)
+        
+        def compute_simple_unitary():
+            return unitary_rho
+        
+        unitary = jax.lax.cond(
+            diagonalize,
+            compute_diagonalized_unitary,
+            compute_simple_unitary
+        )
 
-        # Step 4: Handle lambda diagonalization if requested
-        if diagonalize:
-            _, unitary_lam = jnp.linalg.eigh(lambda_lin, symmetrize_input=False)
-            unitary = jnp.dot(unitary_rho, unitary_lam)
-            
-        else:
-            unitary = unitary_rho
         
         # Step 5: Apply transformation to wave functions
         transformed_psi = jnp.dot(psi_2d, unitary)
@@ -325,13 +326,14 @@ def diagstep(energies, forces, grids, levels, static, diagonalize=False, constru
                 axes=(4, 3, 0, 1, 2)
             )
         )
+
         # Step 6: Construct matrices or just update Lagrange multipliers
-        if construct:
-            energies, levels, static = construct_hfb_matrices(
+        def construct_matrices():
+            return construct_hfb_matrices(
                 unitary, psi_2d, energies, forces, grids, levels, static, iq, start, end, nst
             )
-        else:
-            # Just update Lagrange multipliers
+        
+        def update_lagrange_only():
             psi_2d_new = jnp.reshape(
                 jnp.transpose(levels.psi[start:end, ...], axes=(2, 3, 4, 1, 0)),
                 shape=(-1, nst), order='F'
@@ -346,7 +348,116 @@ def diagstep(energies, forces, grids, levels, static, diagonalize=False, constru
                     axes=(4, 3, 0, 1, 2)
                 )
             )
+            return (energies, levels, static)
+        
+        energies, levels, static = jax.lax.cond(
+            construct,
+            construct_matrices,
+            update_lagrange_only
+        )
+        
+        return (energies, levels, static)
 
+        
+    def process_protons(carry):
+        iq=1
+        energies, levels, static = carry
+        
+        if iq == 0:  # Neutrons - JAX will convert this to jax.lax.cond automatically
+            nst = npsi_neutron
+            start, end = 0, npsi_neutron
+        else:  # Protons
+            nst = npsi_proton
+            start, end = npsi_neutron, npsi_neutron + npsi_proton
+        
+        # Now start:end are statically determinable, so regular slicing works
+        psi_2d = jnp.reshape(
+            jnp.transpose(
+                levels.psi[start:end,...],  # This now works!
+                axes=(2, 3, 4, 1, 0)
+            ),
+            shape=(-1, nst),
+            order='F'
+        )
+        
+        hampsi_2d = jnp.reshape(
+            jnp.transpose(
+                levels.hampsi[start:end,...],  # This now works!
+                axes=(2, 3, 4, 1, 0)
+            ),
+            shape=(-1, nst),
+            order='F'
+        )
+        
+        # Step 2 & 3: Perform Loewdin Orthonormalization
+        unitary_rho, sp_norm_diag = loewdin_orthonormalize(psi_2d, grids.wxyz, nst)
+        levels.sp_norm = levels.sp_norm.at[start:end].set(sp_norm_diag)
+
+        # Step 4: Handle lambda diagonalization if requested
+        def compute_diagonalized_unitary():
+            lambda_lin = jnp.dot(jnp.conjugate(psi_2d.T), hampsi_2d) * grids.wxyz
+            _, unitary_lam = jnp.linalg.eigh(lambda_lin, symmetrize_input=False)
+            return jnp.dot(unitary_rho, unitary_lam)
+        
+        def compute_simple_unitary():
+            return unitary_rho
+        
+        unitary = jax.lax.cond(
+            diagonalize,
+            compute_diagonalized_unitary,
+            compute_simple_unitary
+        )
+
+        
+        # Step 5: Apply transformation to wave functions
+        transformed_psi = jnp.dot(psi_2d, unitary)
+
+        # Reshape back to 5D
+        levels.psi = levels.psi.at[start:end,...].set(
+            jnp.transpose(
+                jnp.reshape(
+                    transformed_psi,
+                    shape=(grids.nx, grids.ny, grids.nz, 2, nst),
+                    order='F'
+                ),
+                axes=(4, 3, 0, 1, 2)
+            )
+        )
+
+        # Step 6: Construct matrices or just update Lagrange multipliers
+        def construct_matrices():
+            return construct_hfb_matrices(
+                unitary, psi_2d, energies, forces, grids, levels, static, iq, start, end, nst
+            )
+        
+        def update_lagrange_only():
+            psi_2d_new = jnp.reshape(
+                jnp.transpose(levels.psi[start:end, ...], axes=(2, 3, 4, 1, 0)),
+                shape=(-1, nst), order='F'
+            )
+            transformed_lagrange = jnp.dot(psi_2d_new, static.lambda_save[iq,:nst,:nst])
+            levels.lagrange = levels.lagrange.at[start:end,...].set(
+                jnp.transpose(
+                    jnp.reshape(
+                        transformed_lagrange,
+                        shape=(grids.nx, grids.ny, grids.nz, 2, nst), order='F'
+                    ),
+                    axes=(4, 3, 0, 1, 2)
+                )
+            )
+            return (energies, levels, static)
+        
+        energies, levels, static = jax.lax.cond(
+            construct,
+            construct_matrices,
+            update_lagrange_only
+        )
+        
+        return (energies, levels, static)
+    
+    energies, levels, static = process_neutrons((energies, levels, static))
+    energies, levels, static = process_protons((energies, levels, static))
+    
     return energies, levels, static
 
 @jax.jit
@@ -370,7 +481,7 @@ def loewdin_orthonormalize(psi_2d, wxyz, nst):
 
     return unitary_rho, sp_norm_diag
 
-#@jax.jit
+@partial(jax.jit, static_argnames=['iq', 'start', 'end', 'nst'])
 def construct_hfb_matrices(unitary, psi_2d, energies, forces, grids, levels, static, iq, start, end, nst):
 
     # Reshape H|psi_old> and Delta|psi_old>
@@ -422,21 +533,25 @@ def construct_hfb_matrices(unitary, psi_2d, energies, forces, grids, levels, sta
     static.gapmatrix = new_gapmatrix
 
     # --- Calculate lambda, symcond, and Lagrange multipliers ---
+    # More efficient JAX version
     weight = levels.wocc[start:end] * levels.wstates[start:end]
     weightuv = levels.wguv[start:end] * levels.pairwg[start:end] * levels.wstates[start:end]
+    
+    # Correct: weight[j] multiplies column j (broadcasting along axis 0)
     lambda_temp = (
-        weight[:, jnp.newaxis] * static.hmatrix[iq, :nst, :nst] -
-        weightuv[:, jnp.newaxis] * static.gapmatrix[iq, :nst, :nst]
+        weight[jnp.newaxis, :] * static.hmatrix[iq, :nst, :nst] -  # Note: newaxis on first dim
+        weightuv[jnp.newaxis, :] * static.gapmatrix[iq, :nst, :nst]
     )
 
+    lambda_asym = 0.5 * (lambda_temp - jnp.conjugate(lambda_temp.T))
+    lambda_sym = 0.5 * (lambda_temp + jnp.conjugate(lambda_temp.T))
+
     # Asymmetric part for fluctuation calculation
-    lambda_asym = (0.5 + 0.5j) * (lambda_temp - jnp.conjugate(lambda_temp.T))
     energies.efluct1q = energies.efluct1q.at[iq].set(jnp.max(jnp.abs(lambda_asym)))
     energies.efluct2q = energies.efluct2q.at[iq].set(jnp.sqrt(jnp.sum(jnp.abs(lambda_asym)**2) / nst**2))
     static.symcond = static.symcond.at[iq, :nst, :nst].set(lambda_asym)
 
     # Symmetric part for Lagrange multipliers
-    lambda_sym = (0.5 + 0.5j) * (lambda_temp + jnp.conjugate(lambda_temp.T))
     static.lambda_save = static.lambda_save.at[iq, :nst, :nst].set(lambda_sym)
 
     # Get the NEW wavefunctions to compute the Lagrange field

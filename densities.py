@@ -176,132 +176,162 @@ add_density_helper_vmap = jax.vmap(
 
 @jax.jit
 def add_density(densities, grids, levels):
+    # Compute weights and contributions
+    weights = levels.wocc * levels.wstates
+    weightuvs = levels.wguv * levels.pairwg * levels.wstates
     
-    # Reset densities to zero first - using direct assignment
-    rho = jnp.zeros_like(densities.rho)
-    chi = jnp.zeros_like(densities.chi)
-    tau = jnp.zeros_like(densities.tau)
-    current = jnp.zeros_like(densities.current)
-    sdens = jnp.zeros_like(densities.sdens)
-    sodens = jnp.zeros_like(densities.sodens)
+    iqs, rho_contribs, chi_contribs, tau_contribs, current_contribs, sdens_contribs, sodens_contribs = compute_contributions_vmap(
+        levels.isospin, weights, weightuvs, levels.psi, grids.dx, grids.dy, grids.dz
+    )
     
-    #Loop over ALL states in the basis, not just a subset
-    for nst in range(levels.nstmax):
-        iq = levels.isospin[nst]
-        weight = levels.wocc[nst] * levels.wstates[nst]
-        weightuv = levels.wguv[nst] * levels.pairwg[nst] * levels.wstates[nst]
-                    
-        
-        psin = levels.psi[nst]  # Shape: (2, nx, ny, nz)
-        
-        # Calculate density contribution |ψ|²
-        rho_contrib = weight * jnp.real(
-            psin[0,...] * jnp.conjugate(psin[0,...]) +
-            psin[1,...] * jnp.conjugate(psin[1,...])
-        )
-        rho = rho.at[iq,...].add(rho_contrib)
-        
-        # Calculate pairing density contribution
-        chi_contrib = 0.5 * weightuv * jnp.real(
-            psin[0,...] * jnp.conjugate(psin[0,...]) +
-            psin[1,...] * jnp.conjugate(psin[1,...])
-        )
-        chi = chi.at[iq,...].add(chi_contrib)
-        
-        # Calculate spin density components
-        sdens_x = 2.0 * weight * jnp.real(jnp.conjugate(psin[0,...]) * psin[1,...])
-        sdens_y = 2.0 * weight * jnp.imag(jnp.conjugate(psin[0,...]) * psin[1,...])  
-        sdens_z = weight * jnp.real(
+    # Sort by isospin for segment operations
+    sorted_indices = jnp.argsort(iqs)
+    sorted_iqs = iqs[sorted_indices]
+    
+    # Find segment boundaries
+    num_segments = 2  # neutrons and protons
+    segment_ids = sorted_iqs
+    
+    # Apply sorting to contributions
+    sorted_rho = rho_contribs[sorted_indices]
+    sorted_chi = chi_contribs[sorted_indices] 
+    sorted_tau = tau_contribs[sorted_indices]
+    sorted_current = current_contribs[sorted_indices]
+    sorted_sdens = sdens_contribs[sorted_indices]
+    sorted_sodens = sodens_contribs[sorted_indices]
+    
+    # Use jax.ops.segment_sum for efficient reduction
+    from jax.ops import segment_sum
+    
+    # Flatten spatial dimensions for segment_sum, then reshape
+    spatial_shape = sorted_rho.shape[1:]
+    flat_rho = sorted_rho.reshape(sorted_rho.shape[0], -1)
+    flat_chi = sorted_chi.reshape(sorted_chi.shape[0], -1)
+    flat_tau = sorted_tau.reshape(sorted_tau.shape[0], -1)
+    
+    # Segment sum and reshape
+    rho_sum = segment_sum(flat_rho, segment_ids, num_segments).reshape(num_segments, *spatial_shape)
+    chi_sum = segment_sum(flat_chi, segment_ids, num_segments).reshape(num_segments, *spatial_shape)
+    tau_sum = segment_sum(flat_tau, segment_ids, num_segments).reshape(num_segments, *spatial_shape)
+    
+    # For 5D arrays (current, sdens, sodens)
+    spatial_5d_shape = sorted_current.shape[1:]
+    flat_current = sorted_current.reshape(sorted_current.shape[0], -1)
+    flat_sdens = sorted_sdens.reshape(sorted_sdens.shape[0], -1)
+    flat_sodens = sorted_sodens.reshape(sorted_sodens.shape[0], -1)
+    
+    current_sum = segment_sum(flat_current, segment_ids, num_segments).reshape(num_segments, *spatial_5d_shape)
+    sdens_sum = segment_sum(flat_sdens, segment_ids, num_segments).reshape(num_segments, *spatial_5d_shape)
+    sodens_sum = segment_sum(flat_sodens, segment_ids, num_segments).reshape(num_segments, *spatial_5d_shape)
+    
+    densities.rho = rho_sum
+    densities.chi = chi_sum
+    densities.tau = tau_sum
+    densities.current = current_sum
+    densities.sdens = sdens_sum
+    densities.sodens = sodens_sum
+    
+    return densities
+
+
+def compute_single_contribution(iq, weight, weightuv, psin, dx, dy, dz):
+    # Basic density |ψ|²
+    rho_contrib = weight * jnp.real(
+        psin[0,...] * jnp.conjugate(psin[0,...]) +
+        psin[1,...] * jnp.conjugate(psin[1,...])
+    )
+    
+    # Pairing density
+    chi_contrib = 0.5 * weightuv * jnp.real(
+        psin[0,...] * jnp.conjugate(psin[0,...]) +
+        psin[1,...] * jnp.conjugate(psin[1,...])
+    )
+    
+    # Spin densities (non-derivative terms)
+    sdens_contrib = jnp.stack([
+        2.0 * weight * jnp.real(jnp.conjugate(psin[0,...]) * psin[1,...]),
+        2.0 * weight * jnp.imag(jnp.conjugate(psin[0,...]) * psin[1,...]),
+        weight * jnp.real(
             jnp.conjugate(psin[0,...]) * psin[0,...] - 
             jnp.conjugate(psin[1,...]) * psin[1,...]
         )
-        
-        sdens = sdens.at[iq,0,...].add(sdens_x)
-        sdens = sdens.at[iq,1,...].add(sdens_y)
-        sdens = sdens.at[iq,2,...].add(sdens_z)
-        
-        # Calculate kinetic energy density and current from derivatives
-        # X derivatives
-        ps1 = cdervx00(grids.dx, psin)
-        tau_contrib = weight * jnp.real(
-            ps1[0,...] * jnp.conjugate(ps1[0,...]) +
-            ps1[1,...] * jnp.conjugate(ps1[1,...])
-        )
-        tau = tau.at[iq,...].add(tau_contrib)
-        
-        current_x = weight * jnp.imag(
-            ps1[0,...] * jnp.conjugate(psin[0,...]) +
-            ps1[1,...] * jnp.conjugate(psin[1,...])
-        )
-        current = current.at[iq,0,...].add(current_x)
-        
-        sodens_y = -weight * (
-            jnp.imag(ps1[0,...] * jnp.conjugate(psin[0,...])) -
-            jnp.imag(ps1[1,...] * jnp.conjugate(psin[1,...]))
-        )
-        sodens_z = -weight * (
-            jnp.real(psin[0,...] * jnp.conjugate(ps1[1,...])) -
-            jnp.real(psin[1,...] * jnp.conjugate(ps1[0,...]))
-        )
-        sodens = sodens.at[iq,1,...].add(sodens_y)
-        sodens = sodens.at[iq,2,...].add(sodens_z)
-        
-        # Y derivatives  
-        ps1 = cdervy00(grids.dy, psin)
-        tau_contrib = weight * jnp.real(
-            ps1[0,...] * jnp.conjugate(ps1[0,...]) +
-            ps1[1,...] * jnp.conjugate(ps1[1,...])
-        )
-        tau = tau.at[iq,...].add(tau_contrib)
-        
-        current_y = weight * jnp.imag(
-            ps1[0,...] * jnp.conjugate(psin[0,...]) +
-            ps1[1,...] * jnp.conjugate(psin[1,...])
-        )
-        current = current.at[iq,1,...].add(current_y)
-        
-        sodens_x = weight * jnp.imag(
-            ps1[0,...] * jnp.conjugate(psin[0,...]) -
-            ps1[1,...] * jnp.conjugate(psin[1,...])
-        )
-        sodens_z_y = -weight * jnp.imag(
-            ps1[1,...] * jnp.conjugate(psin[0,...]) +
-            ps1[0,...] * jnp.conjugate(psin[1,...])
-        )
-        sodens = sodens.at[iq,0,...].add(sodens_x)
-        sodens = sodens.at[iq,2,...].add(sodens_z_y)
-        
-        # Z derivatives
-        ps1 = cdervz00(grids.dz, psin)
-        tau_contrib = weight * jnp.real(
-            ps1[0,...] * jnp.conjugate(ps1[0,...]) +
-            ps1[1,...] * jnp.conjugate(ps1[1,...])
-        )
-        tau = tau.at[iq,...].add(tau_contrib)
-        
-        current_z = weight * jnp.imag(
-            ps1[0,...] * jnp.conjugate(psin[0,...]) +
-            ps1[1,...] * jnp.conjugate(psin[1,...])
-        )
-        current = current.at[iq,2,...].add(current_z)
-        
-        sodens_x_z = weight * jnp.real(
-            ps1[1,...] * jnp.conjugate(psin[0,...]) -
-            ps1[0,...] * jnp.conjugate(psin[1,...])
-        )
-        sodens_y_z = weight * jnp.imag(
-            ps1[1,...] * jnp.conjugate(psin[0,...]) +
-            ps1[0,...] * jnp.conjugate(psin[1,...])
-        )
-        sodens = sodens.at[iq,0,...].add(sodens_x_z)
-        sodens = sodens.at[iq,1,...].add(sodens_y_z)
+    ], axis=0)
     
-    # Return updated densities object by directly updating the fields
-    densities.rho = rho
-    densities.chi = chi  
-    densities.tau = tau
-    densities.current = current
-    densities.sdens = sdens
-    densities.sodens = sodens
+    # X derivatives
+    ps1_x = cdervx00(dx, psin)
+    tau_x = weight * jnp.real(
+        ps1_x[0,...] * jnp.conjugate(ps1_x[0,...]) +
+        ps1_x[1,...] * jnp.conjugate(ps1_x[1,...])
+    )
+    current_x = weight * jnp.imag(
+        ps1_x[0,...] * jnp.conjugate(psin[0,...]) +
+        ps1_x[1,...] * jnp.conjugate(psin[1,...])
+    )
+    sodens_y_x = -weight * jnp.imag(
+        ps1_x[0,...] * jnp.conjugate(psin[0,...]) -
+        ps1_x[1,...] * jnp.conjugate(psin[1,...])
+    )
+    sodens_z_x = -weight * jnp.real(
+        psin[0,...] * jnp.conjugate(ps1_x[1,...]) -
+        psin[1,...] * jnp.conjugate(ps1_x[0,...])
+    )
     
-    return densities
+    # Y derivatives  
+    ps1_y = cdervy00(dy, psin)
+    tau_y = weight * jnp.real(
+        ps1_y[0,...] * jnp.conjugate(ps1_y[0,...]) +
+        ps1_y[1,...] * jnp.conjugate(ps1_y[1,...])
+    )
+    current_y = weight * jnp.imag(
+        ps1_y[0,...] * jnp.conjugate(psin[0,...]) +
+        ps1_y[1,...] * jnp.conjugate(psin[1,...])
+    )
+    sodens_x_y = weight * jnp.imag(
+        ps1_y[0,...] * jnp.conjugate(psin[0,...]) -
+        ps1_y[1,...] * jnp.conjugate(psin[1,...])
+    )
+    sodens_z_y = -weight * jnp.imag(
+        ps1_y[1,...] * jnp.conjugate(psin[0,...]) +
+        ps1_y[0,...] * jnp.conjugate(psin[1,...])
+    )
+    
+    # Z derivatives
+    ps1_z = cdervz00(dz, psin) 
+    tau_z = weight * jnp.real(
+        ps1_z[0,...] * jnp.conjugate(ps1_z[0,...]) +
+        ps1_z[1,...] * jnp.conjugate(ps1_z[1,...])
+    )
+    current_z = weight * jnp.imag(
+        ps1_z[0,...] * jnp.conjugate(psin[0,...]) +
+        ps1_z[1,...] * jnp.conjugate(psin[1,...])
+    )
+    sodens_x_z = weight * jnp.real(
+        ps1_z[1,...] * jnp.conjugate(psin[0,...]) -
+        ps1_z[0,...] * jnp.conjugate(psin[1,...])
+    )
+    sodens_y_z = weight * jnp.imag(
+        ps1_z[1,...] * jnp.conjugate(psin[0,...]) +
+        ps1_z[0,...] * jnp.conjugate(psin[1,...])
+    )
+    
+    # Total kinetic energy density
+    tau_contrib = tau_x + tau_y + tau_z
+    
+    # Current density components
+    current_contrib = jnp.stack([current_x, current_y, current_z], axis=0)
+    
+    # Spin-orbit density components
+    sodens_contrib = jnp.stack([
+        sodens_x_y + sodens_x_z,  # sodens_x total
+        sodens_y_x + sodens_y_z,  # sodens_y total  
+        sodens_z_x + sodens_z_y   # sodens_z total
+    ], axis=0)
+    
+    return iq, rho_contrib, chi_contrib, tau_contrib, current_contrib, sdens_contrib, sodens_contrib
+
+
+# Vectorize the contribution computation
+compute_contributions_vmap = jax.vmap(
+    compute_single_contribution,
+    in_axes=(0, 0, 0, 0, None, None, None)  # vectorize over first 4 args, broadcast scalars
+)

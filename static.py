@@ -1735,7 +1735,7 @@ def statichf_with_benchmark(coulomb, densities, energies, forces, grids, levels,
             meanfield, moment, params, static, pairs, output_writer
         )
     else:
-        if i % 10 == 0:
+        if i % output_interval == 0:
             energies = sinfo(coulomb, densities, energies, forces, grids, levels, meanfield, moment, params, static, pairs)
     #write_convergence_log(log_file_path, params.iteration, energies, static, levels, densities, meanfield, grids, forces, pairs)
     
@@ -1842,7 +1842,7 @@ def statichf_with_benchmark(coulomb, densities, energies, forces, grids, levels,
             )
         
         # Calculate and print information
-        if i % 10 == 0:
+        if i % output_interval == 0:
             energies = sinfo(coulomb, densities, energies, forces, grids, levels, meanfield, moment, params, static, pairs)
 
         #write_convergence_log(log_file_path, params.iteration, energies, static, levels, densities, meanfield, grids, forces, pairs)
@@ -2409,3 +2409,543 @@ def print_detailed_timing_report(iteration_times, detailed_times=None, summary_f
         print(f"Detailed timing report saved to: {summary_file_path}")
 
 
+
+def print_initialization_benchmark(levels, static, grids):
+    """Compare initial state after harmosc"""
+    print("=== INITIALIZATION BENCHMARK ===")
+    print(f"Harmonic oscillator widths: radinx={static.radinx}, radiny={static.radiny}, radinz={static.radinz}")
+    
+    # Compare first few wavefunctions
+    for nst in range(min(5, levels.nstmax)):
+        psi_norm = jnp.sum(jnp.abs(levels.psi[nst])**2) * grids.wxyz
+        psi_center_val = levels.psi[nst, grids.nx//2, grids.ny//2, grids.nz//2, 0]
+        print(f"State {nst}: norm={psi_norm:.12e}, center_value={psi_center_val:.12e}")
+    
+    # Initial occupations
+    print(f"Initial wocc: {levels.wocc[:10]}")
+    print(f"Initial sp_energy: {levels.sp_energy[:10]}")
+
+
+def print_iteration_benchmark(iter_num, densities, meanfield, levels, energies, static):
+    """Print key quantities at each iteration"""
+    print(f"\n=== ITERATION {iter_num} BENCHMARK ===")
+    
+    # 1. Density benchmarks
+    rho_total = jnp.sum(densities.rho[0] + densities.rho[1])
+    rho_max = jnp.max(jnp.abs(densities.rho))
+    print(f"Density: total={rho_total:.12e}, max={rho_max:.12e}")
+    
+    # Central density values
+    center = (densities.rho.shape[1]//2, densities.rho.shape[2]//2, densities.rho.shape[3]//2)
+    print(f"Central densities: neut={densities.rho[0][center]:.12e}, prot={densities.rho[1][center]:.12e}")
+    
+    # 2. Mean field benchmarks  
+    upot_max = jnp.max(jnp.abs(meanfield.upot))
+    upot_center = meanfield.upot[0][center]
+    print(f"Potential: max={upot_max:.12e}, center_neut={upot_center:.12e}")
+    
+    # 3. Single-particle energies (first 10)
+    print(f"SP energies: {levels.sp_energy[:10]}")
+    
+    # 4. Convergence metrics
+    print(f"efluct1={energies.efluct1[0]:.12e}, efluct2={energies.efluct2[0]:.12e}")
+    
+    # 5. Energy components
+    if hasattr(energies, 'etot'):
+        print(f"Total energy: {energies.etot[0]:.12e}")
+
+def print_matrix_benchmark(static, levels, iq, iteration):
+    """Compare matrices from diagstep"""
+    print(f"\n=== MATRIX BENCHMARK (iq={iq}, iter={iteration}) ===")
+    
+    # Overlap matrix eigenvalues (from orthogonalization)
+    if hasattr(static, 'overlap_eigenvals'):
+        print(f"Overlap eigenvals: min={jnp.min(static.overlap_eigenvals):.12e}, max={jnp.max(static.overlap_eigenvals):.12e}")
+    
+    # H-matrix diagonal elements
+    h_diag = jnp.diag(static.hmatrix[iq])
+    print(f"H-matrix diag: {h_diag[:5]}")
+    
+    # Gap matrix diagonal elements  
+    if static.gapmatrix is not None:
+        gap_diag = jnp.diag(static.gapmatrix[iq])
+        print(f"Gap-matrix diag: {gap_diag[:5]}")
+    
+    # Lambda matrix (convergence measure)
+    if hasattr(static, 'lambda_matrix'):
+        lambda_max = jnp.max(jnp.abs(static.lambda_matrix[iq]))
+        print(f"Lambda matrix max: {lambda_max:.12e}")
+
+def print_wavefunction_benchmark(levels, grids, iteration, states_to_track=[0, 1, 10, 20]):
+    """Track how specific wavefunctions evolve"""
+    print(f"\n=== WAVEFUNCTION BENCHMARK (iter={iteration}) ===")
+    
+    for nst in states_to_track:
+        if nst < levels.nstmax:
+            # Norm
+            norm = jnp.sum(jnp.abs(levels.psi[nst])**2) * grids.wxyz
+            
+            # Center value
+            center = tuple(s//2 for s in levels.psi.shape[1:4])
+            center_val = levels.psi[nst][center + (0,)]
+            
+            # RMS radius  
+            x2 = jnp.sum(jnp.abs(levels.psi[nst])**2 * grids.x[None,:,None,None]**2) * grids.wxyz
+            rms_x = jnp.sqrt(x2/norm) if norm > 0 else 0.0
+            
+            print(f"State {nst}: norm={norm:.12e}, center={center_val:.12e}, rms_x={rms_x:.12e}")
+    """Track how specific wavefunctions evolve"""
+    print(f"\n=== WAVEFUNCTION BENCHMARK (iter={iteration}) ===")
+    
+    for nst in states_to_track:
+        if nst < levels.nstmax:
+            # Norm
+            norm = jnp.sum(jnp.abs(levels.psi[nst])**2)
+            
+            # Center value
+            center = tuple(s//2 for s in levels.psi.shape[1:4])
+            center_val = levels.psi[nst][center + (0,)]
+            
+            # RMS radius  
+            x2 = jnp.sum(jnp.abs(levels.psi[nst])**2 * grids.x[None,:,None,None]**2)
+            rms_x = jnp.sqrt(x2/norm)
+            
+            print(f"State {nst}: norm={norm:.12e}, center={center_val:.12e}, rms_x={rms_x:.12e}")
+
+def print_algorithm_benchmark(levels, static, iteration):
+    """Track specific algorithmic steps"""
+    print(f"\n=== ALGORITHM BENCHMARK (iter={iteration}) ===")
+    
+    # Gradient step parameters
+    print(f"Damping: x0dmp={static.x0dmp:.12e}, e0dmp={static.e0dmp:.12e}")
+    
+    # Individual state fluctuations
+    if hasattr(levels, 'sp_efluct1'):
+        max_fluct = jnp.max(levels.sp_efluct1)
+        rms_fluct = jnp.sqrt(jnp.mean(levels.sp_efluct1**2))
+        print(f"SP fluctuations: max={max_fluct:.12e}, rms={rms_fluct:.12e}")
+    
+    # Pairing information
+    if hasattr(levels, 'deltaf'):
+        delta_max = jnp.max(jnp.abs(levels.deltaf))
+        print(f"Pairing gaps: max={delta_max:.12e}")
+
+def print_precision_benchmark(levels, grids):
+    """Test numerical precision issues"""
+    print(f"\n=== PRECISION BENCHMARK ===")
+    
+    # Machine precision tests
+    eps = jnp.finfo(jnp.float64).eps
+    print(f"Machine epsilon: {eps:.12e}")
+    
+    # Orthogonality check
+    for i in range(min(3, levels.nstmax)):
+        for j in range(i+1, min(3, levels.nstmax)):
+            overlap = jnp.sum(jnp.conjugate(levels.psi[i]) * levels.psi[j]) * grids.wxyz
+            print(f"Overlap <{i}|{j}>: {jnp.abs(overlap):.12e}")
+    
+    # Norm checks
+    for i in range(min(5, levels.nstmax)):
+        norm = jnp.sum(jnp.abs(levels.psi[i])**2) * grids.wxyz
+        print(f"Norm state {i}: {norm:.12e} (deviation: {jnp.abs(norm-1.0):.12e})")
+
+def print_energy_benchmark(energies, levels, densities, meanfield, grids, forces):
+    """Verify energy conservation and components"""
+    print(f"\n=== ENERGY BENCHMARK ===")
+    
+    # Kinetic energy
+    e_kin = jnp.sum(levels.wocc * levels.sp_energy * levels.wstates)
+    print(f"Kinetic energy: {e_kin:.12e}")
+    
+    # Potential energy (if calculable)
+    # This depends on your implementation
+    
+    # Total energy
+    if hasattr(energies, 'etot'):
+        print(f"Total energy: {energies.etot[0]:.12e}")
+
+def statichf_with_testy_benchmark(coulomb, densities, energies, forces, grids, levels, meanfield, moment, params, static, pairs, output_writer=None, output_interval=10, benchmark_frequency = 10):
+
+    log_file_path = "hfb_convergence.log"
+    npsi_neutron=int(levels.npsi[0])
+    npsi_proton=int(levels.npsi[1])
+
+    # Create a clean log file at the start of a new calculation (not when restarting)
+    if not params.trestart:
+        with open(log_file_path, 'w') as f:
+            f.write(f"# HFB Convergence Log - {datetime.datetime.now()}\n")
+            f.write(f"# Force: {forces.name}, Grid: {grids.nx}x{grids.ny}x{grids.nz}, N={levels.nneut}, Z={levels.nprot}\n")
+            f.write(f"# Convergence criterion: {static.serr:.6e}\n\n")
+
+    """Main function for static iterations with added debugging."""
+
+    firstiter = 1
+    addnew = 0.2
+    addco = 1.0 - addnew
+    taddnew = True
+
+    Z = levels.nprot
+    N = levels.nneut
+    A = Z + N
+    element_symbol = get_element_symbol(Z)
+    benchmark_filename = f"{element_symbol}{A}_benchmark.txt"
+
+    # Write a header to the benchmark file, overwriting any previous content
+    with open(benchmark_filename, 'w') as f:
+        f.write(f"# Benchmark Timing Report for {element_symbol}{A} (Z={Z}, N={N})\n")
+        f.write(f"# Calculation started: {datetime.datetime.now()}\n")
+        f.write("="*50 + "\n")
+        f.write(f"{'Iteration':<12} {'Duration (s)':<20}\n")
+        f.write("="*50 + "\n")
+
+    print_initialization_benchmark(levels, static, grids)
+
+    if params.trestart:
+        firstiter = params.iteration + 1
+    else:
+        params.iteration = 0
+        energies, levels, static = diagstep(energies, forces, grids, levels, static, False, True, npsi_neutron, npsi_proton)
+
+
+    densities = add_density(densities, grids, levels)
+
+    meanfield, coulomb = skyrme(coulomb, densities, forces, grids, meanfield, params, static)
+
+    levels, static = grstep(forces, grids, levels, meanfield, params, static)
+
+    if forces.ipair != 0:
+        levels, pairs = pair(levels, meanfield, forces, params, grids, pairs)
+
+
+    energies, levels, static = diagstep(energies, forces, grids, levels, static, False, True,npsi_neutron, npsi_proton)
+
+
+    levels = sp_properties(forces, grids, levels, moment)
+
+    energies = integ_energy(coulomb, densities, energies, forces, grids, levels, params, pairs)
+    energies = sum_energy(energies, levels, meanfield, pairs)
+
+    if output_writer is not None:  # Pass this as parameter
+        energies, observables = complete_sinfo_with_fortran_output(
+            coulomb, densities, energies, forces, grids, levels, 
+            meanfield, moment, params, static, pairs, output_writer
+        )
+
+    # Calculate and print information
+    if output_writer is not None:
+        energies, observables = complete_sinfo_with_fortran_output(
+            coulomb, densities, energies, forces, grids, levels, 
+            meanfield, moment, params, static, pairs, output_writer
+        )
+    else:
+        if i % output_interval == 0:
+            energies = sinfo(coulomb, densities, energies, forces, grids, levels, meanfield, moment, params, static, pairs)
+    #write_convergence_log(log_file_path, params.iteration, energies, static, levels, densities, meanfield, grids, forces, pairs)
+    
+    # Set x0dmp to 3* its value to get faster convergence
+    if static.tvaryx_0:
+        static.x0dmp = static.x0dmp * 3.0
+
+    # Save old pairing strengths for "annealing"
+    v0protsav = forces.v0prot
+    v0neutsav = forces.v0neut
+
+    tbcssav = forces.tbcs
+
+    iteration_times = []
+
+
+    for i in range(firstiter, static.maxiter + 1):
+        print(i)
+
+        if i % benchmark_frequency == 0 or energies.efluct1[0] < static.serr * 10:
+            print_iteration_benchmark(i, densities, meanfield, levels, energies, static)
+            print_wavefunction_benchmark(levels,grids, i)
+            print_algorithm_benchmark(levels, static, i)
+            
+            if i > 0:  # Skip matrix benchmark at iteration 0
+                for iq in range(2):
+                    print_matrix_benchmark(static, levels, iq, i)
+
+        start_time = time.perf_counter()
+
+        params.i = i
+
+        # Control pairing during iterations
+        if i <= static.inibcs:
+            forces.tbcs = True
+        else:
+            forces.tbcs = tbcssav
+
+        if i > static.inidiag:
+            static.tdiag = False
+        else:
+            static.tdiag = True
+
+        # Annealing: enhance pairing strengths in first iteranneal iterations
+        if static.iteranneal > 0:
+            if i < static.iteranneal:
+                forces.v0prot = v0protsav + v0protsav * static.pairenhance * (static.iteranneal - i) / (1.0 * static.iteranneal)
+                forces.v0neut = v0neutsav + v0neutsav * static.pairenhance * (static.iteranneal - i) / (1.0 * static.iteranneal)
+            else:
+                forces.v0prot = v0protsav
+                forces.v0neut = v0neutsav
+
+        levels, static = grstep(forces, grids, levels, meanfield, params, static)
+
+        if should_benchmark(i):
+            print_grstep_benchmark(levels, static, i, "POST_GRSTEP")
+
+
+        if forces.tbcs:
+            static.tdiag = True
+
+        energies, levels, static = diagstep(energies, forces, grids, levels, static, static.tdiag, True,npsi_neutron, npsi_proton)
+
+        if should_benchmark(i):
+            print_diagstep_benchmark(levels, static, energies, i, "POST_DIAGSTEP")
+
+
+
+        #do pairing
+        if forces.ipair != 0:
+            levels, pairs = pair(levels, meanfield, forces, params, grids, pairs)
+
+        # Sub-iterations in configuration space
+        if forces.ipair != 0 and static.iternat > 0 and i > static.iternat_start and not forces.tbcs:
+            for iq in range(2):
+                levels, static = hfb_natural(forces, grids, levels, meanfield, params, static, iq, static.iternat)
+
+        if taddnew:
+            meanfield.upot = meanfield.upot.at[...].set(densities.rho)
+            meanfield.bmass = meanfield.bmass.at[...].set(densities.tau)
+            meanfield.v_pair = meanfield.v_pair.at[...].set(densities.chi)
+
+        # Create temporary storage for old densities
+        old_rho = jnp.copy(densities.rho)
+        old_tau = jnp.copy(densities.tau)
+        old_chi = jnp.copy(densities.chi)
+
+        densities.rho = densities.rho.at[...].set(0.0)
+        densities.chi = densities.chi.at[...].set(0.0)
+        densities.tau = densities.tau.at[...].set(0.0)
+        densities.current = densities.current.at[...].set(0.0)
+        densities.sdens = densities.sdens.at[...].set(0.0)
+        densities.sodens = densities.sodens.at[...].set(0.0)
+
+        densities = add_density(densities, grids, levels)
+
+        if should_benchmark(i):
+            print_density_benchmark(densities, i, "POST_DENSITY")
+        
+        # Apply relaxation on densities
+        if taddnew:
+            densities.rho = densities.rho.at[...].set(addnew * densities.rho + addco * old_rho)
+            densities.tau = densities.tau.at[...].set(addnew * densities.tau + addco * old_tau)
+            densities.chi = densities.chi.at[...].set(addnew * densities.chi + addco * old_chi)
+
+        # Construct potentials
+        meanfield, coulomb = skyrme(coulomb, densities, forces, grids, meanfield, params, static)
+
+        if should_benchmark(i):
+            print_meanfield_benchmark(meanfield, densities, i, "POST_MEANFIELD")
+        
+
+        # Sort states if requested
+        if static.tsort:
+            for iq in range(2):
+                levels = sort_states(forces, grids, levels, iq)
+
+        levels = sp_properties(forces, grids, levels, moment)
+
+        energies = integ_energy(coulomb, densities, energies, forces, grids, levels, params, pairs)
+        energies = sum_energy(energies, levels, meanfield, pairs)
+
+        if output_writer is not None and i % output_interval ==0:  # Pass this as parameter
+            energies, observables = complete_sinfo_with_fortran_output(
+                coulomb, densities, energies, forces, grids, levels, 
+                meanfield, moment, params, static, pairs, output_writer
+            )
+        
+        # Calculate and print information
+        if i % output_interval == 0:
+            energies = sinfo(coulomb, densities, energies, forces, grids, levels, meanfield, moment, params, static, pairs)
+
+        #write_convergence_log(log_file_path, params.iteration, energies, static, levels, densities, meanfield, grids, forces, pairs)
+
+        # --- ADD THIS BLOCK ---
+        end_time = time.perf_counter()
+        iteration_duration = end_time - start_time
+        iteration_times.append(iteration_duration)
+        
+        with open(benchmark_filename, 'a') as f:
+            f.write(f"{i:<12} {iteration_duration:<20.6f}\n")
+
+        # Check for convergence
+        if energies.efluct1[0] < static.serr and i > 1:
+            # Final .res output at convergence
+            if output_writer is not None:
+                energies, observables = complete_sinfo_with_fortran_output(
+                    coulomb, densities, energies, forces, grids, levels, 
+                    meanfield, moment, params, static, pairs, output_writer
+                )
+            print("Convergence achieved!")
+            break
+
+        # Adaptive step size if tvaryx_0 is true
+        if static.tvaryx_0:
+            if ((energies.ehf < energies.ehfprev and 
+                 energies.efluct1[0] < (energies.efluct1prev * (1.0 - 1.0e-5))) or 
+                (energies.efluct2[0] < (energies.efluct2prev * (1.0 - 1.0e-5)))):
+                static.x0dmp = static.x0dmp * 1.005
+            else:
+                static.x0dmp = static.x0dmp * 0.8
+
+            static.x0dmp = jnp.clip(static.x0dmp, static.x0dmpmin, static.x0dmpmin * 5.0)
+            
+            energies.efluct1prev = energies.efluct1[0]
+            energies.efluct2prev = energies.efluct2[0]
+            energies.ehfprev = energies.ehf
+
+    # --- ADD THIS ENTIRE BLOCK AFTER THE LOOP ---
+    if iteration_times:
+        total_time = sum(iteration_times)
+        num_iterations = len(iteration_times)
+        average_time = total_time / num_iterations
+        min_time = min(iteration_times)
+        max_time = max(iteration_times)
+
+        summary_string = (
+            f"\n\n" + "="*50 + "\n" +
+            f"           BENCHMARK TIMING SUMMARY\n" +
+            "="*50 + "\n" +
+            f"Total iterations run: {num_iterations}\n" +
+            f"Total computation time: {total_time:.4f} seconds\n" +
+            "-" * 50 + "\n" +
+            f"Average time per iteration: {average_time:.4f} seconds\n" +
+            f"Fastest iteration:          {min_time:.4f} seconds\n" +
+            f"Slowest iteration:          {max_time:.4f} seconds\n" +
+            "="*50 + "\n"
+        )
+        
+        # Print to console
+        print(summary_string)
+
+        # Append summary to the benchmark file
+        with open(benchmark_filename, 'a') as f:
+            f.write(summary_string)
+    # --- END MODIFIED ---
+    
+    # Final diagonalization to get quasiparticle states
+    for iq in range(2):
+        qp_energies, qp_norms = lastdiag(forces, grids, levels, params, static, pairs,iq)
+        
+        # Print quasiparticle energies
+        if iq == 0:
+            print("Neutron quasi-particle states (from low to high):")
+        else:
+            print("Proton quasi-particle states (from low to high):")
+            
+        print("#    qp energies   lower norm")
+        for j in range(qp_energies.shape[0]):
+            print(f"{j:3d}    {qp_energies[j]:9.5f}    {qp_norms[j]:9.5f}")
+
+    return coulomb, densities, energies, forces, grids, levels, meanfield, moment, params, static
+
+def should_benchmark(iteration, frequency=5):
+    """Determine if we should benchmark at this iteration"""
+    # Always benchmark first few iterations
+    if iteration < 10:
+        return True
+    # Then benchmark at specified frequency
+    elif iteration % frequency == 0:
+        return True
+    # Always benchmark when approaching convergence
+    elif iteration > 100 and iteration % 2 == 0:
+        return True
+    return False
+
+def print_density_benchmark(densities, iteration, phase):
+    """Benchmark after density calculation - before mean field"""
+    print(f"\n=== {phase} ITER {iteration} ===")
+    
+    # Total density
+    rho_total = jnp.sum(densities.rho[0] + densities.rho[1])
+    print(f"Total density: {rho_total:.12e}")
+    
+    # Central densities
+    center = tuple(s//2 for s in densities.rho.shape[1:])
+    rho_n_center = densities.rho[0][center]
+    rho_p_center = densities.rho[1][center]
+    print(f"Central rho_n: {rho_n_center:.12e}")
+    print(f"Central rho_p: {rho_p_center:.12e}")
+    
+    # Kinetic density
+    tau_total = jnp.sum(densities.tau[0] + densities.tau[1])
+    print(f"Total kinetic density: {tau_total:.12e}")
+
+def print_meanfield_benchmark(meanfield, densities, iteration, phase):
+    """Benchmark after mean field calculation - before diagstep"""
+    print(f"\n=== {phase} ITER {iteration} ===")
+    
+    # Potential values
+    center = tuple(s//2 for s in meanfield.upot.shape[1:])
+    upot_n_center = meanfield.upot[0][center]
+    upot_p_center = meanfield.upot[1][center]
+    print(f"Central U_n: {upot_n_center:.12e}")
+    print(f"Central U_p: {upot_p_center:.12e}")
+    
+    # Effective masses
+    if hasattr(meanfield, 'bmass'):
+        bmass_center = meanfield.bmass[0][center]
+        print(f"Central eff_mass: {bmass_center:.12e}")
+
+def print_diagstep_benchmark(levels, static, energies, iteration, phase):
+    """Benchmark after diagstep - critical for matrix operations"""
+    print(f"\n=== {phase} ITER {iteration} ===")
+    
+    # Single-particle energies (most important!)
+    print(f"SP energies [0:5]: {levels.sp_energy[:5]}")
+    print(f"SP energies [10:15]: {levels.sp_energy[10:15]}")
+    
+    # Matrix elements (if available)
+    for iq in range(2):
+        if static.hmatrix is not None:
+            h_diag = jnp.diag(static.hmatrix[iq])[:5]
+            print(f"H-matrix diag iq={iq}: {h_diag}")
+        
+        if static.gapmatrix is not None:
+            gap_diag = jnp.diag(static.gapmatrix[iq])[:5]
+            print(f"Gap-matrix diag iq={iq}: {gap_diag}")
+    
+    # Orthogonality check (critical!)
+    psi_flat = levels.psi.reshape(levels.nstmax, -1)
+    overlap_matrix = jnp.dot(jnp.conjugate(psi_flat), psi_flat.T)
+    off_diag_max = jnp.max(jnp.abs(overlap_matrix - jnp.diag(jnp.diag(overlap_matrix))))
+    print(f"Max off-diagonal overlap: {off_diag_max:.12e}")
+
+def print_grstep_benchmark(levels, static, iteration, phase):
+    """Benchmark after grstep - critical for wavefunction evolution"""
+    print(f"\n=== {phase} ITER {iteration} ===")
+    
+    # Wavefunction norms (should be 1.0)
+    for i in range(min(5, levels.nstmax)):
+        norm = jnp.sum(jnp.abs(levels.psi[i])**2)
+        print(f"Norm psi[{i}]: {norm:.12e} (dev: {abs(norm-1.0):.12e})")
+    
+    # Center values of key states
+    center = tuple(s//2 for s in levels.psi.shape[1:4])
+    for i in range(min(3, levels.nstmax)):
+        center_val = levels.psi[i][center + (0,)]
+        print(f"Psi[{i}] center: {center_val:.12e}")
+    
+    # Damping parameter
+    print(f"x0dmp: {static.x0dmp:.12e}")
+
+def print_convergence_benchmark(energies, levels, iteration, phase):
+    """Benchmark convergence metrics - called every iteration"""
+    print(f"{phase} ITER {iteration:4d}: efluct1={energies.efluct1[0]:.6e}, efluct2={energies.efluct2[0]:.6e}")
+    
+    # Print energy if available
+    if hasattr(energies, 'etot') and energies.etot is not None:
+        print(f"                    E_tot={energies.etot[0]:.12f}")

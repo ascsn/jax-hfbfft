@@ -12,7 +12,7 @@ from grids import init_grids
 from densities import init_densities
 from meanfield import init_meanfield
 from levels import init_levels
-from static import init_static, statichf, harmosc, statichf_with_benchmark, statichf_with_detailed_benchmark
+from static import init_static, statichf, harmosc, statichf_with_benchmark, statichf_with_detailed_benchmark, statichf_with_testy_benchmark
 from coulomb import init_coulomb
 from moment import init_moment
 from energies import init_energies
@@ -172,7 +172,7 @@ def run_hfb(config_file='_config.yml', force_name='SLy4', enable_pairing=True, s
         output_writer = FortranOutputWriter(output_dir)
 
         try:
-            coulomb, densities, energies, forces, grids, levels, meanfield, moment, params, static = statichf_with_benchmark(coulomb,densities,energies,forces,grids,levels,meanfield,moment,params,static,pairs,output_writer)
+            coulomb, densities, energies, forces, grids, levels, meanfield, moment, params, static = statichf_with_testy_benchmark(coulomb,densities,energies,forces,grids,levels,meanfield,moment,params,static,pairs,output_writer, 50)
 
             # Ensure all JAX arrays are fully computed
             jax.block_until_ready(coulomb)
@@ -226,11 +226,11 @@ def run_hfb(config_file='_config.yml', force_name='SLy4', enable_pairing=True, s
 if __name__ == "__main__":
     # Set JAX to use 64-bit precision
     jax.config.update('jax_enable_x64', True)
-    jax.profiler.start_trace("logs")
+    #jax.profiler.start_trace("logs")
     try:
         # Run a calculation for Sn-132 with SLy4 force
         run_hfb(force_name='SLy4', enable_pairing=True)
     finally:
-        jax.profiler.stop_trace()
-        #print(f"Error in main execution: {str(e)}")
+        #jax.profiler.stop_trace()
+        print(f"Error in main execution: {str(e)}")
         #traceback.print_exc()

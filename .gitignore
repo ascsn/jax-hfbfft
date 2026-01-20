@@ -5,7 +5,6 @@
 *.log
 *log.txt
 *before.txt
-*/
 staticbackup.py
 test_res_output.py
 timer.py

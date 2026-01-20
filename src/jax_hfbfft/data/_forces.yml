@@ -1,0 +1,171 @@
+# Skyrme Force Parameterizations for JAX-HFBFFT
+# 
+# This file contains the standard Skyrme parameters for various forces.
+# Parameters are in standard nuclear physics units:
+#   - t0, t1, t2, t3 in MeV·fm^3, MeV·fm^5, MeV·fm^5, MeV·fm^(3+3α)
+#   - x0, x1, x2, x3 are dimensionless
+#   - b4p (spin-orbit) in MeV·fm^5
+#   - power (α) is dimensionless
+#   - h2m is ℏ²/2m in MeV·fm²
+
+SLy4:
+  description: "Standard Lyon Skyrme parameterization"
+  reference: "Chabanat et al., Nucl. Phys. A 635 (1998) 231"
+  ex: 1
+  zpe: 0
+  h2m: [20.73553, 20.73553]
+  t0: -2488.91
+  t1: 486.82
+  t2: -546.39
+  t3: 13777.0
+  t4: 0.0
+  x0: 0.834
+  x1: -0.344
+  x2: -1.0
+  x3: 1.354
+  b4p: 123.0
+  power: 0.16666666666666666  # 1/6
+
+SLy5:
+  description: "Lyon Skyrme parameterization with different spin-orbit"
+  reference: "Chabanat et al., Nucl. Phys. A 635 (1998) 231"
+  ex: 1
+  zpe: 0
+  h2m: [20.73553, 20.73553]
+  t0: -2484.88
+  t1: 483.13
+  t2: -549.40
+  t3: 13763.0
+  t4: 0.0
+  x0: 0.778
+  x1: -0.328
+  x2: -1.0
+  x3: 1.267
+  b4p: 126.0
+  power: 0.16666666666666666
+
+SLy6:
+  description: "Lyon Skyrme parameterization"
+  reference: "Chabanat et al., Nucl. Phys. A 635 (1998) 231"
+  ex: 1
+  zpe: 0
+  h2m: [20.73553, 20.73553]
+  t0: -2479.50
+  t1: 462.18
+  t2: -448.61
+  t3: 13673.0
+  t4: 0.0
+  x0: 0.825
+  x1: -0.465
+  x2: -1.0
+  x3: 1.355
+  b4p: 122.0
+  power: 0.16666666666666666
+
+SkM:
+  description: "Original SkM parameterization"
+  reference: "Krivine et al., Nucl. Phys. A 336 (1980) 155"
+  ex: 1
+  zpe: 0
+  h2m: [20.73553, 20.73553]
+  t0: -2645.0
+  t1: 385.0
+  t2: -120.0
+  t3: 15595.0
+  t4: 0.0
+  x0: 0.09
+  x1: 0.0
+  x2: 0.0
+  x3: 0.0
+  b4p: 130.0
+  power: 0.16666666666666666
+
+SkM*:
+  description: "Modified SkM with improved fission barriers"
+  reference: "Bartel et al., Nucl. Phys. A 386 (1982) 79"
+  ex: 1
+  zpe: 0
+  h2m: [20.73553, 20.73553]
+  t0: -2645.0
+  t1: 410.0
+  t2: -135.0
+  t3: 15595.0
+  t4: 0.0
+  x0: 0.09
+  x1: 0.0
+  x2: 0.0
+  x3: 0.0
+  b4p: 130.0
+  power: 0.16666666666666666
+
+SkP:
+  description: "Skyrme parameterization with pairing"
+  reference: "Dobaczewski et al., Nucl. Phys. A 422 (1984) 103"
+  ex: 1
+  zpe: 0
+  h2m: [20.73553, 20.73553]
+  t0: -2931.70
+  t1: 320.62
+  t2: -337.41
+  t3: 18708.97
+  t4: 0.0
+  x0: 0.292
+  x1: 0.653
+  x2: -0.537
+  x3: 0.181
+  b4p: 100.0
+  power: 0.16666666666666666
+
+SIII:
+  description: "Classic Skyrme III parameterization"
+  reference: "Beiner et al., Nucl. Phys. A 238 (1975) 29"
+  ex: 1
+  zpe: 0
+  h2m: [20.73553, 20.73553]
+  t0: -1128.75
+  t1: 395.0
+  t2: -95.0
+  t3: 14000.0
+  t4: 0.0
+  x0: 0.45
+  x1: 0.0
+  x2: 0.0
+  x3: 1.0
+  b4p: 120.0
+  power: 1.0
+
+UNEDF0:
+  description: "UNEDF universal functional"
+  reference: "Kortelainen et al., Phys. Rev. C 82 (2010) 024313"
+  ex: 1
+  zpe: 0
+  h2m: [20.73553, 20.73553]
+  t0: -1883.68781034
+  t1: 277.50021224
+  t2: 417.64326644
+  t3: 13901.94834463
+  t4: 0.0
+  x0: 0.00974375
+  x1: -1.77784395
+  x2: -1.67699035
+  x3: -0.38079041
+  b4p: 74.02664064
+  power: 0.32124845
+
+UNEDF1:
+  description: "UNEDF1 universal functional"
+  reference: "Kortelainen et al., Phys. Rev. C 85 (2012) 024304"
+  ex: 1
+  zpe: 0
+  h2m: [20.73553, 20.73553]
+  t0: -2078.32802326
+  t1: 239.40081204
+  t2: 1575.11954190
+  t3: 14263.64624708
+  t4: 0.0
+  x0: 0.05375692
+  x1: -5.07723238
+  x2: -1.36650561
+  x3: -0.16249117
+  b4p: 38.36808808
+  power: 0.27167199

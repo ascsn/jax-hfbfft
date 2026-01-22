@@ -2,7 +2,7 @@
 Example: Basic HFB calculation for a single nucleus.
 
 This example demonstrates how to perform a basic HFB calculation
-for Sn-132 using the SLy4 Skyrme force.
+for Ca-48 using the SLy4 Skyrme force.
 """
 
 from jax_hfbfft import HFBFFT, Nucleus, Force
@@ -10,8 +10,8 @@ from jax_hfbfft import HFBFFT, Nucleus, Force
 
 def main():
     # Define the nucleus
-    print("Setting up calculation for Sn-132...")
-    nucleus = Nucleus(protons=50, neutrons=82, name="Sn-132")
+    print("Setting up calculation for Ca-48...")
+    nucleus = Nucleus(protons=20, neutrons=28, name="Ca-48")
     
     # Alternative: use element symbol
     # nucleus = Nucleus.from_symbol("Sn", 132)
@@ -29,7 +29,7 @@ def main():
     calc = HFBFFT(
         nucleus=nucleus,
         force=force,
-        nx=32, ny=32, nz=32,  # Grid dimensions
+        nx=30, ny=30, nz=30,  # Grid dimensions
         dx=0.8, dy=0.8, dz=0.8,  # Grid spacing in fm
     )
     
@@ -47,9 +47,9 @@ def main():
     # Run the calculation
     print("\nStarting HFB iteration...")
     results = calc.run(
-        max_iterations=1000,
+        max_iterations=200,
         convergence_threshold=1e-6,
-        print_interval=50,
+        print_interval=20,
     )
     
     # Print results

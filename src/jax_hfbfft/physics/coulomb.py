@@ -146,29 +146,44 @@ def solve_poisson(
     Returns:
         Coulomb potential (nx, ny, nz)
     """
+    # Call the JIT-compiled version with explicit dimensions
+    return _solve_poisson_jit(
+        rho_proton, solver.q, solver.periodic,
+        solver.nx2, solver.ny2, solver.nz2,
+        grid.nx, grid.ny, grid.nz, grid.wxyz, e2
+    )
+
+
+@jax.jit(static_argnums=(2, 3, 4, 5, 6, 7, 8))
+def _solve_poisson_jit(
+    rho_proton: jax.Array,
+    q: jax.Array,
+    periodic: bool,
+    nx2: int, ny2: int, nz2: int,
+    nx: int, ny: int, nz: int,
+    wxyz: float,
+    e2: float,
+) -> jax.Array:
+    """JIT-compiled Poisson solver core."""
     dtypes = get_dtypes()
     
     # Zero-pad for open BCs
-    rho2 = jnp.zeros(
-        (solver.nx2, solver.ny2, solver.nz2),
-        dtype=dtypes.complex
-    )
-    rho2 = rho2.at[:grid.nx, :grid.ny, :grid.nz].set(rho_proton)
+    rho2 = jnp.zeros((nx2, ny2, nz2), dtype=dtypes.complex)
+    rho2 = rho2.at[:nx, :ny, :nz].set(rho_proton)
     
     # FFT
     rho2 = jnp.fft.fftn(rho2)
     
-    # Multiply by kernel
-    if solver.periodic:
-        rho2 = rho2 * (4.0 * jnp.pi * e2 * jnp.real(solver.q))
-    else:
-        rho2 = rho2 * (e2 * grid.wxyz * solver.q)
+    # Multiply by kernel - use where for JIT compatibility
+    kernel_periodic = 4.0 * jnp.pi * e2 * jnp.real(q)
+    kernel_open = e2 * wxyz * q
+    rho2 = jnp.where(periodic, rho2 * kernel_periodic, rho2 * kernel_open)
     
     # Inverse FFT
     wcoul = jnp.fft.ifftn(rho2)
     
     # Extract result
-    return jnp.real(wcoul[:grid.nx, :grid.ny, :grid.nz])
+    return jnp.real(wcoul[:nx, :ny, :nz])
 
 
 def compute_coulomb_energy(

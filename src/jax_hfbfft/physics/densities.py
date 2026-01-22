@@ -195,6 +195,8 @@ def compute_densities(
     """
     Compute all nuclear densities from wavefunctions.
     
+    Uses fully vectorized operations for GPU efficiency.
+    
     Args:
         psi: Wavefunctions array with shape (nstates, 2, nx, ny, nz)
         wocc: Occupation weights (BCS v^2) with shape (nstates,)
@@ -206,39 +208,137 @@ def compute_densities(
     Returns:
         Densities object containing all computed densities
     """
-    nx, ny, nz = grid.nx, grid.ny, grid.nz
+    return _compute_densities_vectorized(
+        psi, wocc, wguv, pairwg, isospin,
+        grid.dx, grid.dy, grid.dz, grid.nx, grid.ny, grid.nz
+    )
+
+
+@jax.jit
+def _compute_densities_vectorized(
+    psi: jax.Array,
+    wocc: jax.Array,
+    wguv: jax.Array, 
+    pairwg: jax.Array,
+    isospin: jax.Array,
+    dx: float,
+    dy: float,
+    dz: float,
+    nx: int,
+    ny: int,
+    nz: int,
+) -> Densities:
+    """
+    Vectorized density computation using vmap and segment reduction.
+    """
+    dtypes = get_dtypes()
     nstates = psi.shape[0]
-    
-    # Initialize densities
-    densities = Densities.zeros(nx, ny, nz)
     
     # Compute weights
     weights = wocc
     weightsuv = wguv * pairwg
     
-    # Use a simple loop for now (can be optimized with vmap/scan later)
-    rho = densities.rho
-    tau = densities.tau
-    chi = densities.chi
-    current = densities.current
-    sdens = densities.sdens
-    sodens = densities.sodens
-    
-    # Process each state
-    carry = (rho, tau, chi, current, sdens, sodens, grid.dx, grid.dy, grid.dz)
-    
-    for nst in range(nstates):
-        psi_n = psi[nst]
-        weight = weights[nst]
-        weightuv = weightsuv[nst]
-        iq = int(isospin[nst])
+    # Compute per-state contributions using vmap
+    def single_state_densities(psi_n, weight, weightuv):
+        """Compute density contributions from a single state (not accumulated yet)."""
+        psi0 = psi_n[0]  # Spin-up
+        psi1 = psi_n[1]  # Spin-down
+        psi0_conj = jnp.conjugate(psi0)
+        psi1_conj = jnp.conjugate(psi1)
         
-        carry, _ = _add_single_state_density(
-            carry, 
-            (psi_n, weight, weightuv, iq)
+        # Particle density contribution
+        rho_contrib = weight * jnp.real(psi0_conj * psi0 + psi1_conj * psi1)
+        
+        # Pairing density contribution
+        chi_contrib = 0.5 * weightuv * jnp.real(psi0_conj * psi0 + psi1_conj * psi1)
+        
+        # Spin density contributions
+        sdens_x = 2.0 * weight * jnp.real(psi0_conj * psi1)
+        sdens_y = 2.0 * weight * jnp.imag(psi0_conj * psi1)
+        sdens_z = weight * jnp.real(psi0_conj * psi0 - psi1_conj * psi1)
+        sdens_contrib = jnp.stack([sdens_x, sdens_y, sdens_z], axis=0)
+        
+        # Derivatives
+        dpsi_dx = deriv_x(psi_n, dx)
+        dpsi_dy = deriv_y(psi_n, dy)
+        dpsi_dz = deriv_z(psi_n, dz)
+        
+        dpsi0_dx, dpsi1_dx = dpsi_dx[0], dpsi_dx[1]
+        dpsi0_dy, dpsi1_dy = dpsi_dy[0], dpsi_dy[1]
+        dpsi0_dz, dpsi1_dz = dpsi_dz[0], dpsi_dz[1]
+        
+        # Kinetic density
+        tau_contrib = weight * jnp.real(
+            jnp.conjugate(dpsi0_dx) * dpsi0_dx + jnp.conjugate(dpsi1_dx) * dpsi1_dx +
+            jnp.conjugate(dpsi0_dy) * dpsi0_dy + jnp.conjugate(dpsi1_dy) * dpsi1_dy +
+            jnp.conjugate(dpsi0_dz) * dpsi0_dz + jnp.conjugate(dpsi1_dz) * dpsi1_dz
         )
+        
+        # Current density
+        current_x = weight * jnp.imag(psi0_conj * dpsi0_dx + psi1_conj * dpsi1_dx)
+        current_y = weight * jnp.imag(psi0_conj * dpsi0_dy + psi1_conj * dpsi1_dy)
+        current_z = weight * jnp.imag(psi0_conj * dpsi0_dz + psi1_conj * dpsi1_dz)
+        current_contrib = jnp.stack([current_x, current_y, current_z], axis=0)
+        
+        # Spin-orbit density (simplified)
+        sodens_x = (
+            weight * jnp.imag(psi0_conj * dpsi0_dy - psi1_conj * dpsi1_dy) -
+            weight * jnp.real(psi0 * jnp.conjugate(dpsi1_dz) + psi1 * jnp.conjugate(dpsi0_dz))
+        )
+        sodens_y = (
+            -weight * jnp.imag(psi0_conj * dpsi0_dx - psi1_conj * dpsi1_dx) +
+            weight * jnp.imag(psi0 * jnp.conjugate(dpsi1_dz) + psi1 * jnp.conjugate(dpsi0_dz))
+        )
+        sodens_z = (
+            -weight * jnp.real(psi0 * jnp.conjugate(dpsi1_dx) - psi1 * jnp.conjugate(dpsi0_dx)) -
+            weight * jnp.imag(psi1_conj * dpsi0_dy + psi0_conj * dpsi1_dy)
+        )
+        sodens_contrib = jnp.stack([sodens_x, sodens_y, sodens_z], axis=0)
+        
+        return rho_contrib, tau_contrib, chi_contrib, current_contrib, sdens_contrib, sodens_contrib
     
-    rho, tau, chi, current, sdens, sodens, _, _, _ = carry
+    # Vectorize over states
+    all_rho, all_tau, all_chi, all_current, all_sdens, all_sodens = jax.vmap(
+        single_state_densities
+    )(psi, weights, weightsuv)
+    # Shapes: all_rho is (nstates, nx, ny, nz), all_current is (nstates, 3, nx, ny, nz)
+    
+    # Reduce by isospin using segment_sum
+    # isospin is (nstates,) with values 0 or 1
+    # We need to sum contributions for each isospin separately
+    
+    # Create masks for each isospin
+    neut_mask = (isospin == 0)[:, None, None, None]  # (nstates, 1, 1, 1)
+    prot_mask = (isospin == 1)[:, None, None, None]
+    
+    # Sum for each isospin
+    rho_n = jnp.sum(all_rho * neut_mask, axis=0)
+    rho_p = jnp.sum(all_rho * prot_mask, axis=0)
+    rho = jnp.stack([rho_n, rho_p], axis=0)
+    
+    tau_n = jnp.sum(all_tau * neut_mask, axis=0)
+    tau_p = jnp.sum(all_tau * prot_mask, axis=0)
+    tau = jnp.stack([tau_n, tau_p], axis=0)
+    
+    chi_n = jnp.sum(all_chi * neut_mask, axis=0)
+    chi_p = jnp.sum(all_chi * prot_mask, axis=0)
+    chi = jnp.stack([chi_n, chi_p], axis=0)
+    
+    # For vector quantities, expand mask appropriately
+    neut_mask_vec = (isospin == 0)[:, None, None, None, None]  # (nstates, 1, 1, 1, 1)
+    prot_mask_vec = (isospin == 1)[:, None, None, None, None]
+    
+    current_n = jnp.sum(all_current * neut_mask_vec, axis=0)
+    current_p = jnp.sum(all_current * prot_mask_vec, axis=0)
+    current = jnp.stack([current_n, current_p], axis=0)
+    
+    sdens_n = jnp.sum(all_sdens * neut_mask_vec, axis=0)
+    sdens_p = jnp.sum(all_sdens * prot_mask_vec, axis=0)
+    sdens = jnp.stack([sdens_n, sdens_p], axis=0)
+    
+    sodens_n = jnp.sum(all_sodens * neut_mask_vec, axis=0)
+    sodens_p = jnp.sum(all_sodens * prot_mask_vec, axis=0)
+    sodens = jnp.stack([sodens_n, sodens_p], axis=0)
     
     return Densities(
         rho=rho,

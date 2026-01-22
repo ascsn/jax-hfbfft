@@ -267,9 +267,13 @@ class HFBFFT:
         
         # Calculate basis size
         if npsi is None:
-            # Use formula from original code
-            n_basis = max(126, nucleus.neutrons + int(1.65 * (nucleus.neutrons ** 0.666667)))
-            p_basis = max(82, nucleus.protons + int(1.65 * (nucleus.protons ** 0.666667)))
+            # Use formula from original code, round to nearest even integer
+            def round_even(x):
+                return int(2 * round(x / 2))
+            # n_basis = max(126, nucleus.neutrons + int(1.65 * (nucleus.neutrons ** 0.666667)))
+            # p_basis = max(82, nucleus.protons + int(1.65 * (nucleus.protons ** 0.666667)))
+            n_basis = round_even(nucleus.neutrons + int(1.65 * (nucleus.neutrons ** 0.666667)))
+            p_basis = round_even(nucleus.protons + int(1.65 * (nucleus.protons ** 0.666667)))
             self._npsi = (n_basis, p_basis)
         else:
             self._npsi = npsi
@@ -381,41 +385,51 @@ class HFBFFT:
             self._load_from_file(**kwargs)
         else:
             raise ValueError(f"Unknown initialization method: {method}")
+            
+        # Orthonormalize the initial wavefunctions
+        from jax_hfbfft.physics.solver import orthonormalize_states
+        self.state.psi = orthonormalize_states(
+            self.state.psi, 
+            self._npsi[0], 
+            self.grid.wxyz
+        )
     
     def _init_harmonic_oscillator(
         self,
         radinx: float = 3.0,
         radiny: float = 3.0,
         radinz: float = 3.0,
+        seed: int = 42,
     ):
         """Initialize wavefunctions using harmonic oscillator basis."""
-        # Implementation would use the harmosc function from the original code
-        # For now, we'll use a placeholder that creates Gaussian wavefunctions
+        key = jax.random.PRNGKey(seed)
         
         nx, ny, nz = self.grid.shape
         xx, yy, zz = self.grid.get_meshgrid()
         
-        # Oscillator length parameters
-        oscl_x = radinx
-        oscl_y = radiny
-        oscl_z = radinz
-        
         # Create harmonic oscillator ground state for each particle
+        # with small random perturbations to allow orthonormalization
         for nst in range(self._nstmax):
-            # Simple Gaussian for now
+            key, subkey = jax.random.split(key)
+            
+            # Base Gaussian
             psi_real = jnp.exp(
-                -(xx**2 / (2 * oscl_x**2) + 
-                  yy**2 / (2 * oscl_y**2) + 
-                  zz**2 / (2 * oscl_z**2))
+                -(xx**2 / (2 * radinx**2) + 
+                  yy**2 / (2 * radiny**2) + 
+                  zz**2 / (2 * radinz**2))
             )
             
-            # Add some quantum number structure (placeholder)
-            # In real implementation, would use proper HO wavefunctions
+            # Add random perturbation
+            noise = jax.random.normal(subkey, (nx, ny, nz)) * 0.1
+            psi_real = psi_real + noise
+            
             norm = jnp.sqrt(jnp.sum(psi_real**2) * self.grid.wxyz)
             psi_real = psi_real / norm
             
-            # Set spin-up component
-            self.state.psi = self.state.psi.at[nst, 0, :, :, :].set(
+            # Set spin-up or spin-down components
+            # Alternate spin components for different states
+            spin = nst % 2
+            self.state.psi = self.state.psi.at[nst, spin, :, :, :].set(
                 psi_real.astype(jnp.complex128)
             )
     
@@ -514,19 +528,62 @@ class HFBFFT:
             verbose=True,
         )
         
+        # Prepare initial state if wavefunctions exist
+        initial_state = None
+        if self.state.psi is not None:
+             # We need to wrap the current values in a SolverState
+             # HFBFFTState and SolverState are slightly different but share core fields
+             from jax_hfbfft.physics.solver import SolverState
+             from jax_hfbfft.physics.densities import Densities
+             from jax_hfbfft.physics.meanfield import Meanfield
+             from jax_hfbfft.physics.pairing import Pairing
+             from jax_hfbfft.physics.coulomb import CoulombSolver
+             from jax_hfbfft.physics.energies import Energies
+             
+             # Map occupations to SolverState
+             # In initialization, method="harmonic_oscillator" sets wocc correctly
+             
+             initial_state = SolverState(
+                 psi=self.state.psi,
+                 sp_energy=jnp.zeros(len(self.state.isospin)),
+                 sp_kinetic=jnp.zeros(len(self.state.isospin)),
+                 deltaf=jnp.zeros(len(self.state.isospin)),
+                 wocc=self.state.wocc,
+                 wguv=self.state.wguv,
+                 wstates=self.state.wstates,
+                 pairwg=self.state.pairwg,
+                 isospin=self.state.isospin,
+                 densities=Densities.zeros(self.grid.nx, self.grid.ny, self.grid.nz),
+                 meanfield=Meanfield.zeros(self.grid.nx, self.grid.ny, self.grid.nz),
+                 coulomb_solver=CoulombSolver.create(self.grid),
+                 wcoul=jnp.zeros((self.grid.nx, self.grid.ny, self.grid.nz)),
+                 energies=Energies.zeros(),
+                 pairing=Pairing.zeros(),
+                 iteration=0,
+                 converged=False,
+                 efluct=1e10
+             )
+
         # Run the HFB solver
         final_state = run_hfb(
             grid=self.grid,
             force=self.force,
             nucleus_z=self.nucleus.protons,
             nucleus_n=self.nucleus.neutrons,
+            npsi_n=int(self._npsi[0]),
             config=config,
+            initial_state=initial_state,  # Added
+            use_coulomb=self.include_coulomb,
         )
         
         elapsed = time.time() - start_time
         
         # Store the solver state
         self._solver_state = final_state
+        
+        # Calculate radii and deformations
+        from jax_hfbfft.physics.energies import compute_radii
+        radii = compute_radii(final_state.densities, self.grid)
         
         # Convert to HFBFFTResults
         self.results = HFBFFTResults(
@@ -549,6 +606,15 @@ class HFBFFT:
             pairing_gap_p=float(final_state.pairing.avdelt[1]),
             fermi_energy_n=float(final_state.pairing.eferm[0]),
             fermi_energy_p=float(final_state.pairing.eferm[1]),
+            # Radii and deformation
+            rms_radius_n=radii.rms_n,
+            rms_radius_p=radii.rms_p,
+            rms_radius_total=radii.rms_tot,
+            charge_radius=radii.charge,
+            beta2=radii.beta2,
+            gamma=radii.gamma,
+            q20=radii.q20,
+            q22=radii.q22,
         )
         
         self._iteration = final_state.iteration

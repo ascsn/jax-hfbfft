@@ -270,7 +270,7 @@ def deriv_x(psi: jax.Array, dx: float) -> jax.Array:
     psi_k = psi_k * (1j * k * kfac)
     psi_k = psi_k.at[..., half_n, :, :].set(0.0)  # Zero Nyquist frequency
     
-    return jnp.fft.ifft(psi_k, axis=axis, norm="forward")
+    return jnp.fft.ifft(psi_k, axis=axis)
 
 
 @jax.jit
@@ -294,7 +294,7 @@ def deriv_y(psi: jax.Array, dy: float) -> jax.Array:
     psi_k = psi_k * (1j * k * kfac)
     psi_k = psi_k.at[..., :, half_n, :].set(0.0)
     
-    return jnp.fft.ifft(psi_k, axis=axis, norm="forward")
+    return jnp.fft.ifft(psi_k, axis=axis)
 
 
 @jax.jit  
@@ -318,7 +318,7 @@ def deriv_z(psi: jax.Array, dz: float) -> jax.Array:
     psi_k = psi_k * (1j * k * kfac)
     psi_k = psi_k.at[..., half_n].set(0.0)
     
-    return jnp.fft.ifft(psi_k, axis=axis, norm="forward")
+    return jnp.fft.ifft(psi_k, axis=axis)
 
 
 @jax.jit

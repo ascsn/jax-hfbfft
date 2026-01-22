@@ -119,6 +119,22 @@ class Energies:
         return self.ehfint
 
 
+@jax.tree_util.register_dataclass
+@dataclass
+class Radii:
+    """Container for nuclear radii and moments."""
+    rms_n: float
+    rms_p: float
+    rms_tot: float
+    charge: float
+    
+    # Quadrupole moments
+    q20: float
+    q22: float
+    beta2: float
+    gamma: float
+
+
 def compute_integrated_energy(
     densities: Densities,
     force,
@@ -411,3 +427,55 @@ def compute_angular_momentum(
     total = orbital + spin
     
     return orbital, spin, total
+
+
+def compute_radii(densities: Densities, grid: Grid) -> Radii:
+    """Compute nuclear radii and deformation parameters."""
+    wxyz = grid.wxyz
+    x, y, z = grid.x, grid.y, grid.z
+    nx, ny, nz = grid.nx, grid.ny, grid.nz
+    
+    # Create 3D grids for x, y, z
+    # Since grid.x/y/z are 1D, we use broadcasting
+    X = x[:, jnp.newaxis, jnp.newaxis]
+    Y = y[jnp.newaxis, :, jnp.newaxis]
+    Z = z[jnp.newaxis, jnp.newaxis, :]
+    
+    r2 = X**2 + Y**2 + Z**2
+    
+    rho_n = densities.rho[0]
+    rho_p = densities.rho[1]
+    
+    n_counts = jnp.sum(rho_n) * wxyz
+    p_counts = jnp.sum(rho_p) * wxyz
+    tot_counts = n_counts + p_counts
+    
+    rms_n = jnp.sqrt(jnp.sum(rho_n * r2) * wxyz / (n_counts + 1e-10))
+    rms_p = jnp.sqrt(jnp.sum(rho_p * r2) * wxyz / (p_counts + 1e-10))
+    rms_tot = jnp.sqrt(jnp.sum((rho_n + rho_p) * r2) * wxyz / (tot_counts + 1e-10))
+    
+    # Simple charge radius estimate (proton radius + nucleon size)
+    charge = jnp.sqrt(rms_p**2 + 0.64)  # 0.64 fm^2 is roughly <r^2>_proton
+    
+    # Quadrupole moments
+    q20 = jnp.sum((rho_n + rho_p) * (2*Z**2 - X**2 - Y**2)) * wxyz
+    q22 = jnp.sum((rho_n + rho_p) * (X**2 - Y**2)) * wxyz
+    
+    # Deformation parameters beta/gamma
+    # beta = sqrt(5/pi) * (4pi/3AR^2) * Q/2?
+    # Simplified version for now
+    r_mean_sq = rms_tot**2
+    q_all = jnp.sqrt(q20**2 + 3 * q22**2)
+    beta = (jnp.sqrt(5 * jnp.pi) / (3 * tot_counts * r_mean_sq + 1e-10)) * q_all
+    gamma = jnp.arctan2(jnp.sqrt(3.0) * q22, q20) * 180.0 / jnp.pi
+    
+    return Radii(
+        rms_n=float(rms_n),
+        rms_p=float(rms_p),
+        rms_tot=float(rms_tot),
+        charge=float(charge),
+        q20=float(q20),
+        q22=float(q22),
+        beta2=float(beta),
+        gamma=float(gamma)
+    )

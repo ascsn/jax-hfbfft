@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { useHistory, useForces, useDeleteFromHistory } from '@/hooks'
 import { Card, CardContent, Button, Input, Select } from '@/components/ui'
 import { Search, Eye, ChevronLeft, ChevronRight, Download, Trash2 } from 'lucide-react'
-import { formatNucleus, formatNumber, formatDate, getPhaseInfo, cn } from '@/lib/utils'
+import { formatNumber, formatDate, getPhaseInfo, cn } from '@/lib/utils'
 
 export function HistoryPage() {
   const [filters, setFilters] = useState({
@@ -138,11 +138,11 @@ export function HistoryPage() {
                 <tbody>
                   {history.calculations.map((calc) => {
                     const phaseInfo = getPhaseInfo(calc.phase)
-                    // Handle case where nucleus might be undefined (e.g., from malformed history data)
-                    const protons = calc.nucleus?.protons ?? 0
-                    const neutrons = calc.nucleus?.neutrons ?? 0
-                    const nucleusName = protons > 0 ? formatNucleus(protons, neutrons) : 'Unknown'
-                    const massNumber = protons + neutrons
+                    // Backend returns nucleus_symbol and nucleus_a from CalculationSummary
+                    const nucleusName = calc.nucleus_symbol && calc.nucleus_a > 0 
+                      ? `${calc.nucleus_symbol}-${calc.nucleus_a}`
+                      : 'Unknown'
+                    const massNumber = calc.nucleus_a ?? 0
                     
                     return (
                       <tr key={calc.id} className="border-b hover:bg-muted/30">
@@ -167,13 +167,14 @@ export function HistoryPage() {
                           </span>
                         </td>
                         <td className="p-4 font-mono">
-                          {calc.results?.energies?.total 
-                            ? formatNumber(calc.results.energies.total, 2)
+                          {calc.energy != null
+                            ? formatNumber(calc.energy, 2)
                             : '—'
                           }
                         </td>
                         <td className="p-4 font-mono text-sm">
-                          {calc.progress?.iteration ?? '—'} / {calc.progress?.max_iterations ?? '—'}
+                          {/* Summary doesn't have progress - just show status */}
+                          —
                         </td>
                         <td className="p-4 text-sm text-muted-foreground">
                           {calc.started_at ? formatDate(calc.started_at) : '—'}
@@ -185,7 +186,7 @@ export function HistoryPage() {
                                 <Eye className="w-4 h-4" />
                               </Button>
                             </Link>
-                            {calc.results && (
+                            {calc.phase === 'converged' && (
                               <Button variant="ghost" size="sm" title="Download results">
                                 <Download className="w-4 h-4" />
                               </Button>

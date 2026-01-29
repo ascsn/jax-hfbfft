@@ -215,7 +215,7 @@ export interface WarmupStatus {
 }
 
 export interface HistoryResponse {
-  calculations: CalculationStatus[]
+  calculations: CalculationSummary[]
   total: number
   page: number
   page_size: number

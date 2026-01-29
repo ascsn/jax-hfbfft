@@ -43,7 +43,7 @@ class Meanfield:
     spot: jax.Array      # Spin potential vector
     wlspot: jax.Array    # Spin-orbit potential vector
     dbmass: jax.Array    # Gradient of effective mass
-    ecorrp: float        # Pairing correlation energy correction
+    ecorrp: jax.Array    # Pairing correlation energy correction (scalar)
     
     @classmethod
     def zeros(cls, nx: int, ny: int, nz: int) -> "Meanfield":
@@ -61,7 +61,7 @@ class Meanfield:
             spot=jnp.zeros(shape5d, dtype=dtypes.float),
             wlspot=jnp.zeros(shape5d, dtype=dtypes.float),
             dbmass=jnp.zeros(shape5d, dtype=dtypes.float),
-            ecorrp=0.0,
+            ecorrp=jnp.array(0.0, dtype=dtypes.float),
         )
 
 
@@ -103,6 +103,229 @@ def compute_curl(vec: jax.Array, grid: Grid) -> jax.Array:
     return jnp.stack([curl_x, curl_y, curl_z], axis=0)
 
 
+# Vectorized versions of Laplacian, gradient, divergence, curl for both isospin channels
+@jax.jit
+def _compute_laplacian_both(rho: jax.Array, grid: Grid) -> jax.Array:
+    """Compute Laplacian for both isospin channels. rho: (2, nx, ny, nz)."""
+    # Vectorize over first axis (isospin)
+    return jax.vmap(lambda f: compute_laplacian(f, grid))(rho)
+
+
+@jax.jit
+def _compute_gradient_both(rho: jax.Array, grid: Grid) -> jax.Array:
+    """Compute gradient for both isospin channels. Returns (2, 3, nx, ny, nz)."""
+    def grad_single(f):
+        gx, gy, gz = compute_gradient(f, grid)
+        return jnp.stack([gx, gy, gz], axis=0)
+    return jax.vmap(grad_single)(rho)
+
+
+@jax.jit
+def _compute_divergence_both(vec: jax.Array, grid: Grid) -> jax.Array:
+    """Compute divergence for both isospin channels. vec: (2, 3, nx, ny, nz)."""
+    return jax.vmap(lambda v: compute_divergence(v, grid))(vec)
+
+
+@jax.jit
+def _compute_curl_both(vec: jax.Array, grid: Grid) -> jax.Array:
+    """Compute curl for both isospin channels. vec: (2, 3, nx, ny, nz)."""
+    return jax.vmap(lambda v: compute_curl(v, grid))(vec)
+
+
+@jax.jit
+def _compute_skyrme_meanfield_core(
+    rho: jax.Array,          # (2, nx, ny, nz)
+    tau: jax.Array,          # (2, nx, ny, nz)
+    chi: jax.Array,          # (2, nx, ny, nz)
+    current: jax.Array,      # (2, 3, nx, ny, nz)
+    sdens: jax.Array,        # (2, 3, nx, ny, nz)
+    sodens: jax.Array,       # (2, 3, nx, ny, nz)
+    coulomb_potential: jax.Array,  # (nx, ny, nz) or zeros
+    constraint_potential: jax.Array,  # (2, nx, ny, nz) or zeros
+    # Force parameters (flattened for JIT)
+    b0: float, b0p: float, b1: float, b1p: float, b2: float, b2p: float,
+    b3: float, b3p: float, b4: float, b4p: float,
+    h2m_n: float, h2m_p: float,
+    power: float, slate: float, ex: float,
+    v0neut: float, v0prot: float, rho0pr: float, ipair: int,
+    # Grid
+    grid: Grid,
+    # Flags
+    use_coulomb: bool,
+) -> Meanfield:
+    """
+    JIT-compiled core of compute_skyrme_meanfield.
+    
+    All loops over isospin are vectorized for GPU efficiency.
+    """
+    dtypes = get_dtypes()
+    epsilon = 1.0e-25
+    
+    h2m = jnp.array([h2m_n, h2m_p])
+    
+    # Total density
+    rho_tot = rho[0] + rho[1]
+    rho_tot_pow = rho_tot ** power
+    
+    # =========================================================================
+    # Step 1: Three-body density-dependent term (vectorized)
+    # =========================================================================
+    # For iq=0: ic=1, for iq=1: ic=0
+    rho_sum_sq = rho[0]**2 + rho[1]**2
+    
+    # Compute both isospin channels at once
+    coeff_same = b3 * (power + 2.0) / 3.0 - 2.0 * b3p / 3.0
+    coeff_other = b3 * (power + 2.0) / 3.0
+    coeff_rho = b3p * power / 3.0
+    
+    three_body_0 = (coeff_same * rho[0] + coeff_other * rho[1] - 
+                    coeff_rho * rho_sum_sq / (rho_tot + epsilon))
+    three_body_1 = (coeff_same * rho[1] + coeff_other * rho[0] - 
+                    coeff_rho * rho_sum_sq / (rho_tot + epsilon))
+    
+    upot = jnp.stack([rho_tot_pow * three_body_0, rho_tot_pow * three_body_1], axis=0)
+    
+    # =========================================================================
+    # Step 2: Divergence of spin-orbit current (vectorized)
+    # =========================================================================
+    div_sodens = _compute_divergence_both(sodens, grid)  # (2, nx, ny, nz)
+    
+    # upot[iq] += -(b4 + b4p) * div_sodens[iq] - b4 * div_sodens[ic]
+    upot = upot.at[0].add(-(b4 + b4p) * div_sodens[0] - b4 * div_sodens[1])
+    upot = upot.at[1].add(-(b4 + b4p) * div_sodens[1] - b4 * div_sodens[0])
+    
+    # =========================================================================
+    # Step 3: Coulomb potential (protons only)
+    # =========================================================================
+    # Use jnp.where for JIT compatibility instead of if statement
+    upot = upot.at[1].add(jnp.where(use_coulomb, coulomb_potential, 0.0))
+    
+    # Slater exchange - apply only if use_coulomb and ex != 0
+    slater = -slate * jnp.power(rho[1] + epsilon, 1.0/3.0)
+    upot = upot.at[1].add(jnp.where(use_coulomb & (ex != 0), slater, 0.0))
+    
+    # =========================================================================
+    # Step 4: Standard Skyrme terms (vectorized)
+    # =========================================================================
+    lap_rho = _compute_laplacian_both(rho, grid)  # (2, nx, ny, nz)
+    
+    # upot[iq] += (b0-b0p)*rho[iq] + b0*rho[ic] + (b1-b1p)*tau[iq] + b1*tau[ic] 
+    #             - (b2-b2p)*lap[iq] - b2*lap[ic]
+    upot = upot.at[0].add(
+        (b0 - b0p) * rho[0] + b0 * rho[1] +
+        (b1 - b1p) * tau[0] + b1 * tau[1] -
+        (b2 - b2p) * lap_rho[0] - b2 * lap_rho[1]
+    )
+    upot = upot.at[1].add(
+        (b0 - b0p) * rho[1] + b0 * rho[0] +
+        (b1 - b1p) * tau[1] + b1 * tau[0] -
+        (b2 - b2p) * lap_rho[1] - b2 * lap_rho[0]
+    )
+    
+    # Add constraint potential
+    upot = upot + constraint_potential
+    
+    # =========================================================================
+    # Step 5: Effective mass (vectorized)
+    # =========================================================================
+    # bmass[iq] = h2m[iq] + (b1-b1p)*rho[iq] + b1*rho[ic]
+    bmass = jnp.stack([
+        h2m[0] + (b1 - b1p) * rho[0] + b1 * rho[1],
+        h2m[1] + (b1 - b1p) * rho[1] + b1 * rho[0],
+    ], axis=0)
+    
+    # =========================================================================
+    # Step 6: Spin-orbit potential (vectorized)
+    # =========================================================================
+    grad_rho = _compute_gradient_both(rho, grid)  # (2, 3, nx, ny, nz)
+    
+    # wlspot[iq] = (b4+b4p) * grad_rho[iq] + b4 * grad_rho[ic]
+    wlspot = jnp.stack([
+        (b4 + b4p) * grad_rho[0] + b4 * grad_rho[1],
+        (b4 + b4p) * grad_rho[1] + b4 * grad_rho[0],
+    ], axis=0)
+    
+    # =========================================================================
+    # Step 7: Curl of spin density (vectorized)
+    # =========================================================================
+    curl_sdens = _compute_curl_both(sdens, grid)  # (2, 3, nx, ny, nz)
+    
+    # =========================================================================
+    # Step 8: Current coupling (vectorized)
+    # =========================================================================
+    # aq[iq] = -2*(b1-b1p)*current[iq] - 2*b1*current[ic] 
+    #          - (b4+b4p)*curl_sdens[iq] - b4*curl_sdens[ic]
+    aq = jnp.stack([
+        -2.0 * (b1 - b1p) * current[0] - 2.0 * b1 * current[1] -
+        (b4 + b4p) * curl_sdens[0] - b4 * curl_sdens[1],
+        -2.0 * (b1 - b1p) * current[1] - 2.0 * b1 * current[0] -
+        (b4 + b4p) * curl_sdens[1] - b4 * curl_sdens[0],
+    ], axis=0)
+    
+    # =========================================================================
+    # Step 9-10: Spin potential from curl of current (vectorized)
+    # =========================================================================
+    curl_current = _compute_curl_both(current, grid)  # (2, 3, nx, ny, nz)
+    
+    # spot[iq] = -(b4+b4p)*curl_current[iq] - b4*curl_current[ic]
+    spot = jnp.stack([
+        -(b4 + b4p) * curl_current[0] - b4 * curl_current[1],
+        -(b4 + b4p) * curl_current[1] - b4 * curl_current[0],
+    ], axis=0)
+    
+    # =========================================================================
+    # Step 11: Divergence of A vector (vectorized)
+    # =========================================================================
+    divaq = _compute_divergence_both(aq, grid)  # (2, nx, ny, nz)
+    
+    # =========================================================================
+    # Step 12: Gradient of effective mass (vectorized)
+    # =========================================================================
+    dbmass = _compute_gradient_both(bmass, grid)  # (2, 3, nx, ny, nz)
+    
+    # =========================================================================
+    # Step 13: Pairing potential (use where for JIT compatibility)
+    # =========================================================================
+    density_factor = 1.0 - rho_tot / rho0pr
+    
+    # VDI pairing (ipair == 5)
+    v_pair_vdi = jnp.stack([
+        v0neut * chi[0],
+        v0prot * chi[1],
+    ], axis=0)
+    
+    # DDDI pairing (ipair == 6)
+    v_pair_dddi = jnp.stack([
+        v0neut * chi[0] * density_factor,
+        v0prot * chi[1] * density_factor,
+    ], axis=0)
+    
+    # Rearrangement for DDDI
+    rearrange = (v0neut / rho0pr) * chi[0]**2 + (v0prot / rho0pr) * chi[1]**2
+    upot_dddi = upot + jnp.stack([rearrange, rearrange], axis=0)
+    ecorrp_dddi = -jnp.sum(rho_tot * rearrange) * grid.wxyz / 2.0
+    
+    # Select based on ipair using where
+    is_dddi = (ipair == 6)
+    is_vdi = (ipair == 5)
+    
+    v_pair = jnp.where(is_dddi, v_pair_dddi, jnp.where(is_vdi, v_pair_vdi, jnp.zeros_like(v_pair_vdi)))
+    upot = jnp.where(is_dddi, upot_dddi, upot)
+    ecorrp = jnp.where(is_dddi, ecorrp_dddi, 0.0)
+    
+    return Meanfield(
+        upot=upot,
+        bmass=bmass,
+        divaq=divaq,
+        v_pair=v_pair,
+        aq=aq,
+        spot=spot,
+        wlspot=wlspot,
+        dbmass=dbmass,
+        ecorrp=jnp.asarray(ecorrp),  # Keep as JAX scalar array
+    )
+
+
 def compute_skyrme_meanfield(
     densities: Densities,
     force,  # Force object
@@ -114,12 +337,7 @@ def compute_skyrme_meanfield(
     """
     Compute Skyrme mean-field potentials from densities.
     
-    This implements the full Skyrme energy density functional including:
-    - Central terms (t0, t1, t2, t3)
-    - Spin-orbit coupling (W0)
-    - Effective mass
-    - Current coupling (time-odd for dynamics)
-    - Pairing (VDI or DDDI)
+    This is a wrapper that calls the JIT-compiled core function.
     
     Args:
         densities: Nuclear densities
@@ -133,189 +351,31 @@ def compute_skyrme_meanfield(
         Meanfield object with all potentials
     """
     dtypes = get_dtypes()
-    nx, ny, nz = grid.nx, grid.ny, grid.nz
-    epsilon = 1.0e-25
     
-    # Initialize
-    upot = jnp.zeros((2, nx, ny, nz), dtype=dtypes.float)
-    workden = jnp.zeros((2, nx, ny, nz), dtype=dtypes.float)
-    workvec = jnp.zeros((2, 3, nx, ny, nz), dtype=dtypes.float)
+    # Handle optional arguments
+    if coulomb_potential is None:
+        coulomb_potential = jnp.zeros((grid.nx, grid.ny, grid.nz), dtype=dtypes.float)
     
-    # Total density
-    rho_tot = densities.rho[0] + densities.rho[1]
-    rho_tot_pow = rho_tot ** force.power
+    if constraint_potential is None:
+        constraint_potential = jnp.zeros((2, grid.nx, grid.ny, grid.nz), dtype=dtypes.float)
     
-    # =========================================================================
-    # Step 1: Three-body density-dependent term
-    # =========================================================================
-    for iq in range(2):
-        ic = 1 - iq
-        three_body = (
-            (force.b3 * (force.power + 2.0) / 3.0 - 2.0 * force.b3p / 3.0) * densities.rho[iq] +
-            force.b3 * (force.power + 2.0) / 3.0 * densities.rho[ic] -
-            (force.b3p * force.power / 3.0) * (densities.rho[0]**2 + densities.rho[1]**2) /
-            (rho_tot + epsilon)
-        )
-        upot = upot.at[iq].set(rho_tot_pow * three_body)
-    
-    # =========================================================================
-    # Step 2: Divergence of spin-orbit current contribution
-    # =========================================================================
-    for iq in range(2):
-        workden = workden.at[iq].set(compute_divergence(densities.sodens[iq], grid))
-    
-    for iq in range(2):
-        ic = 1 - iq
-        upot = upot.at[iq].add(
-            -(force.b4 + force.b4p) * workden[iq] - force.b4 * workden[ic]
-        )
-    
-    # =========================================================================
-    # Step 3: Coulomb potential (protons only)
-    # =========================================================================
-    if use_coulomb and coulomb_potential is not None:
-        upot = upot.at[1].add(coulomb_potential)
-        
-        # Slater exchange correction
-        if force.ex != 0:
-            slater = -force.slate * jnp.power(densities.rho[1] + epsilon, 1.0/3.0)
-            upot = upot.at[1].add(slater)
-    
-    # =========================================================================
-    # Step 4: Standard Skyrme terms (central + kinetic)
-    # =========================================================================
-    # Laplacian of density
-    for iq in range(2):
-        workden = workden.at[iq].set(compute_laplacian(densities.rho[iq], grid))
-    
-    for iq in range(2):
-        ic = 1 - iq
-        standard = (
-            (force.b0 - force.b0p) * densities.rho[iq] + force.b0 * densities.rho[ic] +
-            (force.b1 - force.b1p) * densities.tau[iq] + force.b1 * densities.tau[ic] -
-            (force.b2 - force.b2p) * workden[iq] - force.b2 * workden[ic]
-        )
-        upot = upot.at[iq].add(standard)
-    
-    # Add constraint potential if present
-    if constraint_potential is not None:
-        for iq in range(2):
-            upot = upot.at[iq].add(constraint_potential[iq])
-    
-    # =========================================================================
-    # Step 5: Effective mass
-    # =========================================================================
-    bmass = jnp.zeros((2, nx, ny, nz), dtype=dtypes.float)
-    for iq in range(2):
-        ic = 1 - iq
-        bmass_val = (force.h2m[iq] + 
-                     (force.b1 - force.b1p) * densities.rho[iq] + 
-                     force.b1 * densities.rho[ic])
-        bmass = bmass.at[iq].set(bmass_val)
-    
-    # =========================================================================
-    # Step 6: Spin-orbit potential (gradient of density)
-    # =========================================================================
-    wlspot = jnp.zeros((2, 3, nx, ny, nz), dtype=dtypes.float)
-    for iq in range(2):
-        grad_x, grad_y, grad_z = compute_gradient(densities.rho[iq], grid)
-        workvec = workvec.at[iq, 0].set(grad_x)
-        workvec = workvec.at[iq, 1].set(grad_y)
-        workvec = workvec.at[iq, 2].set(grad_z)
-    
-    for iq in range(2):
-        ic = 1 - iq
-        wlspot_val = (force.b4 + force.b4p) * workvec[iq] + force.b4 * workvec[ic]
-        wlspot = wlspot.at[iq].set(wlspot_val)
-    
-    # =========================================================================
-    # Step 7: Curl of spin density
-    # =========================================================================
-    for iq in range(2):
-        workvec = workvec.at[iq].set(compute_curl(densities.sdens[iq], grid))
-    
-    # =========================================================================
-    # Step 8: Current coupling (A vector)
-    # =========================================================================
-    aq = jnp.zeros((2, 3, nx, ny, nz), dtype=dtypes.float)
-    for iq in range(2):
-        ic = 1 - iq
-        aq_val = (
-            -2.0 * (force.b1 - force.b1p) * densities.current[iq] -
-            2.0 * force.b1 * densities.current[ic] -
-            (force.b4 + force.b4p) * workvec[iq] - force.b4 * workvec[ic]
-        )
-        aq = aq.at[iq].set(aq_val)
-    
-    # =========================================================================
-    # Step 9: Spin potential from curl of current
-    # =========================================================================
-    spot = jnp.zeros((2, 3, nx, ny, nz), dtype=dtypes.float)
-    for iq in range(2):
-        spot = spot.at[iq].set(compute_curl(densities.current[iq], grid))
-    
-    # =========================================================================
-    # Step 10: Combine isospin for spin potential
-    # =========================================================================
-    spot_temp = jnp.copy(spot)
-    for iq in range(2):
-        ic = 1 - iq
-        spot_combined = -(force.b4 + force.b4p) * spot_temp[iq] - force.b4 * spot_temp[ic]
-        spot = spot.at[iq].set(spot_combined)
-    
-    # =========================================================================
-    # Step 11: Divergence of A vector
-    # =========================================================================
-    divaq = jnp.zeros((2, nx, ny, nz), dtype=dtypes.float)
-    for iq in range(2):
-        divaq = divaq.at[iq].set(compute_divergence(aq[iq], grid))
-    
-    # =========================================================================
-    # Step 12: Gradient of effective mass
-    # =========================================================================
-    dbmass = jnp.zeros((2, 3, nx, ny, nz), dtype=dtypes.float)
-    for iq in range(2):
-        grad_x, grad_y, grad_z = compute_gradient(bmass[iq], grid)
-        dbmass = dbmass.at[iq, 0].set(grad_x)
-        dbmass = dbmass.at[iq, 1].set(grad_y)
-        dbmass = dbmass.at[iq, 2].set(grad_z)
-    
-    # =========================================================================
-    # Step 13: Pairing potential
-    # =========================================================================
-    v_pair = jnp.zeros((2, nx, ny, nz), dtype=dtypes.float)
-    ecorrp = 0.0
-    
-    if force.ipair == 6:  # DDDI pairing
-        # Rearrangement potential
-        rearrange = (
-            (force.v0neut / force.rho0pr) * densities.chi[0]**2 +
-            (force.v0prot / force.rho0pr) * densities.chi[1]**2
-        )
-        upot = upot.at[0].add(rearrange)
-        upot = upot.at[1].add(rearrange)
-        
-        ecorrp = -jnp.sum(rho_tot * rearrange) * grid.wxyz / 2.0
-        
-        # DDDI pairing potential
-        density_factor = 1.0 - rho_tot / force.rho0pr
-        v_pair = v_pair.at[0].set(force.v0neut * densities.chi[0] * density_factor)
-        v_pair = v_pair.at[1].set(force.v0prot * densities.chi[1] * density_factor)
-        
-    elif force.ipair == 5:  # VDI pairing
-        v_pair = v_pair.at[0].set(force.v0neut * densities.chi[0])
-        v_pair = v_pair.at[1].set(force.v0prot * densities.chi[1])
-    
-    return Meanfield(
-        upot=upot,
-        bmass=bmass,
-        divaq=divaq,
-        v_pair=v_pair,
-        aq=aq,
-        spot=spot,
-        wlspot=wlspot,
-        dbmass=dbmass,
-        ecorrp=float(ecorrp),
+    # Call the JIT-compiled core
+    return _compute_skyrme_meanfield_core(
+        densities.rho,
+        densities.tau,
+        densities.chi,
+        densities.current,
+        densities.sdens,
+        densities.sodens,
+        coulomb_potential,
+        constraint_potential,
+        force.b0, force.b0p, force.b1, force.b1p, force.b2, force.b2p,
+        force.b3, force.b3p, force.b4, force.b4p,
+        force.h2m[0], force.h2m[1],
+        force.power, force.slate, force.ex,
+        force.v0neut, force.v0prot, force.rho0pr, force.ipair,
+        grid,
+        use_coulomb,
     )
 
 
@@ -324,9 +384,7 @@ def apply_hamiltonian(
     psi: jax.Array,
     meanfield: Meanfield,
     iq: int,
-    dx: float,
-    dy: float,
-    dz: float,
+    grid: Grid,
 ) -> jax.Array:
     """
     Apply the single-particle HFB Hamiltonian to a wavefunction.
@@ -338,7 +396,7 @@ def apply_hamiltonian(
         psi: Spinor wavefunction with shape (2, nx, ny, nz)
         meanfield: Mean-field potentials
         iq: Isospin index (0=neutron, 1=proton)
-        dx, dy, dz: Grid spacings
+        grid: Spatial grid
         
     Returns:
         h|psi> with same shape as input
@@ -359,22 +417,23 @@ def apply_hamiltonian(
     )
     
     # Step 3: x-derivatives (kinetic + spin-orbit)
-    pout = _add_derivative_terms_x(pout, psi, meanfield, iq, dx, sigis)
+    pout = _add_derivative_terms_x(pout, psi, meanfield, iq, grid, sigis)
     
     # Step 4: y-derivatives
-    pout = _add_derivative_terms_y(pout, psi, meanfield, iq, dy, sigis)
+    pout = _add_derivative_terms_y(pout, psi, meanfield, iq, grid, sigis)
     
     # Step 5: z-derivatives
-    pout = _add_derivative_terms_z(pout, psi, meanfield, iq, dz, sigis)
+    pout = _add_derivative_terms_z(pout, psi, meanfield, iq, grid, sigis)
     
     return pout
 
 
-def _add_derivative_terms_x(pout, psi, mf, iq, dx, sigis):
+def _add_derivative_terms_x(pout, psi, mf, iq, grid, sigis):
     """Add x-direction derivative terms."""
-    # First derivatives with effective mass
-    dpsi_dx = deriv_x(psi, dx)
-    d2psi_dx2 = deriv_x(deriv_x(psi, dx), dx)  # Simple second derivative
+    # Use matrix derivatives for better JIT performance on GPU
+    # psi is (2, nx, ny, nz), der1x is (nx, nx)
+    dpsi_dx = jnp.einsum('ij,sjkl->sikl', grid.der1x, psi)
+    d2psi_dx2 = jnp.einsum('ij,sjkl->sikl', grid.der2x, psi)
     
     # Effective mass contribution: -B * d²/dx² - dB/dx * d/dx
     pout = pout.at[0].add(
@@ -395,24 +454,19 @@ def _add_derivative_terms_x(pout, psi, mf, iq, dx, sigis):
     )
     
     # Additional spin-orbit from derivative of psi weighted by potential
-    pswk = jnp.zeros_like(psi)
-    pswk = pswk.at[0].set(
-        (-1j * 0.5) * (mf.aq[iq, 0] - mf.wlspot[iq, 1]) * psi[0] -
-        0.5 * mf.wlspot[iq, 2] * psi[1]
-    )
-    pswk = pswk.at[1].set(
-        (-1j * 0.5) * (mf.aq[iq, 0] + mf.wlspot[iq, 1]) * psi[1] +
-        0.5 * mf.wlspot[iq, 2] * psi[0]
-    )
-    pout = pout + deriv_x(pswk, dx)
+    pswk0 = (-1j * 0.5) * (mf.aq[iq, 0] - mf.wlspot[iq, 1]) * psi[0] - 0.5 * mf.wlspot[iq, 2] * psi[1]
+    pswk1 = (-1j * 0.5) * (mf.aq[iq, 0] + mf.wlspot[iq, 1]) * psi[1] + 0.5 * mf.wlspot[iq, 2] * psi[0]
+    
+    pout = pout.at[0].add(jnp.einsum('ij,jkl->ikl', grid.der1x, pswk0))
+    pout = pout.at[1].add(jnp.einsum('ij,jkl->ikl', grid.der1x, pswk1))
     
     return pout
 
 
-def _add_derivative_terms_y(pout, psi, mf, iq, dy, sigis):
+def _add_derivative_terms_y(pout, psi, mf, iq, grid, sigis):
     """Add y-direction derivative terms."""
-    dpsi_dy = deriv_y(psi, dy)
-    d2psi_dy2 = deriv_y(deriv_y(psi, dy), dy)
+    dpsi_dy = jnp.einsum('ij,skjl->skil', grid.der1y, psi)
+    d2psi_dy2 = jnp.einsum('ij,skjl->skil', grid.der2y, psi)
     
     # Effective mass contribution
     pout = pout.at[0].add(
@@ -432,24 +486,19 @@ def _add_derivative_terms_y(pout, psi, mf, iq, dy, sigis):
         (1j * 0.5 * mf.wlspot[iq, 2]) * dpsi_dy[0]
     )
     
-    pswk = jnp.zeros_like(psi)
-    pswk = pswk.at[0].set(
-        (-1j * 0.5) * (mf.aq[iq, 1] + mf.wlspot[iq, 0]) * psi[0] +
-        (1j * 0.5) * mf.wlspot[iq, 2] * psi[1]
-    )
-    pswk = pswk.at[1].set(
-        (-1j * 0.5) * (mf.aq[iq, 1] - mf.wlspot[iq, 0]) * psi[1] +
-        (1j * 0.5) * mf.wlspot[iq, 2] * psi[0]
-    )
-    pout = pout + deriv_y(pswk, dy)
+    pswk0 = (-1j * 0.5) * (mf.aq[iq, 1] + mf.wlspot[iq, 0]) * psi[0] + (1j * 0.5) * mf.wlspot[iq, 2] * psi[1]
+    pswk1 = (-1j * 0.5) * (mf.aq[iq, 1] - mf.wlspot[iq, 0]) * psi[1] + (1j * 0.5) * mf.wlspot[iq, 2] * psi[0]
+    
+    pout = pout.at[0].add(jnp.einsum('ij,kjl->kil', grid.der1y, pswk0))
+    pout = pout.at[1].add(jnp.einsum('ij,kjl->kil', grid.der1y, pswk1))
     
     return pout
 
 
-def _add_derivative_terms_z(pout, psi, mf, iq, dz, sigis):
+def _add_derivative_terms_z(pout, psi, mf, iq, grid, sigis):
     """Add z-direction derivative terms."""
-    dpsi_dz = deriv_z(psi, dz)
-    d2psi_dz2 = deriv_z(deriv_z(psi, dz), dz)
+    dpsi_dz = jnp.einsum('ij,sklj->skli', grid.der1z, psi)
+    d2psi_dz2 = jnp.einsum('ij,sklj->skli', grid.der2z, psi)
     
     # Effective mass contribution
     pout = pout.at[0].add(
@@ -469,16 +518,11 @@ def _add_derivative_terms_z(pout, psi, mf, iq, dz, sigis):
         (sigis[1] * mf.wlspot[iq, 0] - 1j * 0.5 * mf.wlspot[iq, 1]) * dpsi_dz[0]
     )
     
-    pswk = jnp.zeros_like(psi)
-    pswk = pswk.at[0].set(
-        (-1j * 0.5) * mf.aq[iq, 2] * psi[0] +
-        (0.5 * mf.wlspot[iq, 0] - 1j * 0.5 * mf.wlspot[iq, 1]) * psi[1]
-    )
-    pswk = pswk.at[1].set(
-        (-1j * 0.5) * mf.aq[iq, 2] * psi[1] +
-        (-0.5 * mf.wlspot[iq, 0] - 1j * 0.5 * mf.wlspot[iq, 1]) * psi[0]
-    )
-    pout = pout + deriv_z(pswk, dz)
+    pswk0 = (-1j * 0.5) * mf.aq[iq, 2] * psi[0] + (0.5 * mf.wlspot[iq, 0] - 1j * 0.5 * mf.wlspot[iq, 1]) * psi[1]
+    pswk1 = (-1j * 0.5) * mf.aq[iq, 2] * psi[1] + (-0.5 * mf.wlspot[iq, 0] - 1j * 0.5 * mf.wlspot[iq, 1]) * psi[0]
+    
+    pout = pout.at[0].add(jnp.einsum('ij,klj->kli', grid.der1z, pswk0))
+    pout = pout.at[1].add(jnp.einsum('ij,klj->kli', grid.der1z, pswk1))
     
     return pout
 
@@ -490,9 +534,7 @@ def apply_hfb_hamiltonian(
     iq: int,
     weight: float,
     weightuv: float,
-    dx: float,
-    dy: float,
-    dz: float,
+    grid: Grid,
 ) -> Tuple[jax.Array, jax.Array, jax.Array]:
     """
     Apply full HFB Hamiltonian including pairing.
@@ -503,7 +545,7 @@ def apply_hfb_hamiltonian(
         pout_del: Pairing part Delta|psi>
     """
     # Mean-field part
-    pout_mf = apply_hamiltonian(psi, meanfield, iq, dx, dy, dz)
+    pout_mf = apply_hamiltonian(psi, meanfield, iq, grid)
     
     # Pairing part (local approximation)
     pout_del = psi * meanfield.v_pair[iq]

@@ -267,16 +267,28 @@ class HFBFFT:
         
         # Calculate basis size
         if npsi is None:
-            # Use formula from original code, round to nearest even integer
-            def round_even(x):
-                return int(2 * round(x / 2))
-            # n_basis = max(126, nucleus.neutrons + int(1.65 * (nucleus.neutrons ** 0.666667)))
-            # p_basis = max(82, nucleus.protons + int(1.65 * (nucleus.protons ** 0.666667)))
-            n_basis = round_even(nucleus.neutrons + int(1.65 * (nucleus.neutrons ** 0.666667)))
-            p_basis = round_even(nucleus.protons + int(1.65 * (nucleus.protons ** 0.666667)))
+            # Check if pairing is disabled
+            if self.force.ipair == 0:
+                # No pairing: only need exactly N and Z states
+                n_basis = nucleus.neutrons
+                p_basis = nucleus.protons
+            else:
+                # With pairing: need extra states for the pairing window
+                # Use formula from original code, round to nearest even integer
+                def round_even(x):
+                    return int(2 * round(x / 2))
+                n_basis = max(126, round_even(nucleus.neutrons + int(1.65 * (nucleus.neutrons ** 0.666667))))
+                p_basis = max(82, round_even(nucleus.protons + int(1.65 * (nucleus.protons ** 0.666667))))
             self._npsi = (n_basis, p_basis)
         else:
             self._npsi = npsi
+            # Warn if npsi is smaller than particle numbers
+            if self._npsi[0] < nucleus.neutrons:
+                print(f"Warning: npsi[0]={self._npsi[0]} < N={nucleus.neutrons}. "
+                      "May not have enough neutron states.")
+            if self._npsi[1] < nucleus.protons:
+                print(f"Warning: npsi[1]={self._npsi[1]} < Z={nucleus.protons}. "
+                      "May not have enough proton states.")
         
         self._nstmax = self._npsi[0] + self._npsi[1]
         
@@ -401,37 +413,135 @@ class HFBFFT:
         radinz: float = 3.0,
         seed: int = 42,
     ):
-        """Initialize wavefunctions using harmonic oscillator basis."""
-        key = jax.random.PRNGKey(seed)
+        """
+        Initialize wavefunctions using harmonic oscillator basis.
         
+        Creates proper shell structure by multiplying Gaussian by polynomials
+        x^i * y^j * z^k for each state, matching the FORTRAN legacy code.
+        """
         nx, ny, nz = self.grid.shape
-        xx, yy, zz = self.grid.get_meshgrid()
+        x = self.grid.x
+        y = self.grid.y
+        z = self.grid.z
         
-        # Create harmonic oscillator ground state for each particle
-        # with small random perturbations to allow orthonormalization
-        for nst in range(self._nstmax):
-            key, subkey = jax.random.split(key)
+        # Create base Gaussian on 3D grid
+        x_mesh = x[:, jnp.newaxis, jnp.newaxis]
+        y_mesh = y[jnp.newaxis, :, jnp.newaxis]
+        z_mesh = z[jnp.newaxis, jnp.newaxis, :]
+        
+        gaussian = jnp.exp(
+            -(x_mesh / radinx)**2 - 
+             (y_mesh / radiny)**2 - 
+             (z_mesh / radinz)**2
+        )
+        
+        # Normalize the base Gaussian
+        norm = jnp.sqrt(jnp.sum(gaussian**2) * self.grid.wxyz)
+        gaussian = gaussian / norm
+        
+        # Generate shell quantum numbers for each isospin
+        # Pre-allocate quantum number array for the full basis
+        nshell = jnp.zeros((3, self._nstmax), dtype=jnp.int32)
+        
+        nst = 0  # Global state counter
+        
+        # Loop over isospins
+        for iq in range(2):
+            nps = int(self._npsi[iq])
+            nst_start = nst
             
-            # Base Gaussian
-            psi_real = jnp.exp(
-                -(xx**2 / (2 * radinx**2) + 
-                  yy**2 / (2 * radiny**2) + 
-                  zz**2 / (2 * radinz**2))
-            )
+            # Generate quantum numbers in shell order
+            done = False
+            for ka in range(nps + 10):  # ka is the shell number
+                if done:
+                    break
+                for k in range(ka + 1):
+                    if done:
+                        break
+                    for j in range(ka + 1):
+                        if done:
+                            break
+                        for i in range(ka + 1):
+                            if done:
+                                break
+                            if ka == i + j + k:  # Valid shell combination
+                                for is_spin in range(2):  # Two spin states per spatial state
+                                    states_in_this_isospin = nst - nst_start + 1
+                                    if states_in_this_isospin > nps:
+                                        done = True
+                                        break
+                                    
+                                    if nst < self._nstmax:
+                                        nshell = nshell.at[0, nst].set(i)
+                                        nshell = nshell.at[1, nst].set(j)
+                                        nshell = nshell.at[2, nst].set(k)
+                                        nst += 1
+                                    else:
+                                        done = True
+                                        break
+        
+        # Now initialize all states using shell structure
+        for iq in range(2):
+            if iq == 0:
+                nst_start = 0
+                nst_end = int(self._npsi[0])
+            else:
+                nst_start = int(self._npsi[0])
+                nst_end = self._nstmax
             
-            # Add random perturbation
-            noise = jax.random.normal(subkey, (nx, ny, nz)) * 0.1
-            psi_real = psi_real + noise
-            
-            norm = jnp.sqrt(jnp.sum(psi_real**2) * self.grid.wxyz)
-            psi_real = psi_real / norm
-            
-            # Set spin-up or spin-down components
-            # Alternate spin components for different states
-            spin = nst % 2
-            self.state.psi = self.state.psi.at[nst, spin, :, :, :].set(
-                psi_real.astype(jnp.complex128)
-            )
+            for nst in range(nst_start, min(nst_end, self._nstmax)):
+                if nst == nst_start:
+                    # Lowest state: pure Gaussian in first spin component
+                    self.state.psi = self.state.psi.at[nst, 0, :, :, :].set(
+                        gaussian.astype(jnp.complex128)
+                    )
+                    self.state.psi = self.state.psi.at[nst, 1, :, :, :].set(0.0)
+                else:
+                    # Higher states: Gaussian * polynomial
+                    is_component = (nst - nst_start) % 2
+                    
+                    i_qn = int(nshell[0, nst])
+                    j_qn = int(nshell[1, nst])
+                    k_qn = int(nshell[2, nst])
+                    
+                    # Create polynomial factors
+                    if i_qn == 0:
+                        xx = jnp.ones_like(x)
+                    else:
+                        xx = x ** i_qn
+                    
+                    if j_qn == 0:
+                        yy = jnp.ones_like(y)
+                    else:
+                        yy = y ** j_qn
+                    
+                    if k_qn == 0:
+                        zz = jnp.ones_like(z)
+                    else:
+                        zz = z ** k_qn
+                    
+                    # Create 3D polynomial
+                    polynomial = (xx[:, jnp.newaxis, jnp.newaxis] * 
+                                  yy[jnp.newaxis, :, jnp.newaxis] * 
+                                  zz[jnp.newaxis, jnp.newaxis, :])
+                    
+                    # Create wavefunction: Gaussian * polynomial
+                    wave_func = gaussian * polynomial
+                    
+                    # Set in appropriate spin component
+                    self.state.psi = self.state.psi.at[nst, is_component, :, :, :].set(
+                        wave_func.astype(jnp.complex128)
+                    )
+                    self.state.psi = self.state.psi.at[nst, 1 - is_component, :, :, :].set(0.0)
+                
+                # Normalize
+                psi_norm = jnp.sqrt(
+                    jnp.sum(jnp.abs(self.state.psi[nst])**2) * self.grid.wxyz
+                )
+                if psi_norm > 1e-12:
+                    self.state.psi = self.state.psi.at[nst].set(
+                        self.state.psi[nst] / psi_norm
+                    )
     
     def _init_random(self, seed: int = 42):
         """Initialize wavefunctions with random values."""
@@ -511,8 +621,20 @@ class HFBFFT:
             run_hfb, SolverConfig, create_initial_state
         )
         from jax_hfbfft.physics.coulomb import CoulombSolver
+        import dataclasses
         
         start_time = time.time()
+        
+        # Apply center-of-mass correction to h2m if zpe==0
+        # This is the alternative CM correction that scales the effective mass
+        # by (A-1)/A following the legacy implementation
+        mass_number = self.nucleus.protons + self.nucleus.neutrons
+        if self.force.zpe == 0 and mass_number > 1:
+            cm_factor = (mass_number - 1.0) / mass_number
+            corrected_h2m = self.force.h2m * cm_factor
+            force = dataclasses.replace(self.force, h2m=corrected_h2m)
+        else:
+            force = self.force
         
         print(f"Starting HFB calculation for {self.nucleus}")
         print(f"Force: {self.force.name}")
@@ -564,10 +686,10 @@ class HFBFFT:
                  efluct=1e10
              )
 
-        # Run the HFB solver
+        # Run the HFB solver (use 'force' with CM correction applied)
         final_state = run_hfb(
             grid=self.grid,
-            force=self.force,
+            force=force,
             nucleus_z=self.nucleus.protons,
             nucleus_n=self.nucleus.neutrons,
             npsi_n=int(self._npsi[0]),
@@ -592,7 +714,13 @@ class HFBFFT:
             final_fluctuation=final_state.efluct,
             total_energy=float(final_state.energies.ehfint),
             kinetic_energy=float(final_state.energies.ehft),
-            potential_energy=float(final_state.energies.ehf0 + final_state.energies.ehf3),
+            potential_energy=float(
+                final_state.energies.ehf0 + 
+                final_state.energies.ehf1 + 
+                final_state.energies.ehf2 + 
+                final_state.energies.ehf3 + 
+                final_state.energies.ehfls
+            ),
             pairing_energy=float(jnp.sum(final_state.pairing.epair)),
             coulomb_energy=float(final_state.energies.ehfc),
             rearrangement_energy=float(final_state.energies.e3corr),

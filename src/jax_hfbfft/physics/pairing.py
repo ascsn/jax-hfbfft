@@ -10,12 +10,11 @@ This module implements BCS pairing with:
 
 import jax
 import jax.numpy as jnp
-import numpy as np
 from dataclasses import dataclass
-from typing import Tuple
-from scipy.optimize import brentq
+from typing import Tuple, Dict, Any
 
 from jax_hfbfft.jax_config import get_dtypes
+from jax_hfbfft.core.force import Force
 
 
 @jax.tree_util.register_dataclass
@@ -50,25 +49,57 @@ class Pairing:
         )
 
 
-def bcs_occupation(
-    eferm: float,
+@jax.jit
+def find_fermi_energy_jax(
+    target_n: float,
     sp_energy: jax.Array,
     deltaf: jax.Array,
     wstates: jax.Array,
+    emin: float = -200.0,
+    emax: float = 200.0,
+    max_iter: int = 40,
 ) -> float:
+    """
+    Find Fermi energy using JAX-native bisection search.
+    
+    This is much faster than scipy's brentq as it avoids CPU-GPU synchronization.
+    """
+    def body_fun(state):
+        low, high, i = state
+        mid = (low + high) / 2.0
+        n = bcs_occupation(mid, sp_energy, deltaf, wstates)
+        low = jnp.where(n < target_n, mid, low)
+        high = jnp.where(n >= target_n, mid, high)
+        return low, high, i + 1
+
+    # Initial brackets - check if expansion is needed
+    f_low = bcs_occupation(emin, sp_energy, deltaf, wstates) - target_n
+    f_high = bcs_occupation(emax, sp_energy, deltaf, wstates) - target_n
+    
+    # Simple bracket expansion
+    emin = jnp.where(f_low > 0, emin - 100.0, emin)
+    emax = jnp.where(f_high < 0, emax + 100.0, emax)
+
+    # Bisection loop
+    low, high, _ = jax.lax.while_loop(
+        lambda s: s[2] < max_iter,
+        body_fun,
+        (emin, emax, 0)
+    )
+    
+    return (low + high) / 2.0
+
+
+def bcs_occupation(
+    eferm: jax.Array,
+    sp_energy: jax.Array,
+    deltaf: jax.Array,
+    wstates: jax.Array,
+) -> jax.Array:
     """
     Calculate particle number for given Fermi energy.
     
     BCS occupation: v^2 = 0.5 * (1 - (e - ef) / sqrt((e - ef)^2 + Delta^2))
-    
-    Args:
-        eferm: Trial Fermi energy
-        sp_energy: Single-particle energies
-        deltaf: Pairing gaps
-        wstates: State degeneracy weights
-        
-    Returns:
-        Total particle number
     """
     edif = sp_energy - eferm
     equasi = jnp.sqrt(edif**2 + deltaf**2)
@@ -92,8 +123,6 @@ def find_fermi_energy(
     """
     Find Fermi energy that gives target particle number.
     
-    Uses Brent's method for root finding.
-    
     Args:
         target_n: Target particle number (N or Z)
         sp_energy: Single-particle energies
@@ -104,35 +133,7 @@ def find_fermi_energy(
     Returns:
         Fermi energy
     """
-    # Convert to numpy for scipy
-    sp_np = np.asarray(sp_energy)
-    delta_np = np.asarray(deltaf)
-    wst_np = np.asarray(wstates)
-    
-    def objective(ef):
-        n = bcs_occupation(ef, sp_np, delta_np, wst_np)
-        return float(n) - target_n
-    
-    # Adaptively find bounds where function changes sign
-    f_min = objective(emin)
-    f_max = objective(emax)
-    
-    # If bounds don't bracket root, expand them
-    expansion_steps = 0
-    while f_min * f_max > 0 and expansion_steps < 10:
-        emin -= 50.0
-        emax += 50.0
-        f_min = objective(emin)
-        f_max = objective(emax)
-        expansion_steps += 1
-    
-    # If still no bracket, use approximation
-    if f_min * f_max > 0:
-        # Fall back to mean of sp_energy weighted by occupations
-        return float(np.mean(sp_np))
-    
-    eferm = brentq(objective, emin, emax, xtol=1e-14)
-    return eferm
+    return find_fermi_energy_jax(target_n, sp_energy, deltaf, wstates, emin, emax)
 
 
 def soft_cutoff(energy: jax.Array, cutoff: float, width: float) -> jax.Array:
@@ -191,7 +192,7 @@ def solve_pairing_isospin(
     pair_cutoff: float = 0.0,
     state_cutoff: float = 0.0,
     softcut_range: float = 0.1,
-) -> Tuple[float, jax.Array, jax.Array, jax.Array, jax.Array, dict]:
+) -> Tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array, dict]:
     """
     Solve BCS pairing for one isospin.
     
@@ -213,21 +214,22 @@ def solve_pairing_isospin(
     # Find Fermi energy
     eferm = find_fermi_energy(particle_number, sp_energy, deltaf, wstates)
     
-    # Update cutoffs if specified
-    pairwg_new = pairwg.copy()
-    wstates_new = wstates.copy()
-    wstates_for_calc = wstates
+    # Update cutoffs using jnp.where to avoid TracerBoolConversionError
+    # Pairing cutoff
+    ecut_pair = eferm + pair_cutoff
+    width_pair = softcut_range * pair_cutoff
+    # Use jnp.maximum to avoid division by zero in soft_cutoff if width=0
+    pwg_soft = soft_cutoff(sp_energy, ecut_pair, jnp.maximum(width_pair, 1e-6))
+    pairwg_new = jnp.where(pair_cutoff > 0.0, pwg_soft, pairwg)
     
-    if pair_cutoff > 0.0:
-        ecut = eferm + pair_cutoff
-        width = softcut_range * pair_cutoff
-        pairwg_new = soft_cutoff(sp_energy, ecut, width)
+    # State cutoff
+    ecut_state = eferm + state_cutoff
+    width_state = softcut_range * state_cutoff
+    wst_soft = soft_cutoff(sp_energy, ecut_state, jnp.maximum(width_state, 1e-6))
+    wstates_new = jnp.where(state_cutoff > 0.0, wst_soft, wstates)
     
-    if state_cutoff > 0.0:
-        ecut = eferm + state_cutoff
-        width = softcut_range * state_cutoff
-        wstates_new = soft_cutoff(sp_energy, ecut, width)
-        wstates_for_calc = wstates_new
+    # Use the appropriate weights for calculation
+    wstates_for_calc = jnp.where(state_cutoff > 0.0, wstates_new, wstates)
     
     # Compute BCS occupations
     v2, uv = compute_bcs_occupations(sp_energy, deltaf, eferm)
@@ -243,11 +245,11 @@ def solve_pairing_isospin(
     sumv2_safe = jnp.maximum(sumv2, 1.0e-20)
     
     stats = {
-        'eferm': float(eferm),
-        'epair': float(sumduv),
-        'avdelt': float(sumduv / sumuv_safe),
-        'avdeltv2': float(sumdv2 / sumv2_safe),
-        'avg': float(sumduv / sumuv_safe**2),
+        'eferm': eferm,
+        'epair': sumduv,
+        'avdelt': sumduv / sumuv_safe,
+        'avdeltv2': sumdv2 / sumv2_safe,
+        'avg': sumduv / sumuv_safe**2,
     }
     
     return eferm, v2, uv, pairwg_new, wstates_new, stats
@@ -284,26 +286,25 @@ def compute_pairing_gaps(
     dtypes = get_dtypes()
     
     # For early iterations, use constant gap estimate
-    if iteration <= 10:
-        gap_estimate = 11.2 / jnp.sqrt(float(mass_number))
-        return gap_estimate * jnp.ones(nstates, dtype=dtypes.float)
+    gap_estimate = 11.2 / jnp.sqrt(jnp.maximum(1.0, mass_number))
+    initial_gaps = gap_estimate * jnp.ones(nstates, dtype=dtypes.float)
     
     # Compute |psi|^2 summed over spin
     psi_sq = jnp.real(psi * jnp.conjugate(psi))
     density = jnp.sum(psi_sq, axis=1)  # (nstates, nx, ny, nz)
     
-    # Select v_pair for each state
-    v_pair_n = v_pair[0]
-    v_pair_p = v_pair[1]
+    # Compute gaps using vectorized operations instead of vmap for speed
+    # Select v_pair for each state (nstates, nx, ny, nz)
+    # isospin is (nstates,)
+    v_pair_states = jnp.where(isospin[:, None, None, None] == 0, v_pair[0], v_pair[1])
     
-    def get_gap(i):
-        iq = isospin[i]
-        vp = jnp.where(iq == 0, v_pair_n, v_pair_p)
-        integrand = vp * density[i]
-        return jnp.sum(integrand) * wxyz * pairwg[i]
+    # Gap_i = wxyz * sum_r (v_pair(r) * density_i(r))
+    calculated_gaps = wxyz * jnp.sum(v_pair_states * density, axis=(1, 2, 3))
     
-    deltaf = jax.vmap(lambda i: get_gap(i))(jnp.arange(nstates))
-    return deltaf
+    calculated_gaps = calculated_gaps * pairwg
+    
+    # Switch between initial estimate and calculated gaps
+    return jnp.where(iteration <= 10, initial_gaps, calculated_gaps)
 
 
 def solve_pairing(
@@ -312,9 +313,11 @@ def solve_pairing(
     wstates: jax.Array,
     pairwg: jax.Array,
     isospin: jax.Array,
-    nneut: int,
-    nprot: int,
-    force,
+    nstates_n: int,
+    nstates_p: int,
+    target_n: int,
+    target_p: int,
+    force: Force,
 ) -> Tuple[jax.Array, jax.Array, jax.Array, jax.Array, Pairing]:
     """
     Solve BCS pairing for both isospins.
@@ -325,57 +328,66 @@ def solve_pairing(
         wstates: State weights (nstates,)
         pairwg: Pairing cutoff weights (nstates,)
         isospin: Isospin indices (nstates,)
-        nneut: Neutron number
-        nprot: Proton number
+        nstates_n: Number of neutron states
+        nstates_p: Number of proton states
+        target_n: Target neutron number
+        target_p: Target proton number
         force: Force parameters
         
     Returns:
         (wocc, wguv, pairwg_new, wstates_new, pairing)
     """
     dtypes = get_dtypes()
-    nstates = len(sp_energy)
+    nstates = sp_energy.shape[0]
     
-    wocc = jnp.zeros(nstates, dtype=dtypes.float)
-    wguv = jnp.zeros(nstates, dtype=dtypes.float)
-    pairwg_new = pairwg.copy()
-    wstates_new = wstates.copy()
-    pairing = Pairing.zeros()
+    # Process each isospin using slices for JIT compatibility
+    # This assumes neutrons come first in the state arrays
+    sp_n = sp_energy[:nstates_n]
+    delta_n = deltaf[:nstates_n]
+    wst_n = wstates[:nstates_n]
+    pwg_n = pairwg[:nstates_n]
     
-    # Process each isospin
-    for iq, particle_number in [(0, float(nneut)), (1, float(nprot))]:
-        mask = (isospin == iq)
-        
-        sp_iq = sp_energy[mask]
-        delta_iq = deltaf[mask]
-        wst_iq = wstates[mask]
-        pwg_iq = pairwg[mask]
-        
-        eferm, v2, uv, pwg_new, wst_new, stats = solve_pairing_isospin(
-            iq,
-            particle_number,
-            sp_iq,
-            delta_iq,
-            wst_iq,
-            pwg_iq,
-            pair_cutoff=force.pair_cutoff[iq],
-            state_cutoff=force.state_cutoff[iq],
-            softcut_range=force.softcut_range,
-        )
-        
-        # Update arrays
-        wocc = wocc.at[mask].set(v2)
-        wguv = wguv.at[mask].set(uv)
-        
-        if force.pair_cutoff[iq] > 0.0:
-            pairwg_new = pairwg_new.at[mask].set(pwg_new)
-        if force.state_cutoff[iq] > 0.0:
-            wstates_new = wstates_new.at[mask].set(wst_new)
-        
-        # Update pairing data
-        pairing.eferm = pairing.eferm.at[iq].set(stats['eferm'])
-        pairing.epair = pairing.epair.at[iq].set(stats['epair'])
-        pairing.avdelt = pairing.avdelt.at[iq].set(stats['avdelt'])
-        pairing.avdeltv2 = pairing.avdeltv2.at[iq].set(stats['avdeltv2'])
-        pairing.avg = pairing.avg.at[iq].set(stats['avg'])
+    eferm_n, v2_n, uv_n, pwg_new_n, wst_new_n, stats_n = solve_pairing_isospin(
+        0, float(target_n), sp_n, delta_n, wst_n, pwg_n,
+        pair_cutoff=force.pair_cutoff[0],
+        state_cutoff=force.state_cutoff[0],
+        softcut_range=force.softcut_range,
+    )
+    
+    sp_p = sp_energy[nstates_n:]
+    delta_p = deltaf[nstates_n:]
+    wst_p = wstates[nstates_n:]
+    pwg_p = pairwg[nstates_n:]
+    
+    eferm_p, v2_p, uv_p, pwg_new_p, wst_new_p, stats_p = solve_pairing_isospin(
+        1, float(target_p), sp_p, delta_p, wst_p, pwg_p,
+        pair_cutoff=force.pair_cutoff[1],
+        state_cutoff=force.state_cutoff[1],
+        softcut_range=force.softcut_range,
+    )
+    
+    # Reassemble arrays
+    wocc = jnp.concatenate([v2_n, v2_p])
+    wguv = jnp.concatenate([uv_n, uv_p])
+    
+    # For cutoff weights, conditionally update
+    pairwg_new = jnp.concatenate([
+        jnp.where(force.pair_cutoff[0] > 0.0, pwg_new_n, pwg_n),
+        jnp.where(force.pair_cutoff[1] > 0.0, pwg_new_p, pwg_p)
+    ])
+    
+    wstates_new = jnp.concatenate([
+        jnp.where(force.state_cutoff[0] > 0.0, wst_new_n, wst_n),
+        jnp.where(force.state_cutoff[1] > 0.0, wst_new_p, wst_p)
+    ])
+    
+    # Create result container
+    pairing = Pairing(
+        eferm=jnp.array([stats_n['eferm'], stats_p['eferm']]),
+        epair=jnp.array([stats_n['epair'], stats_p['epair']]),
+        avdelt=jnp.array([stats_n['avdelt'], stats_p['avdelt']]),
+        avdeltv2=jnp.array([stats_n['avdeltv2'], stats_p['avdeltv2']]),
+        avg=jnp.array([stats_n['avg'], stats_p['avg']])
+    )
     
     return wocc, wguv, pairwg_new, wstates_new, pairing

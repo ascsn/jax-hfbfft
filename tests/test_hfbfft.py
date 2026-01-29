@@ -58,9 +58,11 @@ class TestHFBFFTCreation:
         
         calc = HFBFFT(nucleus=nucleus)
         
-        # Basis should be larger than particle numbers
-        assert calc._npsi[0] > nucleus.neutrons
-        assert calc._npsi[1] > nucleus.protons
+        # Basis should be at least particle numbers
+        # When ipair=0 (no pairing, which is the default), basis equals particle numbers
+        # When pairing is enabled, basis is larger
+        assert calc._npsi[0] >= nucleus.neutrons
+        assert calc._npsi[1] >= nucleus.protons
     
     def test_basis_size_explicit(self):
         """Test explicit basis size specification."""

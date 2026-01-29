@@ -1,3 +1,22 @@
+# ============================================================================
+# DEPRECATED: This configuration file format is from the legacy implementation
+# ============================================================================
+#
+# Please use the new configuration system instead:
+#
+#   1. Edit config.yml with your parameters
+#   2. Run: python run_hfb.py
+#
+# See RUN_INSTRUCTIONS.md for detailed documentation.
+#
+# The new system provides:
+#   - Better documentation of all options
+#   - Automatic output directory creation
+#   - Comprehensive result files
+#   - Classic HFB code user experience
+#
+# ============================================================================
+
 params:
     wffile: "Sn132"
     mprint: 1

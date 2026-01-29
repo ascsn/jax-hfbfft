@@ -308,34 +308,41 @@ def compute_integrated_energy(
     # =========================================================================
     # Center-of-mass correction (simple estimate)
     # =========================================================================
-    e_zpe = 0.0
-    if force.zpe == 1 and mass_number > 1:
-        e_zpe = 17.3 / mass_number**0.2
+    e_zpe = jnp.where(
+        (force.zpe == 1) & (mass_number > 1),
+        17.3 / jnp.maximum(1.0, mass_number)**0.2,
+        0.0
+    )
     
     # =========================================================================
     # Total integrated energy
     # =========================================================================
-    epair_total = 0.0
-    if pairing_energy is not None:
-        epair_total = jnp.sum(pairing_energy)
+    epair_total = jnp.where(
+        pairing_energy is not None,
+        jnp.sum(jnp.where(pairing_energy is not None, pairing_energy, 0.0)),
+        0.0
+    )
     
+    # NOTE: e3corr is the rearrangement energy correction, used in the Kohn-Sham
+    # formula for computing energy from single-particle levels, but NOT subtracted
+    # from the integrated energy density functional.
     ehfint = ehft + ehf0 + ehf1 + ehf2 + ehf3 + ehfls + ehfc - epair_total - e_zpe
     
     return Energies(
-        ehft=float(ehft),
-        ehf0=float(ehf0),
-        ehf1=float(ehf1),
-        ehf2=float(ehf2),
-        ehf3=float(ehf3),
-        ehfls=float(ehfls),
-        ehflsodd=float(ehflsodd),
-        ehfc=float(ehfc),
-        ecorc=float(ecorc),
-        ehfint=float(ehfint),
-        ehf=0.0,  # Computed separately from s.p. levels
-        tke=0.0,
-        e3corr=float(e3corr),
-        e_zpe=float(e_zpe),
+        ehft=ehft,
+        ehf0=ehf0,
+        ehf1=ehf1,
+        ehf2=ehf2,
+        ehf3=ehf3,
+        ehfls=ehfls,
+        ehflsodd=ehflsodd,
+        ehfc=ehfc,
+        ecorc=ecorc,
+        ehfint=ehfint,
+        ehf=jnp.array(0.0, dtype=dtypes.float),  # Computed separately from s.p. levels
+        tke=ehft,
+        e3corr=e3corr,
+        e_zpe=e_zpe,
         efluct1=jnp.zeros(1, dtype=dtypes.float),
         efluct1q=jnp.zeros(2, dtype=dtypes.float),
         efluct2=jnp.zeros(1, dtype=dtypes.float),
@@ -344,16 +351,16 @@ def compute_integrated_energy(
         spin=jnp.zeros(3, dtype=dtypes.float),
         total_angmom=jnp.zeros(3, dtype=dtypes.float),
         epair=pairing_energy if pairing_energy is not None else jnp.zeros(2, dtype=dtypes.float),
-        ehfCrho0=float(ehfCrho0),
-        ehfCrho1=float(ehfCrho1),
-        ehfCdrho0=float(ehfCdrho0),
-        ehfCdrho1=float(ehfCdrho1),
-        ehfCtau0=float(ehfCtau0),
-        ehfCtau1=float(ehfCtau1),
-        ehfCdJ0=float(ehfCdJ0),
-        ehfCdJ1=float(ehfCdJ1),
-        ehfCj0=float(ehfCj0),
-        ehfCj1=float(ehfCj1),
+        ehfCrho0=ehfCrho0,
+        ehfCrho1=ehfCrho1,
+        ehfCdrho0=ehfCdrho0,
+        ehfCdrho1=ehfCdrho1,
+        ehfCtau0=ehfCtau0,
+        ehfCtau1=ehfCtau1,
+        ehfCdJ0=ehfCdJ0,
+        ehfCdJ1=ehfCdJ1,
+        ehfCj0=ehfCj0,
+        ehfCj1=ehfCj1,
     )
 
 

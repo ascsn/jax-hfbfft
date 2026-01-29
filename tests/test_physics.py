@@ -184,7 +184,7 @@ class TestSolverConfig:
         assert config.max_iterations == 200
         assert config.convergence_criterion == 1e-6
         assert config.x0dmp == 0.45
-        assert config.density_mixing == 0.2
+        assert config.density_mixing == 0.5  # Updated to match actual default
     
     def test_custom_config(self):
         """Test custom configuration."""

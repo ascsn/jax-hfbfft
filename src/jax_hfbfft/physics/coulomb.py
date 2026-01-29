@@ -146,21 +146,24 @@ def solve_poisson(
     Returns:
         Coulomb potential (nx, ny, nz)
     """
-    # Call the JIT-compiled version with explicit dimensions
+    # Use shapes from arrays - these are always concrete in JIT
+    nx2, ny2, nz2 = solver.q.shape
+    nx, ny, nz = rho_proton.shape
+    
+    # Call the JIT-compiled version
     return _solve_poisson_jit(
         rho_proton, solver.q, solver.periodic,
-        solver.nx2, solver.ny2, solver.nz2,
-        grid.nx, grid.ny, grid.nz, grid.wxyz, e2
+        nx, ny, nz, nx2, ny2, nz2, grid.wxyz, e2
     )
 
 
-@jax.jit(static_argnums=(2, 3, 4, 5, 6, 7, 8))
+@jax.jit(static_argnums=(3, 4, 5, 6, 7, 8))
 def _solve_poisson_jit(
     rho_proton: jax.Array,
     q: jax.Array,
-    periodic: bool,
-    nx2: int, ny2: int, nz2: int,
+    periodic: jax.Array,
     nx: int, ny: int, nz: int,
+    nx2: int, ny2: int, nz2: int,
     wxyz: float,
     e2: float,
 ) -> jax.Array:
@@ -208,9 +211,11 @@ def compute_coulomb_energy(
     e_direct = 0.5 * wxyz * jnp.sum(rho_proton * wcoul)
     
     # Slater exchange
-    e_exchange = 0.0
-    if force.ex != 0:
-        slater_coeff = -3.0 / 4.0 * force.slate
-        e_exchange = wxyz * jnp.sum(slater_coeff * rho_proton ** (4.0 / 3.0))
+    slater_coeff = -3.0 / 4.0 * force.slate
+    e_exchange = jnp.where(
+        force.ex != 0,
+        wxyz * jnp.sum(slater_coeff * rho_proton ** (4.0 / 3.0)),
+        0.0
+    )
     
-    return float(e_direct), float(e_exchange)
+    return e_direct, e_exchange

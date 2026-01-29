@@ -174,11 +174,13 @@ def _add_single_state_density(
     )
     
     # Spin-orbit from z-derivative
+    # J_x from z: Re(psi0 * conj(dpsi1) - psi1 * conj(dpsi0))
     sodens = sodens.at[iq, 0].add(
-        -weight * jnp.real(psi0 * jnp.conjugate(dpsi1_dz) + psi1 * jnp.conjugate(dpsi0_dz))
+        weight * jnp.real(psi0 * jnp.conjugate(dpsi1_dz) - psi1 * jnp.conjugate(dpsi0_dz))
     )
+    # J_y from z: -Im(psi0 * conj(dpsi1) + psi1 * conj(dpsi0))
     sodens = sodens.at[iq, 1].add(
-        weight * jnp.imag(psi0 * jnp.conjugate(dpsi1_dz) + psi1 * jnp.conjugate(dpsi0_dz))
+        -weight * jnp.imag(psi0 * jnp.conjugate(dpsi1_dz) + psi1 * jnp.conjugate(dpsi0_dz))
     )
     
     return (rho, tau, chi, current, sdens, sodens, dx, dy, dz), None
@@ -280,19 +282,26 @@ def _compute_densities_vectorized(
         current_z = weight * jnp.imag(psi0_conj * dpsi0_dz + psi1_conj * dpsi1_dz)
         current_contrib = jnp.stack([current_x, current_y, current_z], axis=0)
         
-        # Spin-orbit density (simplified)
-        sodens_x = (
-            weight * jnp.imag(psi0_conj * dpsi0_dy - psi1_conj * dpsi1_dy) -
-            weight * jnp.real(psi0 * jnp.conjugate(dpsi1_dz) + psi1 * jnp.conjugate(dpsi0_dz))
-        )
-        sodens_y = (
-            -weight * jnp.imag(psi0_conj * dpsi0_dx - psi1_conj * dpsi1_dx) +
-            weight * jnp.imag(psi0 * jnp.conjugate(dpsi1_dz) + psi1 * jnp.conjugate(dpsi0_dz))
-        )
-        sodens_z = (
-            -weight * jnp.real(psi0 * jnp.conjugate(dpsi1_dx) - psi1 * jnp.conjugate(dpsi0_dx)) -
-            weight * jnp.imag(psi1_conj * dpsi0_dy + psi0_conj * dpsi1_dy)
-        )
+        # Spin-orbit density (matching legacy implementation)
+        # J_x = Im(psi* sy dz psi - psi* sz dy psi)
+        # J_y = Im(psi* sz dx psi - psi* sx dz psi)
+        # J_z = Im(psi* sx dy psi - psi* sy dx psi)
+        
+        # sodens_x = sodens_x_y + sodens_x_z
+        sodens_x_y = weight * jnp.imag(dpsi0_dy * psi0_conj - dpsi1_dy * psi1_conj)
+        sodens_x_z = weight * jnp.real(dpsi1_dz * psi0_conj - dpsi0_dz * psi1_conj)
+        sodens_x = sodens_x_y + sodens_x_z
+        
+        # sodens_y = sodens_y_x + sodens_y_z
+        sodens_y_x = -weight * jnp.imag(dpsi0_dx * psi0_conj - dpsi1_dx * psi1_conj)
+        sodens_y_z = weight * jnp.imag(dpsi1_dz * psi0_conj + dpsi0_dz * psi1_conj)
+        sodens_y = sodens_y_x + sodens_y_z
+        
+        # sodens_z = sodens_z_x + sodens_z_y
+        sodens_z_x = -weight * jnp.real(psi0 * jnp.conjugate(dpsi1_dx) - psi1 * jnp.conjugate(dpsi0_dx))
+        sodens_z_y = -weight * jnp.imag(dpsi1_dy * psi0_conj + dpsi0_dy * psi1_conj)
+        sodens_z = sodens_z_x + sodens_z_y
+        
         sodens_contrib = jnp.stack([sodens_x, sodens_y, sodens_z], axis=0)
         
         return rho_contrib, tau_contrib, chi_contrib, current_contrib, sdens_contrib, sodens_contrib

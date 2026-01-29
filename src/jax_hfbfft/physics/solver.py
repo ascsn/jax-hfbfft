@@ -16,6 +16,7 @@ import time
 
 from jax_hfbfft.jax_config import get_dtypes
 from jax_hfbfft.core.grid import Grid
+from jax_hfbfft.core.force import Force
 from jax_hfbfft.physics.densities import Densities, compute_densities
 from jax_hfbfft.physics.meanfield import Meanfield, compute_skyrme_meanfield, apply_hfb_hamiltonian
 from jax_hfbfft.physics.energies import Energies, compute_integrated_energy, compute_sp_energy
@@ -70,14 +71,15 @@ class SolverState:
         return self.psi.shape[0]
     
     @property
-    def nneut(self) -> int:
-        return int(jnp.sum(self.isospin == 0))
+    def nneut(self) -> jax.Array:
+        return jnp.sum(self.isospin == 0)
     
     @property
-    def nprot(self) -> int:
-        return int(jnp.sum(self.isospin == 1))
+    def nprot(self) -> jax.Array:
+        return jnp.sum(self.isospin == 1)
 
 
+@jax.tree_util.register_dataclass
 @dataclass
 class SolverConfig:
     """Configuration for the HFB solver."""
@@ -86,8 +88,8 @@ class SolverConfig:
     
     # Damping and mixing
     x0dmp: float = 0.45           # Gradient step damping
-    e0dmp: float = 100.0          # Preconditioning energy (MeV)
-    density_mixing: float = 0.2   # New density fraction
+    e0dmp: float = 20.0           # Preconditioning energy (MeV)
+    density_mixing: float = 0.5   # New density fraction
     
     # Iteration control
     diag_start: int = 30          # Start diagonalization after this
@@ -252,6 +254,7 @@ def gradient_step(
         meanfield: Current mean-field potentials
         wocc, wguv: Occupation factors
         pairwg: Pairing cutoff weights
+        sp_energy: Single-particle energies
         isospin: Isospin labels
         grid: Spatial grid
         x0dmp: Damping factor
@@ -263,8 +266,7 @@ def gradient_step(
     """
     return _gradient_step_jit(
         psi, meanfield, wocc, wguv, pairwg, sp_energy, isospin,
-        grid.dx, grid.dy, grid.dz, grid.wxyz, x0dmp, e0dmp,
-        npsi_n
+        grid, x0dmp, e0dmp, npsi_n
     )
 
 
@@ -291,6 +293,13 @@ def orthonormalize_states(psi: jax.Array, npsi_n: int, wxyz: float) -> jax.Array
         # QR decomposition
         q, r = jnp.linalg.qr(flat.T, mode='reduced')
         
+        # Ensure consistent phase by making diagonal of R real and positive
+        # This prevents wavefunctions from jumping phases and failing convergence
+        phases = jnp.sign(jnp.diag(r))
+        # Handle zero diagonal elements (unlikely for basis states)
+        phases = jnp.where(phases == 0, 1.0, phases)
+        q = q * phases
+        
         # Q.T has the orthonormal wavefunctions, rescale back
         ortho_flat = q.T / jnp.sqrt(wxyz)
         
@@ -312,13 +321,17 @@ def apply_preconditioner(
     Apply preconditioning (inverse kinetic energy operator) in Fourier space.
     
     ps_out = ps_in / (e0dmp + h2m * k^2)
+    
+    This version handles both single wavefunctions and batched wavefunctions.
+    For batched input with shape (nstates, 2, nx, ny, nz), the FFT is applied
+    to the last 3 dimensions efficiently.
     """
     nx, ny, nz = phi.shape[-3:]
     
-    # FFT to k-space
+    # FFT to k-space (operates on last 3 dimensions)
     phi_k = jnp.fft.fftn(phi, axes=(-3, -2, -1))
     
-    # Wavenumbers
+    # Wavenumbers - computed once and broadcast
     kx = 2 * jnp.pi * jnp.fft.fftfreq(nx, d=dx)
     ky = 2 * jnp.pi * jnp.fft.fftfreq(ny, d=dy)
     kz = 2 * jnp.pi * jnp.fft.fftfreq(nz, d=dz)
@@ -340,19 +353,16 @@ def apply_preconditioner(
     return jnp.real(phi_out) if jnp.isrealobj(phi) else phi_out
 
 
-@jax.jit(static_argnums=(12, 13))
+@jax.jit(static_argnums=(10,))
 def _gradient_step_jit(
     psi: jax.Array,
     meanfield: Meanfield,
     wocc: jax.Array,
     wguv: jax.Array,
     pairwg: jax.Array,
-    sp_energy: jax.Array,  # Added
+    sp_energy: jax.Array,
     isospin: jax.Array,
-    dx: float,
-    dy: float,
-    dz: float,
-    wxyz: float,
+    grid: Grid,
     x0dmp: float,
     e0dmp: float,
     npsi_n: int,
@@ -361,30 +371,24 @@ def _gradient_step_jit(
     nstates = psi.shape[0]
     
     # 1. Apply Hamiltonian to all states and subtract s.p. energy
-    weights = wocc
-    weightsuv = wguv * pairwg
-    
-    def apply_h(p, iq, w, wuv, e):
+    def apply_h(p, iq, e):
         # We use weight=1 and weightuv=0 for the pure s.p. gradient
-        # though HFB technically needs the full HFB matrix.
-        # But for convergence of wavefunctions, (h - epsilon) psi is standard.
-        hpsi, _, _ = apply_hfb_hamiltonian(p, meanfield, iq, 1.0, 0.0, dx, dy, dz)
+        # (h - epsilon) psi
+        hpsi, _, _ = apply_hfb_hamiltonian(p, meanfield, iq, 1.0, 0.0, grid)
         return hpsi - e * p
     
-    hpsi_all = jax.vmap(apply_h)(psi, isospin, weights, weightsuv, sp_energy)
+    hpsi_all = jax.vmap(apply_h)(psi, isospin, sp_energy)
     
-    # 2. Apply Preconditioner
+    # 2. Apply Preconditioner - batched version (FFT on all states at once)
+    # hpsi_all has shape (nstates, 2, nx, ny, nz)
     h2ma = 20.73
-    def precond(phi):
-        return apply_preconditioner(phi, e0dmp, h2ma, dx, dy, dz)
-    
-    hpsi_pre = jax.vmap(precond)(hpsi_all)
+    hpsi_pre = apply_preconditioner(hpsi_all, e0dmp, h2ma, grid.dx, grid.dy, grid.dz)
     
     # 3. Update Wavefunctions
     psi_new = psi - x0dmp * hpsi_pre
     
     # 4. Orthonormalize
-    return orthonormalize_states(psi_new, npsi_n, wxyz)
+    return orthonormalize_states(psi_new, npsi_n, grid.wxyz)
 
 
 def normalize_states(psi: jax.Array, wxyz: float) -> jax.Array:
@@ -443,7 +447,7 @@ def compute_sp_energies(
         (sp_energy, sp_kinetic) arrays
     """
     return _compute_sp_energies_vmap(
-        psi, meanfield, isospin, grid.dx, grid.dy, grid.dz, grid.wxyz
+        psi, meanfield, isospin, grid
     )
 
 
@@ -452,10 +456,7 @@ def _compute_sp_energies_vmap(
     psi: jax.Array,
     meanfield: Meanfield,
     isospin: jax.Array,
-    dx: float,
-    dy: float,
-    dz: float,
-    wxyz: float,
+    grid: Grid,
 ) -> Tuple[jax.Array, jax.Array]:
     """Vectorized single-particle energy computation."""
     nstates = psi.shape[0]
@@ -466,23 +467,22 @@ def _compute_sp_energies_vmap(
         psi_n = psi[nst]
         
         # Apply Hamiltonian
-        hpsi, hpsi_mf, _ = apply_hfb_hamiltonian(
+        # hpsi_mf is h|psi>
+        _, hpsi_mf, _ = apply_hfb_hamiltonian(
             psi_n,
             meanfield,
             iq,
-            1.0, 0.0,  # weight=1, weightuv=0 for pure mean-field
-            dx, dy, dz,
+            1.0, 0.0,
+            grid,
         )
         
-        # Expectation value: <psi|H|psi>
-        e_tot = jnp.real(jnp.sum(jnp.conjugate(psi_n) * hpsi_mf)) * wxyz
+        # Expectation value: <psi|h|psi>
+        e_tot = jnp.real(jnp.sum(jnp.conjugate(psi_n) * hpsi_mf)) * grid.wxyz
         
-        # Kinetic energy estimate from effective mass
-        # Use conditional indexing that works with traced values
-        bmass_0 = meanfield.bmass[0]
-        bmass_1 = meanfield.bmass[1]
-        bmass_iq = jnp.where(iq == 0, bmass_0, bmass_1)
-        e_kin = jnp.real(jnp.sum(bmass_iq * jnp.abs(psi_n)**2)) * wxyz
+        # Kinetic energy part (excluding effective mass scaling for now or matching legacy)
+        # Note: sp_kinetic here is used for preconditioning or information
+        bmass_iq = meanfield.bmass[iq]
+        e_kin = jnp.real(jnp.sum(bmass_iq * jnp.abs(psi_n)**2)) * grid.wxyz
         
         return e_tot, e_kin
     
@@ -492,13 +492,18 @@ def _compute_sp_energies_vmap(
     return sp_energy, sp_kinetic
 
 
+@jax.jit(static_argnums=(4, 5, 6, 7, 8, 9))
 def hfb_iteration(
     state: SolverState,
     grid: Grid,
-    force,
+    force: Force,
     config: SolverConfig,
-    npsi_n: int,  # Added
+    npsi_n: int,
+    npsi_p: int,
+    nucleus_n: int,
+    nucleus_z: int,
     use_coulomb: bool = True,
+    compute_energy: bool = True,
 ) -> SolverState:
     """
     Perform one HFB iteration.
@@ -508,7 +513,7 @@ def hfb_iteration(
     2. Solve pairing
     3. Compute densities
     4. Compute mean-field potentials
-    5. Compute energies
+    5. Compute energies (optional - skip for speed when not needed)
     6. Check convergence
     
     Args:
@@ -517,7 +522,11 @@ def hfb_iteration(
         force: Force parameters
         config: Solver configuration
         npsi_n: Number of neutron states
+        npsi_p: Number of proton states
+        nucleus_n: Target neutron number
+        nucleus_z: Target proton number
         use_coulomb: Whether to include Coulomb
+        compute_energy: Whether to compute integrated energy (expensive)
         
     Returns:
         Updated solver state
@@ -526,13 +535,11 @@ def hfb_iteration(
     iteration = state.iteration + 1
     
     # Store old densities for mixing
-    old_rho = state.densities.rho.copy()
-    old_tau = state.densities.tau.copy()
-    old_chi = state.densities.chi.copy()
+    old_rho = state.densities.rho
+    old_tau = state.densities.tau
+    old_chi = state.densities.chi
     
     # 1. Gradient step
-    npsi_n = int(jnp.sum(state.isospin == 0))
-    
     psi_new = gradient_step(
         state.psi,
         state.meanfield,
@@ -548,6 +555,8 @@ def hfb_iteration(
     )
     
     # 2. Compute pairing gaps
+    # Use actual particle number for estimate
+    mass_number = nucleus_n + nucleus_z
     deltaf = compute_pairing_gaps(
         psi_new,
         state.meanfield.v_pair,
@@ -555,7 +564,7 @@ def hfb_iteration(
         state.pairwg,
         grid.wxyz,
         iteration,
-        state.nneut + state.nprot,
+        mass_number,
     )
     
     # 3. Solve BCS equations
@@ -565,8 +574,10 @@ def hfb_iteration(
         state.wstates,
         state.pairwg,
         state.isospin,
-        state.nneut,
-        state.nprot,
+        npsi_n,
+        npsi_p,
+        nucleus_n,
+        nucleus_z,
         force,
     )
     
@@ -589,6 +600,7 @@ def hfb_iteration(
     # 5. Coulomb potential
     wcoul = state.wcoul
     if use_coulomb:
+        from jax_hfbfft.physics.coulomb import solve_poisson
         wcoul = solve_poisson(
             densities.rho[1],  # Proton density
             state.coulomb_solver,
@@ -596,11 +608,12 @@ def hfb_iteration(
         )
     
     # 6. Compute mean-field potentials
+    from jax_hfbfft.physics.meanfield import compute_skyrme_meanfield
     meanfield = compute_skyrme_meanfield(
         densities,
         force,
         grid,
-        coulomb_potential=wcoul if use_coulomb else None,
+        coulomb_potential=wcoul,
         use_coulomb=use_coulomb,
     )
     
@@ -609,16 +622,23 @@ def hfb_iteration(
         psi_new, meanfield, state.isospin, grid
     )
     
-    # 8. Compute total energies
-    energies = compute_integrated_energy(
-        densities,
-        force,
-        grid,
-        coulomb_potential=wcoul if use_coulomb else None,
-        pairing_energy=pairing.epair,
-        mass_number=state.nneut + state.nprot,
-        use_coulomb=use_coulomb,
-    )
+    # 8. Compute total energies (only if requested - this is expensive)
+    # Since compute_energy is a static argument, we can use Python if/else
+    # and JAX will compile separate versions for each case
+    from jax_hfbfft.physics.energies import compute_integrated_energy
+    
+    if compute_energy:
+        energies = compute_integrated_energy(
+            densities,
+            force,
+            grid,
+            coulomb_potential=wcoul,
+            pairing_energy=pairing.epair,
+            mass_number=state.nneut + state.nprot,
+            use_coulomb=use_coulomb,
+        )
+    else:
+        energies = state.energies
     
     # 9. Check convergence
     efluct = jnp.max(jnp.abs(sp_energy - state.sp_energy))
@@ -642,7 +662,7 @@ def hfb_iteration(
         pairing=pairing,
         iteration=iteration,
         converged=converged,
-        efluct=float(efluct),
+        efluct=efluct,
     )
 
 
@@ -737,19 +757,39 @@ def run_hfb(
     
     # Main iteration loop
     start_time = time.time()
+    npsi = state.psi.shape[0]
+    npsi_p = npsi - npsi_n
     
     for i in range(config.max_iterations):
-        state = hfb_iteration(state, grid, force, config, npsi_n, use_coulomb=use_coulomb)
+        # Only compute energy when we need it for output or final result
+        need_output = config.verbose and (i + 1) % config.output_interval == 0
+        is_near_end = i >= config.max_iterations - 1
+        compute_energy = need_output or is_near_end
+        
+        state = hfb_iteration(
+            state, grid, force, config, 
+            npsi_n, npsi_p, nucleus_n, nucleus_z, 
+            use_coulomb=use_coulomb,
+            compute_energy=compute_energy,
+        )
         
         if callback is not None:
             callback(state)
         
-        if config.verbose and (i + 1) % config.output_interval == 0:
+        if need_output:
             elapsed = time.time() - start_time
             print(f"Iter {state.iteration:4d}: E = {state.energies.ehfint:12.4f} MeV, "
                   f"fluct = {state.efluct:.2e}, time = {elapsed:.1f}s")
         
         if state.converged:
+            # Make sure we have final energy computed
+            if not compute_energy:
+                state = hfb_iteration(
+                    state, grid, force, config,
+                    npsi_n, npsi_p, nucleus_n, nucleus_z,
+                    use_coulomb=use_coulomb,
+                    compute_energy=True,
+                )
             if config.verbose:
                 print(f"\nConverged at iteration {state.iteration}")
                 print(f"Total energy: {state.energies.ehfint:.4f} MeV")
@@ -759,5 +799,38 @@ def run_hfb(
             print(f"\nDid not converge after {config.max_iterations} iterations")
             print(f"Final energy: {state.energies.ehfint:.4f} MeV")
             print(f"Final fluctuation: {state.efluct:.2e}")
+    
+    # Final energy computation if not already done
+    if not compute_energy:
+        from jax_hfbfft.physics.energies import compute_integrated_energy
+        final_energies = compute_integrated_energy(
+            state.densities,
+            force,
+            grid,
+            coulomb_potential=state.wcoul,
+            pairing_energy=state.pairing.epair,
+            mass_number=nucleus_n + nucleus_z,
+            use_coulomb=use_coulomb,
+        )
+        state = SolverState(
+            psi=state.psi,
+            sp_energy=state.sp_energy,
+            sp_kinetic=state.sp_kinetic,
+            deltaf=state.deltaf,
+            wocc=state.wocc,
+            wguv=state.wguv,
+            wstates=state.wstates,
+            pairwg=state.pairwg,
+            isospin=state.isospin,
+            densities=state.densities,
+            meanfield=state.meanfield,
+            coulomb_solver=state.coulomb_solver,
+            wcoul=state.wcoul,
+            energies=final_energies,
+            pairing=state.pairing,
+            iteration=state.iteration,
+            converged=state.converged,
+            efluct=state.efluct,
+        )
     
     return state

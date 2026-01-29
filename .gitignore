@@ -68,4 +68,26 @@ pytest_cache/
 *.DS_Store
 *.db
 *.sqlite3
+
+# GUI Frontend (Node.js)
+node_modules/
+guι-frontend/node_modules/
+guι-frontend/dist/
+guι-frontend/build/
+guι-frontend/.vite/
+*.tsbuildinfo
+
+# GUI Backend
+src/jax_hfbfft/gui/frontend/assets/
+src/jax_hfbfft/gui/frontend/index.html
+
+# Calculation results
+hfb_results/
+*.npz
+*.res
+
+# Backup files
+*.bak
+*.backup
+*.tmp
 >>>>>>> f06f5519fb6c78e992957f7adf567dc917f92fff

@@ -25,7 +25,7 @@ from output import FortranOutputWriter, complete_sinfo_with_fortran_output
 #os.environ['CUDA_VISIBLE_DEVICES'] = ''
 
 # Create output directory
-output_dir = "hfb_results_40Ca_detailed"
+output_dir = "hfb_results_16O_detailed"
 os.makedirs(output_dir, exist_ok=True)
 
 # Add hash method to make classes hashable for JAX transformations
@@ -229,7 +229,7 @@ if __name__ == "__main__":
     #jax.profiler.start_trace("logs")
     try:
         # Run a calculation for Sn-132 with SLy4 force
-        run_hfb(force_name='SLy4', enable_pairing=True)
+        run_hfb(force_name='SLy4', enable_pairing=False)
     finally:
         #jax.profiler.stop_trace()
         print(f"Error in main execution: {str(e)}")

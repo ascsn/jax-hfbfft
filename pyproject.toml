@@ -49,10 +49,10 @@ dependencies = [
 [project.optional-dependencies]
 # GPU support with CUDA
 cuda = [
-    "jax[cuda12_pip]>=0.4.0",
+    "jax[cuda12]>=0.4.0",
 ]
 cuda11 = [
-    "jax[cuda11_pip]>=0.4.0",
+    "jax[cuda11]>=0.4.0",
 ]
 # GPU support with Metal (Apple Silicon)
 metal = [
@@ -78,9 +78,19 @@ docs = [
 viz = [
     "matplotlib>=3.5",
 ]
+# GUI (web-based interface)
+gui = [
+    "fastapi>=0.100.0",
+    "uvicorn[standard]>=0.23.0",
+    "websockets>=11.0",
+    "pydantic>=2.0",
+    "aiosqlite>=0.19.0",
+    "python-multipart>=0.0.6",
+    "psutil>=5.9.0",
+]
 # All optional dependencies
 all = [
-    "jax-hfbfft[dev,docs,viz]",
+    "jax-hfbfft[dev,docs,viz,gui]",
 ]
 
 [project.urls]
@@ -92,6 +102,7 @@ Changelog = "https://github.com/ascsn/jax-hfbfft/blob/main/CHANGELOG.md"
 
 [project.scripts]
 jax-hfbfft = "jax_hfbfft.cli:main"
+hfbfft = "jax_hfbfft.cli:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
@@ -101,7 +112,7 @@ where = ["src"]
 include = ["jax_hfbfft*"]
 
 [tool.setuptools.package-data]
-jax_hfbfft = ["data/*.yml", "data/*.yaml"]
+jax_hfbfft = ["data/*.yml", "data/*.yaml", "gui/frontend/**/*", "gui/frontend/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

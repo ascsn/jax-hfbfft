@@ -59,14 +59,35 @@ Common dependencies include:
 ### Installation
 
 ```bash
-# Install in development mode
+# Install from PyPI (future)
+pip install hfbfft
+
+# Or install in development mode
 pip install -e .
 
-# Or with GPU support
+# With GPU support
 pip install -e ".[cuda]"
 ```
 
-### Basic Calculation
+### Command-Line Interface (Recommended for beginners)
+
+```bash
+# 1. Generate a sample configuration file
+hfbfft init
+
+# 2. Edit the configuration
+nano config.yml
+
+# 3. Run the calculation
+hfbfft run
+
+# Or just run if config.yml exists:
+hfbfft
+```
+
+See [docs/CLI_WORKFLOW.md](docs/CLI_WORKFLOW.md) for complete CLI documentation.
+
+### Python API
 
 ```python
 from jax_hfbfft import HFBFFT, Nucleus, Force
@@ -83,6 +104,125 @@ results = calc.run(max_iterations=1000)
 
 print(f"Binding energy: {results.total_energy:.3f} MeV")
 ```
+
+### Classic HFB Code Interface
+
+For users familiar with traditional HFB codes, we provide a configuration file-based interface:
+
+```bash
+# 1. Edit configuration file
+nano config.yml
+
+# 2. Run calculation
+python run_hfb.py
+
+# 3. Results are saved to hfb_results/nucleus_name_timestamp/
+```
+
+This provides the classic HFB code workflow:
+- Edit input file with all parameters
+- Run executable
+- Output written to directory with comprehensive result files
+- Easy benchmarking against other codes (HFBTHO, Sky3D, etc.)
+- **Arbitrary multipole constraints** (Q20, Q30, Q40, etc.)
+
+See [RUN_INSTRUCTIONS.md](RUN_INSTRUCTIONS.md) for complete documentation and example configurations.
+
+**Example config.yml:**
+```yaml
+nucleus:
+  protons: 50
+  neutrons: 82
+  name: "Sn132"
+
+force:
+  name: "SLy4"
+  ipair: 6  # DDDI pairing
+
+grid:
+  nx: 32
+  ny: 32
+  nz: 32
+
+iteration:
+  max_iterations: 500
+  convergence_threshold: 1.0e-6
+
+# Optional: Constrain multipole moments
+constraints:
+  multipoles:
+    Q20: 10.0   # Quadrupole (fm²)
+    Q30: 2.0    # Octupole (fm³)
+```
+
+Run multiple configurations:
+```bash
+python run_hfb.py config_O16.yml
+python run_hfb.py config_Ca40.yml
+python run_hfb.py config_Sn132.yml
+```
+
+### Multipole Constraints
+
+The code supports **arbitrary multipole moment constraints** Q_λμ for exploring deformation and potential energy surfaces. Constraints can be specified using either:
+
+1. **Direct multipole moments** (Q₂₀, Q₃₀, etc. in fm^λ)
+2. **Beta-gamma parameters** (β₂, γ - Hill-Wheeler parameterization)
+
+#### Direct Multipoles
+
+```python
+from jax_hfbfft import Constraint
+
+# Simple Q20 constraint
+constraint = Constraint.from_multipoles({'Q20': 10.0})
+
+# Multiple simultaneous constraints
+constraint = Constraint.from_multipoles({
+    'Q20': 10.0,   # Quadrupole
+    'Q30': 2.0,    # Octupole (pear shape)
+    'Q22': 1.0,    # Triaxial
+    (4, 0): 1.0,   # Hexadecapole (using tuple notation)
+})
+
+calc = HFBFFT(nucleus, force, grid, constraint=constraint)
+```
+
+#### Beta-Gamma Parameters
+
+The standard β-γ parameterization commonly used in publications:
+
+```python
+# Prolate deformation (football shape)
+constraint = Constraint.from_beta_gamma(
+    mass_number=238,
+    beta2=0.25,    # Deformation parameter
+    gamma=0        # 0° = prolate, 60° = oblate
+)
+
+# Octupole deformation (pear shape, e.g., Ra-224)
+constraint = Constraint.from_beta_gamma(
+    mass_number=224,
+    beta2=0.10,
+    beta3=0.08,    # Octupole
+    gamma=0
+)
+
+calc = HFBFFT(nucleus, force, grid, constraint=constraint)
+```
+
+Config file format:
+```yaml
+constraints:
+  beta_gamma:
+    beta2: 0.25
+    gamma: 0     # Prolate
+    beta3: 0.05  # Optional octupole
+```
+
+Available multipole names: Q00, Q10, Q20, Q21, Q22, Q30, Q40, Q50, Q60, etc., or specify directly as (λ, μ) tuples for arbitrary multipoles.
+
+See [docs/multipole_constraints.md](docs/multipole_constraints.md), `examples/constrained_multipoles.py`, and `examples/beta_gamma_constraints.py` for details.
 
 ## Object-Oriented API
 
@@ -160,5 +300,51 @@ pytest tests/ -v
 - Time-dependent HFB (TDHFB) for nuclear dynamics.
 - Support for a wider range of Skyrme functionals.
 - Advanced constraint options for multi-dimensional potential energy surfaces.
+
+## Graphical User Interface
+
+HFBFFT includes both web-based and desktop GUI interfaces for interactive calculations.
+
+### Web GUI
+
+Start the web interface with:
+
+```bash
+hfbfft gui
+```
+
+This opens a browser with:
+- **Calculator**: Configure and run HFB calculations interactively
+- **Results Viewer**: View energies, radii, deformation, and single-particle spectra
+- **3D Visualization**: Interactive density distribution plots
+- **Run Manager**: Browse and filter calculation history
+
+Options:
+```bash
+hfbfft gui --port 8080        # Custom port
+hfbfft gui --no-browser       # Don't auto-open browser
+hfbfft gui --debug            # Enable debug mode
+```
+
+### Desktop App (Electron)
+
+For a native desktop experience:
+
+```bash
+cd gui-desktop
+npm install
+npm start
+```
+
+The desktop app wraps the web GUI with:
+- Native window with system menus
+- Automatic backend management
+- Cross-platform support (Linux, macOS, Windows)
+
+### JIT Warmup
+
+On first launch, the GUI pre-warms JAX's JIT compilation with a large configuration (256 states, 32³ grid). This takes ~60-90 seconds but ensures subsequent calculations start instantly.
+
+See [docs/GUI_IMPLEMENTATION_PLAN.md](docs/GUI_IMPLEMENTATION_PLAN.md) for architecture details.
 
 

@@ -325,12 +325,29 @@ def run_calculation(config_path: Optional[str], verbose: bool = False):
         
         # Create force
         force_config = config.get('force', {})
+        force_kwargs = {
+            'ipair': force_config.get('ipair', 6),
+            'tbcs': force_config.get('use_bcs', True),  # Config uses 'use_bcs', Force uses 'tbcs'
+            'v0neut': force_config.get('v0_neutron', -1.0),  # Config uses v0_neutron, Force uses v0neut
+            'v0prot': force_config.get('v0_proton', -1.0),   # Config uses v0_proton, Force uses v0prot
+        }
+        
+        # Add pairing cutoff if specified
+        if 'pairing_cutoff' in force_config:
+            import jax.numpy as jnp
+            cutoff = force_config['pairing_cutoff']
+            if isinstance(cutoff, list):
+                force_kwargs['pair_cutoff'] = jnp.array(cutoff)
+            else:
+                force_kwargs['pair_cutoff'] = jnp.array([cutoff, cutoff])
+        
+        # Add pairing density if specified
+        if 'rho0_pairing' in force_config:
+            force_kwargs['rho0pr'] = force_config['rho0_pairing']
+        
         force = Force.from_name(
             force_config.get('name', 'SLy4'),
-            ipair=force_config.get('ipair', 6),
-            tbcs=force_config.get('use_bcs', True),  # Config uses 'use_bcs', Force uses 'tbcs'
-            v0neut=force_config.get('v0_neutron', -1.0),  # Config uses v0_neutron, Force uses v0neut
-            v0prot=force_config.get('v0_proton', -1.0),   # Config uses v0_proton, Force uses v0prot
+            **force_kwargs
         )
         
         # Create grid
@@ -383,25 +400,69 @@ def run_calculation(config_path: Optional[str], verbose: bool = False):
             print(f"Constraint: {constraint}")
         print()
         
+        # Get basis configuration
+        basis_config = config.get('basis', {})
+        npsi_neutron = basis_config.get('npsi_neutron')
+        npsi_proton = basis_config.get('npsi_proton')
+        
+        # Build npsi tuple if either is specified
+        npsi = None
+        if npsi_neutron is not None and npsi_proton is not None:
+            npsi = (npsi_neutron, npsi_proton)
+        
         # Create calculator
         calc = HFBFFT(
             nucleus=nucleus,
             force=force,
             grid=grid,
-            constraint=constraint
+            constraint=constraint,
+            npsi=npsi,
         )
         
-        # Run calculation
+        # Initialize wavefunctions
+        init_config = config.get('initialization', {})
+        init_method = init_config.get('method', 'harmonic_oscillator')
+        
+        if verbose:
+            print(f"Initializing wavefunctions using {init_method} method...")
+        
+        if init_method == 'harmonic_oscillator':
+            ho_params = {}
+            if 'ho_length_x' in init_config:
+                ho_params['radinx'] = init_config['ho_length_x']
+            if 'ho_length_y' in init_config:
+                ho_params['radiny'] = init_config['ho_length_y']
+            if 'ho_length_z' in init_config:
+                ho_params['radinz'] = init_config['ho_length_z']
+            calc.initialize_wavefunctions(method=init_method, **ho_params)
+        else:
+            calc.initialize_wavefunctions(method=init_method)
+        
+        # Get iteration configuration
         iteration_config = config.get('iteration', {})
         max_iterations = iteration_config.get('max_iterations', 500)
         convergence = iteration_config.get('convergence_threshold', 1.0e-6)
+        print_interval = iteration_config.get('print_interval', 10)
+        
+        # Set iteration parameters if provided
+        if 'x0dmp' in iteration_config:
+            calc.x0dmp = iteration_config['x0dmp']
+        if 'e0dmp' in iteration_config:
+            calc.e0dmp = iteration_config['e0dmp']
+        if 'density_mixing' in iteration_config:
+            calc.density_mixing = iteration_config['density_mixing']
+        if 'diag_start' in iteration_config:
+            calc.diag_start = iteration_config['diag_start']
+        if 'bcs_start' in iteration_config:
+            calc.bcs_start = iteration_config['bcs_start']
         
         print(f"Starting HFB iteration (max: {max_iterations}, convergence: {convergence:.1e})...")
         print()
         
         results = calc.run(
             max_iterations=max_iterations,
-            convergence_threshold=convergence
+            convergence_threshold=convergence,
+            print_interval=print_interval,
         )
         
         # Print results
@@ -417,23 +478,45 @@ def run_calculation(config_path: Optional[str], verbose: bool = False):
         
         # Save results if output directory specified
         output_config = config.get('output', {})
-        if output_config and output_config.get('directory'):
-            output_dir = Path(output_config['directory'])
+        output_dir_name = output_config.get('output_dir') or output_config.get('directory')
+        
+        if output_dir_name:
+            output_dir = Path(output_dir_name)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             run_dir = output_dir / f"{nucleus.name}_{timestamp}"
             run_dir.mkdir(parents=True, exist_ok=True)
             
-            # Save summary
-            summary_path = run_dir / "summary.txt"
-            with open(summary_path, 'w') as f:
-                f.write("=" * 70 + "\n")
-                f.write("HFB Calculation Summary\n")
-                f.write("=" * 70 + "\n\n")
-                f.write(f"Nucleus:  {nucleus.name} (Z={nucleus.protons}, N={nucleus.neutrons})\n")
-                f.write(f"Force:    {force.name}\n")
-                f.write(f"Total Energy: {results.total_energy:.6f} MeV\n")
-                f.write(f"E/A:          {results.total_energy/nucleus.mass_number:.6f} MeV\n")
+            # Save configuration file used for this run
+            config_path = run_dir / "config.yml"
+            with open(config_path, 'w') as f:
+                yaml.dump(config, f, default_flow_style=False, sort_keys=False)
             
+            # Save summary
+            _save_summary(calc, results, config, run_dir)
+            
+            # Save detailed results based on config flags
+            if output_config.get('save_convergence', True):
+                _save_convergence(results, run_dir)
+            
+            if output_config.get('save_energies', True):
+                _save_energies(calc, results, run_dir)
+            
+            if output_config.get('save_moments', True):
+                _save_moments(results, run_dir)
+            
+            if output_config.get('save_radii', True):
+                _save_radii(results, run_dir)
+            
+            if output_config.get('save_single_particle', True):
+                _save_single_particle(calc, run_dir)
+            
+            if output_config.get('save_pairing', True) and force.ipair > 0:
+                _save_pairing(calc, results, run_dir)
+            
+            if output_config.get('save_densities', True):
+                _save_densities(calc, run_dir)
+            
+            print()
             print(f"Results saved to: {run_dir}")
             print()
         
@@ -447,6 +530,207 @@ def run_calculation(config_path: Optional[str], verbose: bool = False):
         if verbose:
             traceback.print_exc()
         sys.exit(1)
+
+
+def _save_summary(calc, results, config, output_dir):
+    """Save summary file with main results."""
+    summary_file = output_dir / "summary.txt"
+    
+    nucleus = calc.nucleus
+    force = calc.force
+    
+    with open(summary_file, 'w') as f:
+        f.write("=" * 80 + "\n")
+        f.write(" " * 25 + "jax-hfbfft HFB Calculation\n")
+        f.write("=" * 80 + "\n\n")
+        
+        # Configuration
+        f.write(f"Nucleus:  {nucleus.name} (Z={nucleus.protons}, N={nucleus.neutrons}, A={nucleus.mass_number})\n")
+        f.write(f"Force:    {force.name}\n")
+        
+        ipair_names = {0: "No pairing", 5: "VDI", 6: "DDDI"}
+        ipair_name = ipair_names.get(force.ipair, f"ipair={force.ipair}")
+        f.write(f"Pairing:  {ipair_name}\n")
+        f.write(f"Grid:     {calc.grid.nx}×{calc.grid.ny}×{calc.grid.nz} points\n\n")
+        
+        # Convergence
+        f.write("=" * 80 + "\n")
+        f.write("CONVERGENCE\n")
+        f.write("=" * 80 + "\n")
+        f.write(f"Converged:         {results.converged}\n")
+        f.write(f"Iterations:        {results.iterations}\n")
+        f.write(f"Final fluctuation: {results.final_fluctuation:.3e} MeV\n\n")
+        
+        # Energies
+        f.write("=" * 80 + "\n")
+        f.write("ENERGIES (MeV)\n")
+        f.write("=" * 80 + "\n")
+        f.write(f"Total binding energy:      {results.total_energy:12.3f}\n")
+        f.write(f"  Kinetic:                 {results.kinetic_energy:12.3f}\n")
+        f.write(f"  Potential:               {results.potential_energy:12.3f}\n")
+        f.write(f"  Coulomb:                 {results.coulomb_energy:12.3f}\n")
+        f.write(f"  Pairing:                 {results.pairing_energy:12.3f}\n")
+        f.write(f"  Rearrangement:           {results.rearrangement_energy:12.3f}\n")
+        f.write(f"  Center-of-mass:          {results.cm_correction:12.3f}\n\n")
+        
+        # Binding energy per nucleon
+        f.write(f"Binding energy/A:          {results.total_energy/nucleus.mass_number:12.3f} MeV\n\n")
+        
+        # Radii
+        f.write("=" * 80 + "\n")
+        f.write("RADII AND DEFORMATION\n")
+        f.write("=" * 80 + "\n")
+        f.write(f"RMS radius (neutron):      {results.rms_radius_n:12.3f} fm\n")
+        f.write(f"RMS radius (proton):       {results.rms_radius_p:12.3f} fm\n")
+        f.write(f"RMS radius (total):        {results.rms_radius_total:12.3f} fm\n")
+        f.write(f"Charge radius:             {results.charge_radius:12.3f} fm\n\n")
+        
+        f.write(f"Quadrupole Q20:            {results.q20:12.3f} fm²\n")
+        f.write(f"Quadrupole Q22:            {results.q22:12.3f} fm²\n")
+        f.write(f"Deformation β₂:            {results.beta2:12.4f}\n")
+        f.write(f"Deformation γ:             {results.gamma:12.1f} deg\n\n")
+        
+        # Pairing
+        if force.ipair != 0:
+            f.write("=" * 80 + "\n")
+            f.write("PAIRING\n")
+            f.write("=" * 80 + "\n")
+            f.write(f"Neutron Fermi energy:      {results.fermi_energy_n:12.3f} MeV\n")
+            f.write(f"Proton Fermi energy:       {results.fermi_energy_p:12.3f} MeV\n")
+            f.write(f"Neutron pairing gap:       {results.pairing_gap_n:12.3f} MeV\n")
+            f.write(f"Proton pairing gap:        {results.pairing_gap_p:12.3f} MeV\n\n")
+
+
+def _save_convergence(results, output_dir):
+    """Save convergence history."""
+    if results.convergence_history is None:
+        return
+    
+    conv_file = output_dir / "convergence.res"
+    
+    with open(conv_file, 'w') as f:
+        f.write("# Iteration    Fluctuation(MeV)\n")
+        for i, fluct in enumerate(results.convergence_history):
+            f.write(f"{i:6d}    {float(fluct):15.6e}\n")
+
+
+def _save_energies(calc, results, output_dir):
+    """Save detailed energy breakdown."""
+    energy_file = output_dir / "energies.res"
+    
+    with open(energy_file, 'w') as f:
+        f.write("# Detailed energy breakdown (all in MeV)\n")
+        f.write(f"# Total energy:      {results.total_energy:12.6f}\n")
+        f.write(f"# Kinetic energy:    {results.kinetic_energy:12.6f}\n")
+        f.write(f"# Potential energy:  {results.potential_energy:12.6f}\n")
+        f.write(f"# Coulomb energy:    {results.coulomb_energy:12.6f}\n")
+        f.write(f"# Pairing energy:    {results.pairing_energy:12.6f}\n")
+        f.write(f"# Rearrangement:     {results.rearrangement_energy:12.6f}\n")
+        f.write(f"# CM correction:     {results.cm_correction:12.6f}\n")
+        f.write(f"#\n")
+        f.write(f"# Skyrme functional terms:\n")
+        f.write(f"# ehf0 (t0):         {results.ehf0:12.6f}\n")
+        f.write(f"# ehf1 (current):    {results.ehf1:12.6f}\n")
+        f.write(f"# ehf2 (Laplacian):  {results.ehf2:12.6f}\n")
+        f.write(f"# ehf3 (density):    {results.ehf3:12.6f}\n")
+        f.write(f"# ehfls (spin-orb):  {results.ehfls:12.6f}\n")
+
+
+def _save_moments(results, output_dir):
+    """Save multipole moments."""
+    moments_file = output_dir / "moments.res"
+    
+    with open(moments_file, 'w') as f:
+        f.write("# Multipole moments\n")
+        f.write(f"Q20 (fm²):     {results.q20:12.6f}\n")
+        f.write(f"Q22 (fm²):     {results.q22:12.6f}\n")
+        f.write(f"beta2:         {results.beta2:12.6f}\n")
+        f.write(f"gamma (deg):   {results.gamma:12.2f}\n")
+
+
+def _save_radii(results, output_dir):
+    """Save radii and deformation parameters."""
+    radii_file = output_dir / "radii.res"
+    
+    with open(radii_file, 'w') as f:
+        f.write("# Radii (fm) and deformation parameters\n")
+        f.write(f"RMS radius (neutron):  {results.rms_radius_n:12.6f}\n")
+        f.write(f"RMS radius (proton):   {results.rms_radius_p:12.6f}\n")
+        f.write(f"RMS radius (total):    {results.rms_radius_total:12.6f}\n")
+        f.write(f"Charge radius:         {results.charge_radius:12.6f}\n")
+        f.write(f"Beta2:                 {results.beta2:12.6f}\n")
+        f.write(f"Gamma (deg):           {results.gamma:12.2f}\n")
+
+
+def _save_single_particle(calc, output_dir):
+    """Save single-particle spectrum."""
+    sp_file = output_dir / "single_particle.res"
+    
+    state = calc._solver_state
+    import jax.numpy as jnp
+    
+    # Separate neutrons and protons
+    neutron_mask = state.isospin == 0
+    proton_mask = state.isospin == 1
+    
+    with open(sp_file, 'w') as f:
+        f.write("# Single-particle spectrum\n")
+        f.write("#\n")
+        f.write("# Neutrons:\n")
+        f.write("# Index    Energy(MeV)    Occupation\n")
+        
+        neutron_indices = jnp.where(neutron_mask)[0]
+        for idx in neutron_indices:
+            i = int(idx)
+            energy = float(state.sp_energy[i])
+            occupation = float(state.wocc[i])
+            f.write(f"{i:5d}    {energy:12.6f}    {occupation:8.6f}\n")
+        
+        f.write("#\n")
+        f.write("# Protons:\n")
+        f.write("# Index    Energy(MeV)    Occupation\n")
+        
+        proton_indices = jnp.where(proton_mask)[0]
+        for idx in proton_indices:
+            i = int(idx)
+            energy = float(state.sp_energy[i])
+            occupation = float(state.wocc[i])
+            f.write(f"{i:5d}    {energy:12.6f}    {occupation:8.6f}\n")
+
+
+def _save_pairing(calc, results, output_dir):
+    """Save pairing properties."""
+    pairing_file = output_dir / "pairing.res"
+    
+    with open(pairing_file, 'w') as f:
+        f.write("# Pairing properties\n")
+        f.write(f"Neutron Fermi energy (MeV):  {results.fermi_energy_n:12.6f}\n")
+        f.write(f"Proton Fermi energy (MeV):   {results.fermi_energy_p:12.6f}\n")
+        f.write(f"Neutron pairing gap (MeV):   {results.pairing_gap_n:12.6f}\n")
+        f.write(f"Proton pairing gap (MeV):    {results.pairing_gap_p:12.6f}\n")
+        f.write(f"Neutron pairing energy (MeV): {results.pairing_energy:12.6f}\n")
+
+
+def _save_densities(calc, output_dir):
+    """Save density distributions."""
+    densities_file = output_dir / "densities.npz"
+    
+    state = calc._solver_state
+    import numpy as np
+    
+    # Save densities and grid information
+    np.savez(
+        densities_file,
+        rho=np.array(state.densities.rho),
+        tau=np.array(state.densities.tau),
+        chi=np.array(state.densities.chi),
+        current=np.array(state.densities.current),
+        sdens=np.array(state.densities.sdens),
+        sodens=np.array(state.densities.sodens),
+        x=np.array(calc.grid.x),
+        y=np.array(calc.grid.y),
+        z=np.array(calc.grid.z),
+    )
 
 
 def show_info(args):

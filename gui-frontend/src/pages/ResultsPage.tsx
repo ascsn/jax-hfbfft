@@ -1,13 +1,24 @@
 import { useParams, Link } from 'react-router-dom'
-import { useCalculation } from '@/hooks'
+import { useCalculation, useDensityData } from '@/hooks'
 import { ResultsDisplay, SpectrumPlot, StatusDisplay, DensityVisualizer } from '@/components'
 import { Button } from '@/components/ui'
 import { ArrowLeft, Download, Loader2 } from 'lucide-react'
 import { formatNucleus, getPhaseInfo } from '@/lib/utils'
+import { useState } from 'react'
+import type { DensityType } from '@/components/DensityVisualizer'
 
 export function ResultsPage() {
   const { id } = useParams<{ id: string }>()
   const { data: calculation, isLoading, error } = useCalculation(id!)
+  const [selectedDensityType, setSelectedDensityType] = useState<DensityType>('total')
+  
+  // Fetch density data for completed calculations
+  const calculationComplete = calculation?.phase === 'converged' || calculation?.phase === 'failed'
+  const { data: densityData, isLoading: densityLoading } = useDensityData(
+    id,
+    selectedDensityType,
+    { enabled: calculationComplete && calculation?.phase === 'converged' }
+  )
   
   if (isLoading) {
     return (
@@ -82,7 +93,11 @@ export function ResultsPage() {
           />
           
           {/* 3D Density Visualization */}
-          <DensityVisualizer />
+          <DensityVisualizer 
+            initialData={densityData}
+            isLoading={densityLoading}
+            onDensityTypeChange={setSelectedDensityType}
+          />
           
           {/* Spectrum plot */}
           {calculation.results.single_particle_levels && (

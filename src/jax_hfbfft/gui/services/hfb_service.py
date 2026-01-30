@@ -38,6 +38,7 @@ class ActiveCalculation:
     status: CalculationStatus
     cancel_event: threading.Event = field(default_factory=threading.Event)
     start_time: float = field(default_factory=time.time)
+    hfbfft_instance: Any = None  # Store HFBFFT instance for density extraction
     
 
 class HFBService:
@@ -160,11 +161,11 @@ class HFBService:
             )
             
             # Run the actual calculation in thread pool
+            # Pass the event loop so the sync function can schedule callbacks
             loop = asyncio.get_event_loop()
             results = await loop.run_in_executor(
                 self._executor,
-                self._run_hfb_sync,
-                active,
+                lambda: self._run_hfb_sync(active, loop),
             )
             
             if active.cancel_event.is_set():
@@ -208,11 +209,15 @@ class HFBService:
             print(f"Calculation {calc_id} failed:\n{traceback_str}")
             await self._mark_failed(calc_id, error_msg, traceback_str)
     
-    def _run_hfb_sync(self, active: ActiveCalculation) -> CalculationResults:
+    def _run_hfb_sync(self, active: ActiveCalculation, main_loop: asyncio.AbstractEventLoop) -> CalculationResults:
         """
         Run HFB calculation synchronously.
         
         This runs in a thread pool worker.
+        
+        Args:
+            active: The active calculation context.
+            main_loop: The main event loop for scheduling async callbacks.
         """
         request = active.request
         
@@ -309,17 +314,19 @@ class HFBService:
             active.status.progress = progress
             active.status.phase = CalculationPhase.ITERATING
             
-            # Notify callbacks (for websocket updates)
-            import asyncio
-            try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    asyncio.ensure_future(
-                        self._notify_callbacks(active.id, progress),
-                        loop=loop
-                    )
-            except Exception:
-                pass  # Ignore callback errors in thread
+            # Notify callbacks (for websocket updates) - use thread-safe call
+            if main_loop is not None:
+                try:
+                    # Use call_soon_threadsafe to schedule callback on main loop
+                    # Need to capture progress in a closure to avoid late binding issues
+                    def schedule_callback(p=progress):
+                        asyncio.ensure_future(
+                            self._notify_callbacks(active.id, p),
+                            loop=main_loop
+                        )
+                    main_loop.call_soon_threadsafe(schedule_callback)
+                except Exception:
+                    pass  # Ignore callback errors in thread
         
         # Run calculation
         calc._callbacks.append(iteration_callback)
@@ -332,7 +339,10 @@ class HFBService:
         
         end_time = time.time()
         
-        # Clear JAX memory to prevent OOM on subsequent runs
+        # Store the HFBFFT instance for density extraction
+        active.hfbfft_instance = calc
+        
+        # Clear JAX memory to prevent OOM on subsequent runs (but keep calc in memory for now)
         try:
             import jax
             import gc
@@ -539,6 +549,92 @@ class HFBService:
                     self._progress_callbacks[calc_id].remove(callback)
                 except ValueError:
                     pass
+    
+    async def get_density_data(
+        self,
+        calc_id: str,
+        density_type: str = "total",
+        downsample: Optional[int] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Extract density data from a completed calculation.
+        
+        Args:
+            calc_id: Calculation ID
+            density_type: Type of density to extract
+            downsample: Optional grid size to downsample to
+            
+        Returns:
+            Dictionary with density data or None if not available
+        """
+        async with self._lock:
+            if calc_id not in self._calculations:
+                return None
+            
+            calc = self._calculations[calc_id]
+            hfb = calc.hfbfft_instance
+            
+            if hfb is None or hfb.state.rho is None:
+                return None
+            
+            # Extract the requested density
+            import jax.numpy as jnp
+            
+            if density_type == "neutron":
+                density = hfb.state.rho[0]  # Neutron density
+            elif density_type == "proton":
+                density = hfb.state.rho[1]  # Proton density
+            elif density_type == "total":
+                density = hfb.state.rho[0] + hfb.state.rho[1]  # Total
+            elif density_type == "tau_n":
+                density = hfb.state.tau[0]  # Neutron kinetic density
+            elif density_type == "tau_p":
+                density = hfb.state.tau[1]  # Proton kinetic density
+            elif density_type == "tau_total":
+                density = hfb.state.tau[0] + hfb.state.tau[1]  # Total kinetic
+            else:
+                return None
+            
+            # Convert to numpy
+            density_np = jnp.array(density)
+            
+            # Downsample if requested
+            if downsample is not None and downsample < hfb.grid.nx:
+                from scipy.ndimage import zoom
+                factor = downsample / hfb.grid.nx
+                density_np = zoom(density_np, factor, order=1)
+                dx = hfb.grid.dx / factor
+                dy = hfb.grid.dy / factor
+                dz = hfb.grid.dz / factor
+                nx, ny, nz = downsample, downsample, downsample
+            else:
+                dx, dy, dz = hfb.grid.dx, hfb.grid.dy, hfb.grid.dz
+                nx, ny, nz = hfb.grid.nx, hfb.grid.ny, hfb.grid.nz
+            
+            # Convert to Python lists for JSON serialization
+            density_list = density_np.tolist()
+            
+            # Calculate metadata
+            min_val = float(jnp.min(density_np))
+            max_val = float(jnp.max(density_np))
+            
+            return {
+                "density": density_list,
+                "grid": {
+                    "nx": int(nx),
+                    "ny": int(ny),
+                    "nz": int(nz),
+                    "dx": float(dx),
+                    "dy": float(dy),
+                    "dz": float(dz),
+                },
+                "type": density_type,
+                "metadata": {
+                    "min_value": min_val,
+                    "max_value": max_val,
+                    "units": "fm^-3",
+                },
+            }
 
 
 # Global service instance

@@ -686,6 +686,19 @@ class HFBFFT:
                  efluct=1e10
              )
 
+        # Create a wrapper callback that invokes all registered callbacks
+        def iteration_callback(state):
+            """Wrapper that calls all registered callbacks."""
+            for cb in self._callbacks:
+                try:
+                    cb(
+                        state.iteration,
+                        float(state.energies.ehfint),
+                        float(state.efluct)
+                    )
+                except Exception as e:
+                    print(f"Callback error: {e}")
+
         # Run the HFB solver (use 'force' with CM correction applied)
         final_state = run_hfb(
             grid=self.grid,
@@ -695,6 +708,7 @@ class HFBFFT:
             npsi_n=int(self._npsi[0]),
             config=config,
             initial_state=initial_state,  # Added
+            callback=iteration_callback if self._callbacks else None,
             use_coulomb=self.include_coulomb,
         )
         
@@ -747,6 +761,13 @@ class HFBFFT:
         
         self._iteration = final_state.iteration
         self._converged = final_state.converged
+        
+        # Store the final densities in self.state for later access (e.g., visualization)
+        self.state.rho = final_state.densities.rho
+        self.state.tau = final_state.densities.tau
+        self.state.psi = final_state.psi
+        self.state.sp_energy = final_state.sp_energy
+        self.state.wocc = final_state.wocc
         
         print("-" * 60)
         print(f"Calculation {'converged' if self._converged else 'completed'}")

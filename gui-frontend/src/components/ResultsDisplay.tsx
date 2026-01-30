@@ -1,7 +1,7 @@
 import { CalculationResults as Results } from '@/types'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui'
 import { formatEnergy, formatRadius, formatNumber } from '@/lib/utils'
-import { Atom, Target, Waves, Zap } from 'lucide-react'
+import { Atom, Target, Waves, Zap, Clock } from 'lucide-react'
 
 interface ResultsDisplayProps {
   results: Results
@@ -101,6 +101,42 @@ export function ResultsDisplay({ results, nucleusName }: ResultsDisplayProps) {
         </CardContent>
       </Card>
       
+      {/* Performance & Runtime */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-lg">
+            <Clock className="w-5 h-5" />
+            Performance
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div className="text-center p-3 rounded-lg bg-muted">
+              <p className="text-sm text-muted-foreground">Total Time</p>
+              <p className="text-xl font-mono">{formatNumber(results.total_time_seconds, 2)}</p>
+              <p className="text-xs text-muted-foreground">seconds</p>
+            </div>
+            <div className="text-center p-3 rounded-lg bg-muted">
+              <p className="text-sm text-muted-foreground">Time / Iteration</p>
+              <p className="text-xl font-mono">
+                {formatNumber(results.total_time_seconds / results.iterations, 3)}
+              </p>
+              <p className="text-xs text-muted-foreground">s/iter</p>
+            </div>
+            <div className="text-center p-3 rounded-lg bg-muted">
+              <p className="text-sm text-muted-foreground">Iterations</p>
+              <p className="text-xl font-mono">{results.iterations}</p>
+              <p className="text-xs text-muted-foreground">cycles</p>
+            </div>
+            <div className="text-center p-3 rounded-lg bg-muted">
+              <p className="text-sm text-muted-foreground">Convergence</p>
+              <p className="text-xl font-mono">{results.final_fluctuation.toExponential(2)}</p>
+              <p className="text-xs text-muted-foreground">final Δ</p>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
       {/* Pairing (if present) */}
       {(results.pairing.gap_neutron > 0 || results.pairing.gap_proton > 0) && (
         <Card>

@@ -279,3 +279,27 @@ class HistoryResponse(BaseModel):
     page: int
     page_size: int
     total_pages: int
+
+class GridInfo(BaseModel):
+    """Grid information for density data."""
+    nx: int
+    ny: int
+    nz: int
+    dx: float
+    dy: float
+    dz: float
+
+
+class DensityMetadata(BaseModel):
+    """Metadata for density arrays."""
+    min_value: float
+    max_value: float
+    units: str = "fm^-3"
+
+
+class DensityData(BaseModel):
+    """Density data for visualization."""
+    density: List[List[List[float]]]  # 3D array as nested lists
+    grid: GridInfo
+    type: str  # "total", "neutron", "proton", "tau_n", "tau_p", "tau_total"
+    metadata: DensityMetadata

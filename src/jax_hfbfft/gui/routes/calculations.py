@@ -6,7 +6,7 @@ and cancelling HFB calculations.
 """
 
 from fastapi import APIRouter, HTTPException, BackgroundTasks
-from typing import List
+from typing import List, Optional
 
 from jax_hfbfft.gui.models import (
     CalculationRequest,
@@ -130,33 +130,38 @@ async def cancel_calculation(calc_id: str):
 
 
 @router.get("/calculations/{calc_id}/densities")
-async def get_densities(calc_id: str, isospin: str = "total"):
+async def get_densities(
+    calc_id: str,
+    type: str = "total",
+    downsample: Optional[int] = None
+):
     """
     Get density data for 3D visualization.
     
     Args:
         calc_id: The calculation ID.
-        isospin: Which density to return: "neutron", "proton", or "total".
+        type: Which density to return: "neutron", "proton", "total",
+              "tau_n", "tau_p", "tau_total"
+        downsample: Optional grid size to downsample to (e.g., 16 for faster transfer)
         
     Returns:
         3D density array data for visualization.
     """
     service = get_hfb_service()
-    status = await service.get_calculation(calc_id)
     
-    if not status:
-        storage = await get_storage()
-        status = await storage.get_calculation(calc_id)
+    # Try to get density data
+    density_data = await service.get_density_data(calc_id, type, downsample)
     
-    if not status:
-        raise HTTPException(status_code=404, detail="Calculation not found")
+    if density_data is None:
+        # Check if calculation exists
+        status = await service.get_calculation(calc_id)
+        if not status:
+            raise HTTPException(status_code=404, detail="Calculation not found")
+        if not status.results:
+            raise HTTPException(status_code=400, detail="Calculation not complete")
+        raise HTTPException(
+            status_code=404,
+            detail="Density data not available (calculation may have been cleared)"
+        )
     
-    if not status.results:
-        raise HTTPException(status_code=400, detail="Calculation not complete")
-    
-    # TODO: Implement density extraction from saved calculation
-    # For now, return a placeholder
-    return {
-        "message": "Density visualization not yet implemented",
-        "isospin": isospin,
-    }
+    return density_data

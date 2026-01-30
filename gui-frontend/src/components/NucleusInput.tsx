@@ -72,7 +72,20 @@ export function NucleusInput() {
               min={1}
               max={120}
               value={form.protons}
-              onChange={(e) => setFormField('protons', parseInt(e.target.value) || 1)}
+              onChange={(e) => {
+                const val = e.target.value
+                if (val === '') {
+                  setFormField('protons', '' as any)
+                } else {
+                  const num = parseInt(val)
+                  setFormField('protons', isNaN(num) ? 1 : Math.max(1, Math.min(120, num)))
+                }
+              }}
+              onBlur={(e) => {
+                if (e.target.value === '') {
+                  setFormField('protons', 1)
+                }
+              }}
             />
           </div>
           
@@ -94,7 +107,20 @@ export function NucleusInput() {
               min={1}
               max={200}
               value={form.neutrons}
-              onChange={(e) => setFormField('neutrons', parseInt(e.target.value) || 1)}
+              onChange={(e) => {
+                const val = e.target.value
+                if (val === '') {
+                  setFormField('neutrons', '' as any)
+                } else {
+                  const num = parseInt(val)
+                  setFormField('neutrons', isNaN(num) ? 1 : Math.max(1, Math.min(200, num)))
+                }
+              }}
+              onBlur={(e) => {
+                if (e.target.value === '') {
+                  setFormField('neutrons', 1)
+                }
+              }}
             />
           </div>
         </div>
@@ -150,7 +176,20 @@ export function NucleusInput() {
                     min={8}
                     max={64}
                     value={form.grid.nx}
-                    onChange={(e) => setFormField('grid', { ...form.grid, nx: parseInt(e.target.value) || 24, auto: false })}
+                    onChange={(e) => {
+                      const val = e.target.value
+                      if (val === '') {
+                        setFormField('grid', { ...form.grid, nx: '' as any, auto: false })
+                      } else {
+                        const num = parseInt(val)
+                        setFormField('grid', { ...form.grid, nx: isNaN(num) ? 24 : Math.max(8, Math.min(64, num)), auto: false })
+                      }
+                    }}
+                    onBlur={(e) => {
+                      if (e.target.value === '') {
+                        setFormField('grid', { ...form.grid, nx: 24, auto: false })
+                      }
+                    }}
                   />
                 </div>
                 <div>
@@ -161,7 +200,20 @@ export function NucleusInput() {
                     min={8}
                     max={64}
                     value={form.grid.ny}
-                    onChange={(e) => setFormField('grid', { ...form.grid, ny: parseInt(e.target.value) || 24, auto: false })}
+                    onChange={(e) => {
+                      const val = e.target.value
+                      if (val === '') {
+                        setFormField('grid', { ...form.grid, ny: '' as any, auto: false })
+                      } else {
+                        const num = parseInt(val)
+                        setFormField('grid', { ...form.grid, ny: isNaN(num) ? 24 : Math.max(8, Math.min(64, num)), auto: false })
+                      }
+                    }}
+                    onBlur={(e) => {
+                      if (e.target.value === '') {
+                        setFormField('grid', { ...form.grid, ny: 24, auto: false })
+                      }
+                    }}
                   />
                 </div>
                 <div>
@@ -172,7 +224,20 @@ export function NucleusInput() {
                     min={8}
                     max={64}
                     value={form.grid.nz}
-                    onChange={(e) => setFormField('grid', { ...form.grid, nz: parseInt(e.target.value) || 24, auto: false })}
+                    onChange={(e) => {
+                      const val = e.target.value
+                      if (val === '') {
+                        setFormField('grid', { ...form.grid, nz: '' as any, auto: false })
+                      } else {
+                        const num = parseInt(val)
+                        setFormField('grid', { ...form.grid, nz: isNaN(num) ? 24 : Math.max(8, Math.min(64, num)), auto: false })
+                      }
+                    }}
+                    onBlur={(e) => {
+                      if (e.target.value === '') {
+                        setFormField('grid', { ...form.grid, nz: 24, auto: false })
+                      }
+                    }}
                   />
                 </div>
               </div>
@@ -187,7 +252,20 @@ export function NucleusInput() {
                 min={10}
                 max={5000}
                 value={form.iteration.max_iterations}
-                onChange={(e) => setFormField('iteration', { ...form.iteration, max_iterations: parseInt(e.target.value) || 200 })}
+                onChange={(e) => {
+                  const val = e.target.value
+                  if (val === '') {
+                    setFormField('iteration', { ...form.iteration, max_iterations: '' as any })
+                  } else {
+                    const num = parseInt(val)
+                    setFormField('iteration', { ...form.iteration, max_iterations: isNaN(num) ? 200 : Math.max(10, Math.min(5000, num)) })
+                  }
+                }}
+                onBlur={(e) => {
+                  if (e.target.value === '') {
+                    setFormField('iteration', { ...form.iteration, max_iterations: 200 })
+                  }
+                }}
               />
             </div>
             

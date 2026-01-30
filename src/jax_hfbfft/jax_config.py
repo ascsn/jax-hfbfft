@@ -1,14 +1,33 @@
 """JAX configuration for jax-hfbfft.
 
-This module sets up JAX with 64-bit precision by default and provides
+This module sets up JAX with appropriate precision by default and provides
 utilities for dtype management.
+
+Note: Metal backend doesn't support x64, so 32-bit precision is used by default
+when Metal is detected.
 """
 
 import os
 
-# Set 64-bit precision BEFORE importing JAX
-# This must happen before any JAX imports
-os.environ.setdefault('JAX_ENABLE_X64', 'True')
+# Detect if Metal will be used (must be done before importing JAX)
+# Check for jax-metal package installation
+_use_metal = False
+try:
+    from importlib.metadata import distributions
+    for dist in distributions():
+        if dist.name == 'jax-metal':
+            _use_metal = True
+            break
+except:
+    pass
+
+# Set precision BEFORE importing JAX
+# Metal doesn't support x64, so use 32-bit by default when Metal is available
+if not _use_metal:
+    os.environ.setdefault('JAX_ENABLE_X64', 'True')
+else:
+    # Ensure x64 is disabled for Metal
+    os.environ.setdefault('JAX_ENABLE_X64', 'False')
 
 import jax
 import jax.numpy as jnp
@@ -59,8 +78,11 @@ class DTypes:
             raise ValueError(f"Unsupported precision: {precision}. Use 32 or 64.")
 
 
-# Default dtypes (64-bit precision)
-_dtypes = DTypes.from_precision(64)
+# Detect default precision based on backend
+_default_precision = 32 if _use_metal else 64
+
+# Default dtypes
+_dtypes = DTypes.from_precision(_default_precision)
 
 
 def get_dtypes() -> DTypes:
@@ -103,12 +125,17 @@ def set_precision(precision: Union[int, Precision] = 64) -> DTypes:
 def check_precision() -> None:
     """Check and report current precision settings."""
     x64_enabled = jax.config.x64_enabled
+    backend = jax.default_backend()
+    
+    print(f"JAX backend: {backend}")
     print(f"JAX x64 mode: {'enabled' if x64_enabled else 'disabled'}")
     print(f"Float dtype: {_dtypes.float}")
     print(f"Complex dtype: {_dtypes.complex}")
     print(f"Int dtype: {_dtypes.int}")
     
-    if not x64_enabled:
+    if _use_metal:
+        print("\nNOTE: Metal backend detected - using 32-bit precision (Metal doesn't support x64)")
+    elif not x64_enabled:
         print("\nWARNING: 64-bit mode is disabled. For best precision, set:")
         print("  export JAX_ENABLE_X64=True")
         print("  or call: jax.config.update('jax_enable_x64', True)")
@@ -148,9 +175,18 @@ def arange(*args, dtype=None, **kwargs):
     return jnp.arange(*args, dtype=dtype, **kwargs)
 
 
-# Verify 64-bit is enabled on import
-if not jax.config.x64_enabled:
+# Verify precision settings on import
+if not _use_metal and not jax.config.x64_enabled:
     try:
         jax.config.update("jax_enable_x64", True)
     except:
         pass  # Will warn when check_precision is called
+elif _use_metal and jax.config.x64_enabled:
+    # Metal doesn't support x64, ensure it's disabled
+    print("WARNING: Metal backend detected but x64 is enabled. This may cause issues.")
+    print("Attempting to disable x64 for Metal compatibility...")
+    try:
+        jax.config.update("jax_enable_x64", False)
+        _dtypes = DTypes.from_precision(32)
+    except:
+        pass

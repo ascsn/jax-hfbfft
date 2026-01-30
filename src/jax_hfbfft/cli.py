@@ -278,8 +278,8 @@ output:
 def run_calculation(config_path: Optional[str], verbose: bool = False):
     """Run an HFB calculation from configuration file."""
     # Import here to ensure JAX configuration happens first
-    from jax_hfbfft.jax_config import configure_jax
-    configure_jax()
+    # (jax_config auto-configures on import)
+    import jax_hfbfft.jax_config
     
     # Determine config file
     if config_path is None:
@@ -328,9 +328,9 @@ def run_calculation(config_path: Optional[str], verbose: bool = False):
         force = Force.from_name(
             force_config.get('name', 'SLy4'),
             ipair=force_config.get('ipair', 6),
-            use_bcs=force_config.get('use_bcs', True),
-            v0_neutron=force_config.get('v0_neutron', -1.0),
-            v0_proton=force_config.get('v0_proton', -1.0),
+            tbcs=force_config.get('use_bcs', True),  # Config uses 'use_bcs', Force uses 'tbcs'
+            v0neut=force_config.get('v0_neutron', -1.0),  # Config uses v0_neutron, Force uses v0neut
+            v0prot=force_config.get('v0_proton', -1.0),   # Config uses v0_proton, Force uses v0prot
         )
         
         # Create grid
@@ -339,9 +339,9 @@ def run_calculation(config_path: Optional[str], verbose: bool = False):
             nx=grid_config.get('nx', 32),
             ny=grid_config.get('ny', 32),
             nz=grid_config.get('nz', 32),
-            dx=grid_config.get('dx', 0.8),
-            dy=grid_config.get('dy', 0.8),
-            dz=grid_config.get('dz', 0.8),
+            dx=grid_config.get('dx') or 0.8,  # Handle null/None in config
+            dy=grid_config.get('dy') or 0.8,
+            dz=grid_config.get('dz') or 0.8,
         )
         
         # Create constraint (if specified)
@@ -410,9 +410,9 @@ def run_calculation(config_path: Optional[str], verbose: bool = False):
         print("Calculation completed successfully!")
         print("=" * 70)
         print()
-        print(f"Total Energy:     {results['total_energy']:.3f} MeV")
-        print(f"Binding Energy:   {results.get('binding_energy', 0.0):.3f} MeV")
-        print(f"E/A:              {results['total_energy']/nucleus.mass_number:.3f} MeV")
+        print(f"Total Energy:     {results.total_energy:.3f} MeV")
+        print(f"Binding Energy:   {getattr(results, 'binding_energy', 0.0):.3f} MeV")
+        print(f"E/A:              {results.total_energy/nucleus.mass_number:.3f} MeV")
         print()
         
         # Save results if output directory specified
@@ -431,8 +431,8 @@ def run_calculation(config_path: Optional[str], verbose: bool = False):
                 f.write("=" * 70 + "\n\n")
                 f.write(f"Nucleus:  {nucleus.name} (Z={nucleus.protons}, N={nucleus.neutrons})\n")
                 f.write(f"Force:    {force.name}\n")
-                f.write(f"Total Energy: {results['total_energy']:.6f} MeV\n")
-                f.write(f"E/A:          {results['total_energy']/nucleus.mass_number:.6f} MeV\n")
+                f.write(f"Total Energy: {results.total_energy:.6f} MeV\n")
+                f.write(f"E/A:          {results.total_energy/nucleus.mass_number:.6f} MeV\n")
             
             print(f"Results saved to: {run_dir}")
             print()

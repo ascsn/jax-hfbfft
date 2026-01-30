@@ -12,15 +12,28 @@ interface ActiveCalculationCardProps {
 
 export function ActiveCalculationCard({ calculation, onClick }: ActiveCalculationCardProps) {
   const navigate = useNavigate()
+  
+  // Defensive check: if calculation or progress is undefined, don't render
+  if (!calculation || !calculation.progress) {
+    return null
+  }
+  
   const progress = calculation.progress
   const phaseInfo = getPhaseInfo(progress.phase)
   
   const handleClick = () => {
     if (onClick) {
       onClick()
-    } else {
-      navigate(`/results/${calculation.id}`)
+      return
     }
+
+    if (calculation.run_type === 'surface') {
+      const surfaceId = calculation.surface_results?.id
+      navigate(surfaceId ? `/surface/${surfaceId}` : '/surface')
+      return
+    }
+
+    navigate(`/results/${calculation.id}`)
   }
   
   // Calculate iteration progress percentage
@@ -33,6 +46,7 @@ export function ActiveCalculationCard({ calculation, onClick }: ActiveCalculatio
     calculation.nucleus.protons,
     calculation.nucleus.neutrons
   )
+  const runTypeLabel = calculation.run_type === 'surface' ? 'Surface' : 'Single'
   
   // Calculate elapsed time
   const startTime = new Date(calculation.started_at).getTime()
@@ -74,6 +88,7 @@ export function ActiveCalculationCard({ calculation, onClick }: ActiveCalculatio
           <div className="flex items-center gap-2">
             <PhaseIcon />
             <span className="font-semibold text-sm">{nucleusName}</span>
+            <span className="text-[10px] uppercase tracking-wide text-muted-foreground">{runTypeLabel}</span>
             <span className="text-xs text-muted-foreground">{calculation.force_name}</span>
           </div>
           <span className={`text-xs font-medium ${phaseInfo.color}`}>

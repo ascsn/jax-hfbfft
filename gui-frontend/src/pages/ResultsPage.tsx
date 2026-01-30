@@ -1,16 +1,38 @@
 import { useParams, Link } from 'react-router-dom'
-import { useCalculation, useDensityData } from '@/hooks'
+import { useEffect, useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
+import { useCalculation, useDensityData, useWebSocket } from '@/hooks'
+import { useStore } from '@/store'
 import { ResultsDisplay, SpectrumPlot, StatusDisplay, DensityVisualizer } from '@/components'
 import { Button } from '@/components/ui'
 import { ArrowLeft, Download, Loader2 } from 'lucide-react'
 import { formatNucleus, getPhaseInfo } from '@/lib/utils'
-import { useState } from 'react'
 import type { DensityType } from '@/components/DensityVisualizer'
 
 export function ResultsPage() {
   const { id } = useParams<{ id: string }>()
+  const queryClient = useQueryClient()
+  const { subscribe, unsubscribe } = useWebSocket()
+  const { activeCalculations } = useStore()
   const { data: calculation, isLoading, error } = useCalculation(id!)
   const [selectedDensityType, setSelectedDensityType] = useState<DensityType>('total')
+  
+  // Subscribe to WebSocket updates for this calculation
+  useEffect(() => {
+    if (id) {
+      subscribe(id)
+      return () => unsubscribe(id)
+    }
+  }, [id, subscribe, unsubscribe])
+  
+  // Watch for updates from the store (via WebSocket) and invalidate query when complete
+  const storeCalc = id ? activeCalculations.get(id) : undefined
+  useEffect(() => {
+    if (storeCalc?.phase && ['converged', 'failed', 'cancelled'].includes(storeCalc.phase)) {
+      // Calculation finished, refetch to get full results
+      queryClient.invalidateQueries({ queryKey: ['calculation', id] })
+    }
+  }, [storeCalc?.phase, id, queryClient])
   
   // Fetch density data for completed calculations
   const calculationComplete = calculation?.phase === 'converged' || calculation?.phase === 'failed'

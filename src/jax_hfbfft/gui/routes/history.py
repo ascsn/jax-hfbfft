@@ -15,6 +15,8 @@ from jax_hfbfft.gui.models import (
     CalculationPhase,
     HistoryFilter,
     HistoryResponse,
+    RunType,
+    BetaSurfaceResult,
 )
 from jax_hfbfft.gui.services.storage import get_storage
 
@@ -30,6 +32,7 @@ async def get_history(
     force_name: Optional[str] = Query(None, description="Filter by force name"),
     force: Optional[str] = Query(None, description="Alias for force_name"),
     status: Optional[str] = Query(None, description="Filter by status"),
+    run_type: Optional[str] = Query(None, description="Filter by run type (calculation/surface)"),
     from_date: Optional[datetime] = Query(None, description="From date"),
     to_date: Optional[datetime] = Query(None, description="To date"),
     page: int = Query(1, ge=1, description="Page number"),
@@ -75,6 +78,16 @@ async def get_history(
         # If we parsed a specific mass number, use it as both min and max
         eff_min_a = parsed_a if parsed_a else min_a
         eff_max_a = parsed_a if parsed_a else max_a
+
+        run_type_enum = None
+        if run_type:
+            try:
+                run_type_enum = RunType(run_type)
+            except ValueError:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid run type: {run_type}"
+                )
         
         filter_obj = HistoryFilter(
             element=parsed_element,
@@ -84,6 +97,7 @@ async def get_history(
             status=phase,
             from_date=from_date,
             to_date=to_date,
+            run_type=run_type_enum,
         )
     
     return await storage.get_history(
@@ -135,6 +149,21 @@ async def get_historical_results(calc_id: str):
             detail="Results not found for this calculation"
         )
     
+    return results
+
+
+@router.get("/history/{calc_id}/surface", response_model=BetaSurfaceResult)
+async def get_historical_surface(calc_id: str):
+    """Get the results of a historical surface scan."""
+    storage = await get_storage()
+    results = await storage.get_surface_results(calc_id)
+
+    if not results:
+        raise HTTPException(
+            status_code=404,
+            detail="Surface results not found for this calculation"
+        )
+
     return results
 
 

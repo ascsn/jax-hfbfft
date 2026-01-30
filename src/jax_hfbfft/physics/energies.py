@@ -468,12 +468,11 @@ def compute_radii(densities: Densities, grid: Grid) -> Radii:
     q20 = jnp.sum((rho_n + rho_p) * (2*Z**2 - X**2 - Y**2)) * wxyz
     q22 = jnp.sum((rho_n + rho_p) * (X**2 - Y**2)) * wxyz
     
-    # Deformation parameters beta/gamma
-    # beta = sqrt(5/pi) * (4pi/3AR^2) * Q/2?
-    # Simplified version for now
-    r_mean_sq = rms_tot**2
-    q_all = jnp.sqrt(q20**2 + 3 * q22**2)
-    beta = (jnp.sqrt(5 * jnp.pi) / (3 * tot_counts * r_mean_sq + 1e-10)) * q_all
+    # Deformation parameters beta/gamma (Hill-Wheeler compatible)
+    # Q20 = (3/√(5π)) * β2 * A * R0^2 * cos(γ)
+    A = tot_counts
+    R0 = 1.2 * A**(1.0/3.0)
+    beta = (jnp.sqrt(5 * jnp.pi) / (3 * A * R0**2 + 1e-10)) * q20
     gamma = jnp.arctan2(jnp.sqrt(3.0) * q22, q20) * 180.0 / jnp.pi
     
     return Radii(

@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/services/api'
-import { HistoryResponse, CalculationResults, CalculationStatus } from '@/types'
+import { HistoryResponse, CalculationResults, CalculationStatus, BetaSurfaceResult } from '@/types'
 
 interface HistoryParams {
   nucleus?: string
@@ -35,6 +35,14 @@ export function useHistoricalResults(id: string | null) {
   return useQuery({
     queryKey: ['history', 'results', id],
     queryFn: () => id ? api.getHistoricalResults(id) as Promise<CalculationResults> : null,
+    enabled: !!id,
+  })
+}
+
+export function useHistoricalSurface(id: string | null) {
+  return useQuery({
+    queryKey: ['history', 'surface', id],
+    queryFn: () => id ? api.getHistoricalSurface(id) as Promise<BetaSurfaceResult> : null,
     enabled: !!id,
   })
 }

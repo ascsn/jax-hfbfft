@@ -4,6 +4,8 @@ Pydantic models for GUI API.
 This module defines all the data models used for API requests and responses.
 """
 
+from __future__ import annotations
+
 from pydantic import BaseModel, Field, field_validator
 from typing import Optional, List, Dict, Any, Literal
 from datetime import datetime
@@ -34,6 +36,12 @@ class ConstraintType(str, Enum):
     NONE = "none"
     MULTIPOLE = "multipole"
     BETA_GAMMA = "beta_gamma"
+
+
+class RunType(str, Enum):
+    """Type of run stored in history/activity logs."""
+    CALCULATION = "calculation"
+    SURFACE = "surface"
 
 
 # ============================================================================
@@ -117,6 +125,20 @@ class CalculationRequest(BaseModel):
         return v
 
 
+class BetaSurfaceRequest(BaseModel):
+    """Request to compute a 1D beta deformation surface."""
+    nucleus: NucleusInput
+    force_name: str = Field("SLy4", description="Skyrme force name")
+    grid: GridConfig = Field(default_factory=GridConfig)
+    pairing: PairingConfig = Field(default_factory=PairingConfig)
+    iteration: IterationConfig = Field(default_factory=IterationConfig)
+    beta_min: float = Field(-0.3, description="Minimum beta2 value (oblate)")
+    beta_max: float = Field(0.3, description="Maximum beta2 value (prolate)")
+    beta_steps: int = Field(13, ge=3, le=101, description="Number of beta points")
+    gamma: float = Field(0.0, description="Gamma angle in degrees")
+    hot_start: bool = Field(False, description="Use nearest beta solution to initialize")
+
+
 # ============================================================================
 # Response Models
 # ============================================================================
@@ -190,6 +212,24 @@ class CalculationResults(BaseModel):
     jit_time_seconds: float = Field(0.0, description="JIT compilation time")
 
 
+class BetaSurfacePoint(BaseModel):
+    """Single point on a beta deformation surface."""
+    beta2: float = Field(..., description="Beta2 deformation")
+    energy: float = Field(..., description="Total energy (MeV)")
+    converged: bool = Field(False, description="Whether the point converged")
+    iterations: int = Field(0, description="Iterations performed")
+    q20: float = Field(0.0, description="Q20 moment (fm²)")
+    q22: float = Field(0.0, description="Q22 moment (fm²)")
+
+
+class BetaSurfaceResult(BaseModel):
+    """Result for a 1D beta deformation surface."""
+    id: Optional[str] = Field(None, description="Surface scan history ID")
+    nucleus: NucleusInput
+    force_name: str
+    points: List[BetaSurfacePoint]
+
+
 class CalculationProgress(BaseModel):
     """Progress update for a running calculation."""
     calculation_id: str
@@ -212,6 +252,8 @@ class CalculationStatus(BaseModel):
     completed_at: Optional[datetime] = None
     results: Optional[CalculationResults] = None
     error_message: Optional[str] = None
+    run_type: RunType = Field(RunType.CALCULATION, description="Run type")
+    surface_results: Optional[BetaSurfaceResult] = None
 
 
 class CalculationSummary(BaseModel):
@@ -224,6 +266,7 @@ class CalculationSummary(BaseModel):
     energy: Optional[float] = None
     started_at: datetime
     completed_at: Optional[datetime] = None
+    run_type: RunType = Field(RunType.CALCULATION, description="Run type")
 
 
 class ForceInfo(BaseModel):
@@ -270,6 +313,7 @@ class HistoryFilter(BaseModel):
     status: Optional[CalculationPhase] = Field(None, description="Filter by status")
     from_date: Optional[datetime] = Field(None, description="From date")
     to_date: Optional[datetime] = Field(None, description="To date")
+    run_type: Optional[RunType] = Field(None, description="Filter by run type")
 
 
 class HistoryResponse(BaseModel):

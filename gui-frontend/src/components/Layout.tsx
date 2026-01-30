@@ -13,6 +13,7 @@ export function Layout() {
   
   const navItems = [
     { path: '/', label: 'Calculator', icon: Atom },
+    { path: '/surface', label: 'Surfaces', icon: Atom },
     { path: '/history', label: 'History', icon: History },
   ]
   

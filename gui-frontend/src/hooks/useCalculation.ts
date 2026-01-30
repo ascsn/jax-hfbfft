@@ -35,6 +35,7 @@ export function useStartCalculation() {
           message: 'Starting...',
         },
         started_at: new Date().toISOString(),
+        run_type: 'calculation',
       })
       
       // Invalidate active calculations list

@@ -128,6 +128,7 @@ export function HistoryPage() {
                   <tr className="border-b bg-muted/50">
                     <th className="text-left p-4 font-medium">Nucleus</th>
                     <th className="text-left p-4 font-medium">Force</th>
+                    <th className="text-left p-4 font-medium">Type</th>
                     <th className="text-left p-4 font-medium">Status</th>
                     <th className="text-left p-4 font-medium">Energy (MeV)</th>
                     <th className="text-left p-4 font-medium">Iterations</th>
@@ -143,6 +144,7 @@ export function HistoryPage() {
                       ? `${calc.nucleus_symbol}-${calc.nucleus_a}`
                       : 'Unknown'
                     const massNumber = calc.nucleus_a ?? 0
+                    const runType = calc.run_type ?? 'calculation'
                     
                     return (
                       <tr key={calc.id} className="border-b hover:bg-muted/30">
@@ -155,6 +157,15 @@ export function HistoryPage() {
                           )}
                         </td>
                         <td className="p-4 font-mono text-sm">{calc.force_name}</td>
+                        <td className="p-4">
+                          <span className={cn(
+                            "inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium",
+                            runType === 'surface' && "bg-purple-500/10 text-purple-600",
+                            runType === 'calculation' && "bg-muted text-muted-foreground"
+                          )}>
+                            {runType === 'surface' ? 'Surface' : 'Single'}
+                          </span>
+                        </td>
                         <td className="p-4">
                           <span className={cn(
                             "inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium",
@@ -181,11 +192,19 @@ export function HistoryPage() {
                         </td>
                         <td className="p-4">
                           <div className="flex items-center gap-1">
-                            <Link to={`/results/${calc.id}`}>
-                              <Button variant="ghost" size="sm" title="View details">
-                                <Eye className="w-4 h-4" />
-                              </Button>
-                            </Link>
+                            {runType === 'calculation' ? (
+                              <Link to={`/results/${calc.id}`}>
+                                <Button variant="ghost" size="sm" title="View details">
+                                  <Eye className="w-4 h-4" />
+                                </Button>
+                              </Link>
+                            ) : (
+                              <Link to={`/surface/${calc.id}`}>
+                                <Button variant="outline" size="sm" title="View surface scan">
+                                  <Eye className="w-4 h-4" />
+                                </Button>
+                              </Link>
+                            )}
                             {calc.phase === 'converged' && (
                               <Button variant="ghost" size="sm" title="Download results">
                                 <Download className="w-4 h-4" />

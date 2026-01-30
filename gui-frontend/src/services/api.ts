@@ -62,6 +62,9 @@ export const api = {
   
   getHistoricalResults: (id: string) =>
     fetchApi<unknown>(`/history/${id}/results`),
+
+  getHistoricalSurface: (id: string) =>
+    fetchApi<unknown>(`/history/${id}/surface`),
   
   deleteFromHistory: (id: string) =>
     fetchApi<{ message: string }>(`/history/${id}`, {
@@ -99,4 +102,17 @@ export const api = {
   
   listPresets: () =>
     fetchApi<unknown[]>('/presets'),
+
+  // Surfaces
+  runBetaSurface: (request: unknown) =>
+    fetchApi<unknown>('/surfaces/beta', {
+      method: 'POST',
+      body: JSON.stringify(request),
+    }),
+
+  startBetaSurface: (request: unknown) =>
+    fetchApi<{ calculation_id: string; message: string }>('/surfaces/beta/start', {
+      method: 'POST',
+      body: JSON.stringify(request),
+    }),
 }

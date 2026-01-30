@@ -55,7 +55,7 @@ async def start_calculation(
     }
 
 
-@router.get("/calculations", response_model=List[CalculationSummary])
+@router.get("/calculations", response_model=List[CalculationStatus])
 async def list_calculations():
     """
     List all active calculations.
@@ -66,19 +66,7 @@ async def list_calculations():
     service = get_hfb_service()
     statuses = await service.list_calculations()
     
-    return [
-        CalculationSummary(
-            id=s.id,
-            nucleus_symbol=s.nucleus.symbol,
-            nucleus_a=s.nucleus.mass_number,
-            force_name=s.force_name,
-            phase=s.phase,
-            energy=s.results.energies.total if s.results else None,
-            started_at=s.started_at,
-            completed_at=s.completed_at,
-        )
-        for s in statuses
-    ]
+    return statuses
 
 
 @router.get("/calculations/{calc_id}", response_model=CalculationStatus)

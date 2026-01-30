@@ -221,7 +221,7 @@ def beta_gamma_to_multipoles(
         # Normalization factors from spherical harmonics
         # Y_20: sqrt(5/(4π)) → Q_20 factor is 3/sqrt(5π) for Hill-Wheeler
         # Y_22: sqrt(15/(8π)) → Q_22 factor is 1/sqrt(5π) for Hill-Wheeler
-        factor_base = beta2_mag * A**(5.0/3.0) * R0**2
+        factor_base = beta2_mag * A * R0**2
         
         Q20 = factor_base * (3.0 / np.sqrt(5.0 * np.pi)) * np.cos(gamma_rad)
         Q22 = factor_base * (1.0 / np.sqrt(5.0 * np.pi)) * np.sin(gamma_rad)
@@ -236,13 +236,13 @@ def beta_gamma_to_multipoles(
     
     # Octupole deformation (lambda=3)
     if beta3 is not None:
-        factor_base = beta3 * A**(7.0/3.0) * R0**3
+        factor_base = beta3 * A * R0**3
         Q30 = factor_base * (1.0 / np.sqrt(7.0 * np.pi))
         multipoles[(3, 0)] = float(Q30)
     
     # Hexadecapole deformation (lambda=4)
     if beta4 is not None:
-        factor_base = beta4 * A**(3.0) * R0**4
+        factor_base = beta4 * A * R0**4
         Q40 = factor_base * (3.0 / np.sqrt(9.0 * np.pi))
         multipoles[(4, 0)] = float(Q40)
     
@@ -283,7 +283,7 @@ def multipoles_to_beta_gamma(
     Q22 = multipoles.get((2, 2), 0.0)
     
     if Q20 != 0.0 or Q22 != 0.0:
-        factor_base = A**(5.0/3.0) * R0**2
+        factor_base = A * R0**2
         
         # Extract beta2 from magnitude
         q20_norm = Q20 / (factor_base * 3.0 / np.sqrt(5.0 * np.pi))
@@ -304,14 +304,14 @@ def multipoles_to_beta_gamma(
     # Extract octupole parameter
     Q30 = multipoles.get((3, 0), 0.0)
     if Q30 != 0.0:
-        factor_base = A**(7.0/3.0) * R0**3
+        factor_base = A * R0**3
         beta3 = Q30 / (factor_base / np.sqrt(7.0 * np.pi))
         result['beta3'] = float(beta3)
     
     # Extract hexadecapole parameter
     Q40 = multipoles.get((4, 0), 0.0)
     if Q40 != 0.0:
-        factor_base = A**(3.0) * R0**4
+        factor_base = A * R0**4
         beta4 = Q40 / (factor_base * 3.0 / np.sqrt(9.0 * np.pi))
         result['beta4'] = float(beta4)
     

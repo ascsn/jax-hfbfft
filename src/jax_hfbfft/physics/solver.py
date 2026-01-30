@@ -13,15 +13,23 @@ import jax.numpy as jnp
 from dataclasses import dataclass, field
 from typing import Tuple, Optional, Callable
 import time
+import dataclasses
 
 from jax_hfbfft.jax_config import get_dtypes
 from jax_hfbfft.core.grid import Grid
 from jax_hfbfft.core.force import Force
+from jax_hfbfft.core.constraint import Constraint
 from jax_hfbfft.physics.densities import Densities, compute_densities
 from jax_hfbfft.physics.meanfield import Meanfield, compute_skyrme_meanfield, apply_hfb_hamiltonian
 from jax_hfbfft.physics.energies import Energies, compute_integrated_energy, compute_sp_energy
 from jax_hfbfft.physics.pairing import Pairing, solve_pairing, compute_pairing_gaps
 from jax_hfbfft.physics.coulomb import CoulombSolver, solve_poisson
+from jax_hfbfft.physics.constraints import (
+    ConstraintState,
+    build_constraint_state,
+    compute_constraint_potential,
+    update_constraint_state,
+)
 
 
 @jax.tree_util.register_dataclass
@@ -60,6 +68,9 @@ class SolverState:
     # Energies
     energies: Energies
     pairing: Pairing
+
+    # Constraints
+    constraint_state: ConstraintState
     
     # Convergence
     iteration: int
@@ -153,6 +164,7 @@ def create_initial_state(
     npsi_p: int,
     target_n: int,
     target_p: int,
+    constraint_state: Optional[ConstraintState] = None,
 ) -> SolverState:
     """Create initial HFB state."""
     dtypes = get_dtypes()
@@ -196,6 +208,9 @@ def create_initial_state(
     coulomb_solver = CoulombSolver.create(grid)
     wcoul = jnp.zeros((grid.nx, grid.ny, grid.nz), dtype=dtypes.float)
     
+    if constraint_state is None:
+        constraint_state = ConstraintState.disabled(grid)
+
     return SolverState(
         psi=psi,
         sp_energy=sp_energy,
@@ -212,6 +227,7 @@ def create_initial_state(
         wcoul=wcoul,
         energies=Energies.zeros(),
         pairing=Pairing.zeros(),
+        constraint_state=constraint_state,
         iteration=0,
         converged=False,
         efluct=1e10,
@@ -596,6 +612,20 @@ def hfb_iteration(
         sdens=densities.sdens,
         sodens=densities.sodens,
     )
+
+    # Constraint update (if enabled)
+    constraint_state = state.constraint_state
+    if constraint_state is not None and constraint_state.constr_field.shape[0] > 0:
+        constraint_state = update_constraint_state(
+            constraint_state,
+            densities,
+            grid,
+            config.e0dmp,
+            config.x0dmp,
+        )
+        constraint_potential = compute_constraint_potential(constraint_state, grid)
+    else:
+        constraint_potential = None
     
     # 5. Coulomb potential
     wcoul = state.wcoul
@@ -614,6 +644,7 @@ def hfb_iteration(
         force,
         grid,
         coulomb_potential=wcoul,
+        constraint_potential=constraint_potential,
         use_coulomb=use_coulomb,
     )
     
@@ -660,6 +691,7 @@ def hfb_iteration(
         wcoul=wcoul,
         energies=energies,
         pairing=pairing,
+        constraint_state=constraint_state,
         iteration=iteration,
         converged=converged,
         efluct=efluct,
@@ -676,6 +708,7 @@ def run_hfb(
     initial_state: Optional[SolverState] = None,
     callback: Optional[Callable[[SolverState], None]] = None,
     use_coulomb: bool = True,
+    constraint: Optional[Constraint] = None,
 ) -> SolverState:
     """
     Run HFB calculation to convergence.
@@ -694,6 +727,13 @@ def run_hfb(
     """
     if config is None:
         config = SolverConfig()
+
+    # Initialize constraint state
+    constraint_state = build_constraint_state(
+        constraint if constraint is not None else Constraint.spherical(),
+        grid,
+        mass_number=nucleus_n + nucleus_z,
+    )
     
     # Initialize state
     if initial_state is None:
@@ -702,12 +742,17 @@ def run_hfb(
         nstates_p = max(int(1.5 * nucleus_z), nucleus_z + 10)
         
         state = create_initial_state(
-            grid, force,
-            nucleus_n, nucleus_z,
-            nstates_n, nstates_p,
+            grid,
+            nstates_n,
+            nstates_p,
+            nucleus_n,
+            nucleus_z,
+            constraint_state=constraint_state,
         )
     else:
         state = initial_state
+        if state.constraint_state is None:
+            state = dataclasses.replace(state, constraint_state=constraint_state)
     
     # Initial density and potential
     initial_densities = compute_densities_from_state(state, grid)
@@ -721,11 +766,25 @@ def run_hfb(
 
     # 2. Mean-field potentials
     from jax_hfbfft.physics.meanfield import compute_skyrme_meanfield
+    if state.constraint_state is not None and state.constraint_state.constr_field.shape[0] > 0:
+        constraint_state = update_constraint_state(
+            state.constraint_state,
+            initial_densities,
+            grid,
+            config.e0dmp,
+            config.x0dmp,
+        )
+        constraint_potential = compute_constraint_potential(constraint_state, grid)
+    else:
+        constraint_state = state.constraint_state
+        constraint_potential = None
+
     initial_meanfield = compute_skyrme_meanfield(
         initial_densities,
         force,
         grid,
         coulomb_potential=initial_wcoul if use_coulomb else None,
+        constraint_potential=constraint_potential,
         use_coulomb=use_coulomb,
     )
     
@@ -750,6 +809,7 @@ def run_hfb(
         wcoul=initial_wcoul,
         energies=state.energies,
         pairing=state.pairing,
+        constraint_state=constraint_state,
         iteration=0,
         converged=False,
         efluct=state.efluct,
@@ -784,12 +844,16 @@ def run_hfb(
         if state.converged:
             # Make sure we have final energy computed
             if not compute_energy:
-                state = hfb_iteration(
-                    state, grid, force, config,
-                    npsi_n, npsi_p, nucleus_n, nucleus_z,
+                final_energies = compute_integrated_energy(
+                    state.densities,
+                    force,
+                    grid,
+                    coulomb_potential=state.wcoul,
+                    pairing_energy=state.pairing.epair,
+                    mass_number=nucleus_n + nucleus_z,
                     use_coulomb=use_coulomb,
-                    compute_energy=True,
                 )
+                state = dataclasses.replace(state, energies=final_energies, converged=True)
             if config.verbose:
                 print(f"\nConverged at iteration {state.iteration}")
                 print(f"Total energy: {state.energies.ehfint:.4f} MeV")
@@ -802,7 +866,6 @@ def run_hfb(
     
     # Final energy computation if not already done
     if not compute_energy:
-        from jax_hfbfft.physics.energies import compute_integrated_energy
         final_energies = compute_integrated_energy(
             state.densities,
             force,
@@ -828,6 +891,7 @@ def run_hfb(
             wcoul=state.wcoul,
             energies=final_energies,
             pairing=state.pairing,
+            constraint_state=state.constraint_state,
             iteration=state.iteration,
             converged=state.converged,
             efluct=state.efluct,

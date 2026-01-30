@@ -26,6 +26,10 @@ from jax_hfbfft.gui.models import (
     PairingResults,
     SingleParticleLevel,
     NucleusInput,
+    BetaSurfaceRequest,
+    BetaSurfaceResult,
+    BetaSurfacePoint,
+    RunType,
 )
 from jax_hfbfft.gui.services.warmup import get_warmup_manager, ensure_warmup
 
@@ -34,7 +38,7 @@ from jax_hfbfft.gui.services.warmup import get_warmup_manager, ensure_warmup
 class ActiveCalculation:
     """Tracks an active calculation."""
     id: str
-    request: CalculationRequest
+    request: Any
     status: CalculationStatus
     cancel_event: threading.Event = field(default_factory=threading.Event)
     start_time: float = field(default_factory=time.time)
@@ -107,6 +111,7 @@ class HFBService:
                 message="Queued for execution",
             ),
             started_at=now,
+            run_type=RunType.CALCULATION,
         )
         
         # Create active calculation tracker
@@ -124,6 +129,44 @@ class HFBService:
         # Start the calculation in background
         asyncio.create_task(self._run_calculation(active))
         
+        return calc_id
+
+    async def start_beta_surface(
+        self,
+        request: BetaSurfaceRequest,
+        progress_callback: Optional[Callable[[CalculationProgress], Awaitable[None]]] = None,
+    ) -> str:
+        """Start a beta surface scan and return a calculation ID."""
+        calc_id = str(uuid.uuid4())
+        now = datetime.now()
+
+        status = CalculationStatus(
+            id=calc_id,
+            nucleus=request.nucleus,
+            force_name=request.force_name,
+            phase=CalculationPhase.PENDING,
+            progress=CalculationProgress(
+                calculation_id=calc_id,
+                phase=CalculationPhase.PENDING,
+                message="Queued surface scan",
+            ),
+            started_at=now,
+            run_type=RunType.SURFACE,
+        )
+
+        active = ActiveCalculation(
+            id=calc_id,
+            request=request,
+            status=status,
+        )
+
+        async with self._lock:
+            self._calculations[calc_id] = active
+            if progress_callback:
+                self._progress_callbacks[calc_id] = [progress_callback]
+
+        asyncio.create_task(self._run_beta_surface(active))
+
         return calc_id
     
     async def _run_calculation(self, active: ActiveCalculation):
@@ -208,6 +251,236 @@ class HFBService:
             traceback_str = traceback.format_exc()
             print(f"Calculation {calc_id} failed:\n{traceback_str}")
             await self._mark_failed(calc_id, error_msg, traceback_str)
+
+    async def _run_beta_surface(self, active: ActiveCalculation):
+        """Run a beta surface scan in the background with progress updates."""
+        calc_id = active.id
+        request: BetaSurfaceRequest = active.request
+
+        try:
+            await self._update_progress(
+                calc_id,
+                CalculationProgress(
+                    calculation_id=calc_id,
+                    phase=CalculationPhase.INITIALIZING,
+                    message="Initializing surface scan...",
+                ),
+            )
+
+            loop = asyncio.get_event_loop()
+
+            def progress_hook(point: BetaSurfacePoint, index: int, total: int):
+                asyncio.run_coroutine_threadsafe(
+                    self._surface_progress(calc_id, point, index, total),
+                    loop,
+                )
+
+            result = await loop.run_in_executor(
+                self._executor,
+                lambda: self._run_beta_surface_sync(request, progress_hook=progress_hook),
+            )
+
+            await self._mark_surface_complete(calc_id, result)
+        except Exception as e:
+            import traceback
+            error_msg = f"{type(e).__name__}: {str(e)}"
+            traceback_str = traceback.format_exc()
+            print(f"Surface scan {calc_id} failed:\n{traceback_str}")
+            await self._mark_failed(calc_id, error_msg, traceback_str)
+
+    async def _surface_progress(self, calc_id: str, point: BetaSurfacePoint, index: int, total: int):
+        async with self._lock:
+            if calc_id in self._calculations:
+                calc = self._calculations[calc_id]
+                existing = calc.status.surface_results.points if calc.status.surface_results else []
+                calc.status.surface_results = BetaSurfaceResult(
+                    id=calc_id,
+                    nucleus=calc.status.nucleus,
+                    force_name=calc.status.force_name,
+                    points=[*existing, point],
+                )
+
+        await self._update_progress(
+            calc_id,
+            CalculationProgress(
+                calculation_id=calc_id,
+                phase=CalculationPhase.ITERATING,
+                iteration=index,
+                max_iterations=total,
+                fluctuation=0.0,
+                energy=float(point.energy),
+                message=f"Surface point {index}/{total}",
+            ),
+        )
+
+    async def _mark_surface_complete(self, calc_id: str, result: BetaSurfaceResult):
+        async with self._lock:
+            if calc_id in self._calculations:
+                calc = self._calculations[calc_id]
+                calc.status.phase = CalculationPhase.CONVERGED
+                calc.status.surface_results = result
+                calc.status.completed_at = datetime.now()
+                calc.status.progress = CalculationProgress(
+                    calculation_id=calc_id,
+                    phase=CalculationPhase.CONVERGED,
+                    iteration=len(result.points),
+                    max_iterations=len(result.points),
+                    fluctuation=0.0,
+                    energy=0.0,
+                    message="Surface scan complete",
+                )
+
+        try:
+            from jax_hfbfft.gui.services.storage import get_storage
+            storage = await get_storage()
+            await storage.save_surface(calc_id, result.nucleus, result.force_name, result)
+        except Exception as e:
+            print(f"Warning: Failed to save surface scan to history: {e}")
+
+    async def run_beta_surface(self, request: BetaSurfaceRequest) -> BetaSurfaceResult:
+        """Run a 1D beta deformation surface scan."""
+        warmup_manager = get_warmup_manager()
+        if not warmup_manager.is_ready:
+            await ensure_warmup(timeout=180.0)
+
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            self._executor,
+            lambda: self._run_beta_surface_sync(request),
+        )
+
+        # Save to history as surface run
+        try:
+            from jax_hfbfft.gui.services.storage import get_storage
+            storage = await get_storage()
+            surface_id = f"surface-{uuid.uuid4()}"
+            result = BetaSurfaceResult(
+                id=surface_id,
+                nucleus=result.nucleus,
+                force_name=result.force_name,
+                points=result.points,
+            )
+            await storage.save_surface(surface_id, request.nucleus, request.force_name, result)
+        except Exception as exc:
+            print(f"Warning: Failed to save surface scan to history: {exc}")
+
+        return result
+
+    def _run_beta_surface_sync(self, request: BetaSurfaceRequest, progress_hook: Optional[Callable[[BetaSurfacePoint, int, int], Any]] = None) -> BetaSurfaceResult:
+        """Synchronous beta surface scan (runs in thread pool)."""
+        from jax_hfbfft import HFBFFT, Nucleus, Force, Constraint
+        import numpy as np
+
+        nucleus = Nucleus(
+            protons=request.nucleus.protons,
+            neutrons=request.nucleus.neutrons,
+        )
+
+        force = Force.from_name(
+            request.force_name,
+            ipair=self._pairing_type_to_int(request.pairing.type),
+            v0neut=request.pairing.v0_neutron,
+            v0prot=request.pairing.v0_proton,
+        )
+
+        if request.grid.auto:
+            grid_size = self._auto_grid_size(nucleus.mass_number)
+            dx = request.grid.dx or 1.0
+            dy = request.grid.dy or 1.0
+            dz = request.grid.dz or 1.0
+            grid_config = {
+                "nx": grid_size,
+                "ny": grid_size,
+                "nz": grid_size,
+                "dx": dx,
+                "dy": dy,
+                "dz": dz,
+            }
+        else:
+            grid_config = {
+                "nx": request.grid.nx,
+                "ny": request.grid.ny,
+                "nz": request.grid.nz,
+                "dx": request.grid.dx,
+                "dy": request.grid.dy,
+                "dz": request.grid.dz,
+            }
+
+        beta_values = np.linspace(request.beta_min, request.beta_max, request.beta_steps)
+        beta_values = np.sort(beta_values)
+        points = []
+
+        prev_calc = None
+        if request.hot_start:
+            base_constraint = Constraint.spherical()
+            base_calc = HFBFFT(
+                nucleus=nucleus,
+                force=force,
+                constraint=base_constraint,
+                **grid_config,
+            )
+            base_calc.initialize_wavefunctions(method="harmonic_oscillator")
+            base_calc.run(
+                max_iterations=request.iteration.max_iterations,
+                convergence_threshold=request.iteration.convergence_threshold,
+                print_interval=request.iteration.print_interval,
+                use_legacy=False,
+            )
+            prev_calc = base_calc
+
+        for beta2 in beta_values:
+            constraint = Constraint.from_beta_gamma(
+                mass_number=nucleus.mass_number,
+                beta2=float(beta2),
+                gamma=request.gamma,
+            )
+
+            calc = HFBFFT(
+                nucleus=nucleus,
+                force=force,
+                constraint=constraint,
+                **grid_config,
+            )
+            if request.hot_start and prev_calc is not None and prev_calc.state.psi is not None:
+                calc.state.psi = prev_calc.state.psi
+                calc.state.wocc = prev_calc.state.wocc
+                calc.state.wguv = prev_calc.state.wguv
+                calc.state.pairwg = prev_calc.state.pairwg
+                calc.state.wstates = prev_calc.state.wstates
+                calc.state.isospin = prev_calc.state.isospin
+            else:
+                calc.initialize_wavefunctions(method="harmonic_oscillator")
+
+            results = calc.run(
+                max_iterations=request.iteration.max_iterations,
+                convergence_threshold=request.iteration.convergence_threshold,
+                print_interval=request.iteration.print_interval,
+                use_legacy=False,
+            )
+
+            point = BetaSurfacePoint(
+                beta2=float(beta2),
+                energy=float(results.total_energy),
+                converged=bool(results.converged),
+                iterations=int(results.iterations),
+                q20=float(results.q20),
+                q22=float(results.q22),
+            )
+            points.append(point)
+
+            if progress_hook:
+                try:
+                    progress_hook(point, len(points), len(beta_values))
+                except Exception:
+                    pass
+
+            prev_calc = calc
+
+        return BetaSurfaceResult(
+            nucleus=request.nucleus,
+            force_name=request.force_name,
+            points=points,
+        )
     
     def _run_hfb_sync(self, active: ActiveCalculation, main_loop: asyncio.AbstractEventLoop) -> CalculationResults:
         """

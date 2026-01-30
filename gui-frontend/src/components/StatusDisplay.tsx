@@ -10,9 +10,12 @@ export function StatusDisplay() {
   const [showSystemStatus, setShowSystemStatus] = useState(false)
   
   // Get all active calculations (not completed or cancelled)
-  const calculations = Array.from(activeCalculations.values())
+  // Filter out any undefined or incomplete entries
+  const calculations = Array.from(activeCalculations.values()).filter(
+    (c): c is NonNullable<typeof c> => c != null && c.progress != null
+  )
   const runningCalcs = calculations.filter(c => 
-    ['pending', 'warmup', 'initializing', 'iterating'].includes(c.phase)
+    c.phase && ['pending', 'warmup', 'initializing', 'iterating'].includes(c.phase)
   )
   
   if (runningCalcs.length === 0 && !systemStatus) {

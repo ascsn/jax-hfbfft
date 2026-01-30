@@ -156,14 +156,30 @@ export const useStore = create<AppState>((set, get) => ({
   
   updateCalculationProgress: (progress) => set((state) => {
     const existing = state.activeCalculations.get(progress.calculation_id)
-    if (!existing) return state
     
     const newMap = new Map(state.activeCalculations)
-    newMap.set(progress.calculation_id, {
-      ...existing,
-      phase: progress.phase,
-      progress,
-    })
+    
+    if (existing) {
+      // Update existing calculation
+      newMap.set(progress.calculation_id, {
+        ...existing,
+        phase: progress.phase,
+        progress,
+      })
+    } else {
+      // Create a minimal entry for the calculation if it doesn't exist
+      // This can happen if the page was refreshed and we received a WS update
+      // before the HTTP poll returned
+      newMap.set(progress.calculation_id, {
+        id: progress.calculation_id,
+        nucleus: { protons: 0, neutrons: 0 },  // Will be updated by HTTP poll
+        force_name: 'Unknown',
+        phase: progress.phase,
+        progress,
+        started_at: new Date().toISOString(),
+      })
+    }
+    
     return { activeCalculations: newMap }
   }),
   
@@ -199,13 +215,19 @@ export const useStore = create<AppState>((set, get) => ({
   
   getCalculationRequest: () => {
     const { form } = get()
+    const spacing = form.grid.spacing ?? 1.0
     return {
       nucleus: {
         protons: form.protons,
         neutrons: form.neutrons,
       },
       force_name: form.forceName,
-      grid: form.grid,
+      grid: {
+        ...form.grid,
+        dx: spacing,
+        dy: spacing,
+        dz: spacing,
+      },
       pairing: form.pairing,
       constraint: form.constraint,
       iteration: form.iteration,

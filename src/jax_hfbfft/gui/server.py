@@ -16,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
-from jax_hfbfft.gui.routes import calculations, history, websocket, system
+from jax_hfbfft.gui.routes import calculations, history, websocket, system, surfaces
 from jax_hfbfft.gui.services.warmup import get_warmup_manager
 from jax_hfbfft.gui.services.storage import get_storage
 
@@ -76,6 +76,7 @@ def create_app(
     app.include_router(calculations.router, prefix="/api", tags=["calculations"])
     app.include_router(history.router, prefix="/api", tags=["history"])
     app.include_router(system.router, prefix="/api", tags=["system"])
+    app.include_router(surfaces.router, prefix="/api", tags=["surfaces"])
     app.include_router(websocket.router, tags=["websocket"])
     
     # Serve static frontend files

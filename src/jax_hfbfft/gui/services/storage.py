@@ -21,6 +21,8 @@ from jax_hfbfft.gui.models import (
     HistoryFilter,
     HistoryResponse,
     NucleusInput,
+    BetaSurfaceResult,
+    RunType,
 )
 
 
@@ -81,6 +83,7 @@ class RunStorage:
                 element_symbol TEXT NOT NULL,
                 mass_number INTEGER NOT NULL,
                 force_name TEXT NOT NULL,
+                run_type TEXT NOT NULL DEFAULT 'calculation',
                 phase TEXT NOT NULL,
                 started_at TEXT NOT NULL,
                 completed_at TEXT,
@@ -94,6 +97,14 @@ class RunStorage:
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         """)
+
+        # Migrate older databases to include run_type/request_json if missing
+        async with self._db.execute("PRAGMA table_info(calculations)") as cursor:
+            columns = {row[1] async for row in cursor}
+        if "run_type" not in columns:
+            await self._db.execute("ALTER TABLE calculations ADD COLUMN run_type TEXT NOT NULL DEFAULT 'calculation'")
+        if "request_json" not in columns:
+            await self._db.execute("ALTER TABLE calculations ADD COLUMN request_json TEXT")
         
         # Create indices for common queries
         await self._db.execute("""
@@ -140,10 +151,10 @@ class RunStorage:
         await self._db.execute("""
             INSERT OR REPLACE INTO calculations (
                 id, protons, neutrons, element_symbol, mass_number,
-                force_name, phase, started_at, completed_at,
+                force_name, run_type, phase, started_at, completed_at,
                 total_energy, final_fluctuation, converged, iterations,
-                error_message, results_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                error_message, results_json, request_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             status.id,
             nucleus.protons,
@@ -151,6 +162,7 @@ class RunStorage:
             nucleus.symbol,
             nucleus.mass_number,
             status.force_name,
+            status.run_type.value,
             status.phase.value,
             status.started_at.isoformat(),
             status.completed_at.isoformat() if status.completed_at else None,
@@ -160,8 +172,45 @@ class RunStorage:
             status.results.iterations if status.results else None,
             status.error_message,
             results_json,
+            status.progress.model_dump_json() if status.progress else None,
         ))
         
+        await self._db.commit()
+
+    async def save_surface(self, surface_id: str, nucleus: NucleusInput, force_name: str, result: BetaSurfaceResult):
+        """Save a surface scan result to history."""
+        await self.initialize()
+
+        results_json = result.model_dump_json()
+        now = datetime.now().isoformat()
+
+        await self._db.execute("""
+            INSERT OR REPLACE INTO calculations (
+                id, protons, neutrons, element_symbol, mass_number,
+                force_name, run_type, phase, started_at, completed_at,
+                total_energy, final_fluctuation, converged, iterations,
+                error_message, results_json, request_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            surface_id,
+            nucleus.protons,
+            nucleus.neutrons,
+            nucleus.symbol,
+            nucleus.mass_number,
+            force_name,
+            RunType.SURFACE.value,
+            CalculationPhase.CONVERGED.value,
+            now,
+            now,
+            None,
+            None,
+            None,
+            None,
+            None,
+            results_json,
+            None,
+        ))
+
         await self._db.commit()
     
     async def get_calculation(self, calc_id: str) -> Optional[CalculationStatus]:
@@ -247,6 +296,9 @@ class RunStorage:
             if filter.status:
                 conditions.append("phase = ?")
                 params.append(filter.status.value)
+            if filter.run_type:
+                conditions.append("run_type = ?")
+                params.append(filter.run_type.value)
             if filter.from_date:
                 conditions.append("started_at >= ?")
                 params.append(filter.from_date.isoformat())
@@ -308,12 +360,27 @@ class RunStorage:
         await self.initialize()
         
         async with self._db.execute(
-            "SELECT results_json FROM calculations WHERE id = ?",
+            "SELECT results_json, run_type FROM calculations WHERE id = ?",
             (calc_id,)
         ) as cursor:
             row = await cursor.fetchone()
             if row and row["results_json"]:
+                if row["run_type"] == RunType.SURFACE.value:
+                    return None
                 return CalculationResults.model_validate_json(row["results_json"])
+        return None
+
+    async def get_surface_results(self, calc_id: str) -> Optional[BetaSurfaceResult]:
+        """Get surface scan results for a history item."""
+        await self.initialize()
+
+        async with self._db.execute(
+            "SELECT results_json, run_type FROM calculations WHERE id = ?",
+            (calc_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            if row and row["results_json"] and row["run_type"] == RunType.SURFACE.value:
+                return BetaSurfaceResult.model_validate_json(row["results_json"])
         return None
     
     def _row_to_status(self, row) -> CalculationStatus:
@@ -321,8 +388,12 @@ class RunStorage:
         from jax_hfbfft.gui.models import CalculationProgress
         
         results = None
+        surface_results = None
         if row["results_json"]:
-            results = CalculationResults.model_validate_json(row["results_json"])
+            if row["run_type"] == RunType.SURFACE.value:
+                surface_results = BetaSurfaceResult.model_validate_json(row["results_json"])
+            else:
+                results = CalculationResults.model_validate_json(row["results_json"])
         
         nucleus = NucleusInput(
             protons=row["protons"],
@@ -347,6 +418,8 @@ class RunStorage:
             completed_at=datetime.fromisoformat(row["completed_at"]) if row["completed_at"] else None,
             results=results,
             error_message=row["error_message"],
+            run_type=RunType(row["run_type"]) if row["run_type"] else RunType.CALCULATION,
+            surface_results=surface_results,
         )
     
     def _row_to_summary(self, row) -> CalculationSummary:
@@ -360,6 +433,7 @@ class RunStorage:
             energy=row["total_energy"],
             started_at=datetime.fromisoformat(row["started_at"]),
             completed_at=datetime.fromisoformat(row["completed_at"]) if row["completed_at"] else None,
+            run_type=RunType(row["run_type"]) if row["run_type"] else RunType.CALCULATION,
         )
 
 

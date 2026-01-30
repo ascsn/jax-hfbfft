@@ -252,14 +252,11 @@ class HFBFFT:
         else:
             self.grid = grid
         
-        # Initialize constraint
+        # Initialize constraint (arrays built at solver runtime)
         if constraint is None:
             self.constraint = Constraint.spherical()
         else:
-            self.constraint = constraint.initialize_arrays(
-                self.grid.shape, 
-                nucleus.mass_number
-            )
+            self.constraint = constraint
         
         # Configuration
         self.include_coulomb = include_coulomb
@@ -661,6 +658,7 @@ class HFBFFT:
              from jax_hfbfft.physics.pairing import Pairing
              from jax_hfbfft.physics.coulomb import CoulombSolver
              from jax_hfbfft.physics.energies import Energies
+             from jax_hfbfft.physics.constraints import build_constraint_state
              
              # Map occupations to SolverState
              # In initialization, method="harmonic_oscillator" sets wocc correctly
@@ -681,6 +679,11 @@ class HFBFFT:
                  wcoul=jnp.zeros((self.grid.nx, self.grid.ny, self.grid.nz)),
                  energies=Energies.zeros(),
                  pairing=Pairing.zeros(),
+                 constraint_state=build_constraint_state(
+                     self.constraint,
+                     self.grid,
+                     mass_number=self.nucleus.mass_number,
+                 ),
                  iteration=0,
                  converged=False,
                  efluct=1e10
@@ -710,6 +713,7 @@ class HFBFFT:
             initial_state=initial_state,  # Added
             callback=iteration_callback if self._callbacks else None,
             use_coulomb=self.include_coulomb,
+            constraint=self.constraint,
         )
         
         elapsed = time.time() - start_time
@@ -719,6 +723,7 @@ class HFBFFT:
         
         # Calculate radii and deformations
         from jax_hfbfft.physics.energies import compute_radii
+        from jax_hfbfft.physics.constraints import compute_constraint_expectations
         radii = compute_radii(final_state.densities, self.grid)
         
         # Convert to HFBFFTResults
@@ -758,6 +763,25 @@ class HFBFFT:
             q20=radii.q20,
             q22=radii.q22,
         )
+
+        # If constrained, report Q20/Q22 and beta2 from constraint expectations
+        if self.constraint and self.constraint.tconstraint and getattr(final_state, "constraint_state", None) is not None:
+            expectations = compute_constraint_expectations(final_state.constraint_state, final_state.densities, self.grid)
+            if expectations.shape[0] > 0:
+                multipoles = [mp for mp, _ in self.constraint.get_multipole_list()]
+                if (2, 0) in multipoles:
+                    q20_index = multipoles.index((2, 0))
+                    q20_val = float(expectations[q20_index])
+                    A = float(self.nucleus.mass_number)
+                    R0 = 1.2 * (A ** (1.0 / 3.0))
+                    beta2 = (jnp.sqrt(5 * jnp.pi) / (3 * A * R0**2 + 1e-10)) * q20_val
+                    self.results.q20 = q20_val
+                    self.results.beta2 = float(beta2)
+                if (2, 2) in multipoles:
+                    q22_index = multipoles.index((2, 2))
+                    q22_val = float(expectations[q22_index])
+                    self.results.q22 = q22_val
+                    self.results.gamma = float(jnp.arctan2(jnp.sqrt(3.0) * q22_val, self.results.q20) * 180.0 / jnp.pi)
         
         self._iteration = final_state.iteration
         self._converged = final_state.converged

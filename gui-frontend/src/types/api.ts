@@ -12,6 +12,7 @@ export type CalculationPhase =
 export type PairingType = 'none' | 'vdi' | 'dddi'
 
 export type ConstraintType = 'none' | 'multipole' | 'beta_gamma'
+export type RunType = 'calculation' | 'surface'
 
 // Request types
 export interface NucleusInput {
@@ -81,6 +82,19 @@ export interface CalculationRequest {
   initialization?: InitializationConfig
 }
 
+export interface BetaSurfaceRequest {
+  nucleus: NucleusInput
+  force_name: string
+  grid?: GridConfig
+  pairing?: PairingConfig
+  iteration?: IterationConfig
+  beta_min: number
+  beta_max: number
+  beta_steps: number
+  gamma?: number
+  hot_start?: boolean
+}
+
 // Response types
 export interface EnergyBreakdown {
   total: number
@@ -139,6 +153,22 @@ export interface CalculationResults {
   jit_time_seconds: number
 }
 
+export interface BetaSurfacePoint {
+  beta2: number
+  energy: number
+  converged: boolean
+  iterations: number
+  q20: number
+  q22: number
+}
+
+export interface BetaSurfaceResult {
+  id?: string
+  nucleus: NucleusInput
+  force_name: string
+  points: BetaSurfacePoint[]
+}
+
 export interface CalculationProgress {
   calculation_id: string
   phase: CalculationPhase
@@ -159,6 +189,8 @@ export interface CalculationStatus {
   completed_at?: string
   results?: CalculationResults
   error_message?: string
+  run_type?: RunType
+  surface_results?: BetaSurfaceResult
 }
 
 export interface CalculationSummary {
@@ -170,6 +202,7 @@ export interface CalculationSummary {
   energy?: number
   started_at: string
   completed_at?: string
+  run_type?: RunType
 }
 
 export interface ForceInfo {

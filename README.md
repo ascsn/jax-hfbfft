@@ -56,18 +56,24 @@ Common dependencies include:
 
 ## Quick Start
 
+**👉 See the [Quickstart Guide](docs/Quickstart.md) for detailed installation and usage instructions.**
+
 ### Installation
 
 ```bash
-# Install from PyPI (future)
-pip install hfbfft
+# Install from source with GUI
+git clone https://github.com/your-org/jax-hfbfft.git
+cd jax-hfbfft
+pip install -e ".[gui]"
 
-# Or install in development mode
-pip install -e .
+# With GPU support (CUDA 12)
+pip install -e ".[gui,cuda]"
 
-# With GPU support
-pip install -e ".[cuda]"
+# Apple Silicon (Metal)
+pip install -e ".[gui,metal]"
 ```
+
+**Note:** The frontend automatically builds during installation. Set `SKIP_FRONTEND_BUILD=1` if you only need the Python API.
 
 ### Command-Line Interface (Recommended for beginners)
 

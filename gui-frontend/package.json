@@ -7,7 +7,11 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "build:copy": "npm run build && cp -r dist/* ../src/jax_hfbfft/gui/frontend/",
+    "build:ci": "npm run build",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
+    "lint:fix": "eslint . --ext ts,tsx --fix",
+    "type-check": "tsc --noEmit",
+    "test": "echo 'Frontend tests will be added in Phase 4' && exit 0",
     "preview": "vite preview"
   },
   "dependencies": {

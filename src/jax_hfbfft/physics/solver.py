@@ -48,6 +48,11 @@ class SolverState:
     sp_kinetic: jax.Array  # Kinetic energies (nstates,)
     deltaf: jax.Array      # Pairing gaps (nstates,)
     
+    # Quantum numbers
+    sp_n: jax.Array        # Radial quantum number (nstates,)
+    sp_l: jax.Array        # Orbital angular momentum (nstates,)
+    sp_j: jax.Array        # Total angular momentum (nstates,)
+    
     # Occupation factors
     wocc: jax.Array        # BCS occupation v^2 (nstates,)
     wguv: jax.Array        # BCS uv factor (nstates,)
@@ -56,6 +61,7 @@ class SolverState:
     
     # State metadata
     isospin: jax.Array     # 0=neutron, 1=proton (nstates,)
+    sp_parity: jax.Array   # Parity (-1)^l (nstates,)
     
     # Densities and potentials
     densities: Densities
@@ -88,6 +94,25 @@ class SolverState:
     @property
     def nprot(self) -> jax.Array:
         return jnp.sum(self.isospin == 1)
+    
+    def get_spectroscopic_labels(self) -> list:
+        """
+        Generate spectroscopic labels from quantum numbers.
+        
+        Returns:
+            List of spectroscopic labels (e.g., '1s1/2', '1p3/2')
+        """
+        # Import locally to avoid circular dependency
+        from jax_hfbfft.core.hfbfft import make_spectroscopic_label
+        
+        labels = []
+        for i in range(self.nstates):
+            n = int(self.sp_n[i])
+            l = int(self.sp_l[i])
+            j = float(self.sp_j[i])
+            label = make_spectroscopic_label(n, l, j)
+            labels.append(label)
+        return labels
 
 
 @jax.tree_util.register_dataclass
@@ -117,6 +142,7 @@ def initialize_wavefunctions(
     nprot: int,
     nstates_neut: int,
     nstates_prot: int,
+    seed: int = 42,
 ) -> Tuple[jax.Array, jax.Array]:
     """
     Initialize wavefunctions with random or harmonic oscillator states.
@@ -128,12 +154,13 @@ def initialize_wavefunctions(
         grid: Spatial grid
         nneut, nprot: Particle numbers
         nstates_neut, nstates_prot: Number of states per isospin
+        seed: Random seed for reproducibility (default: 42)
         
     Returns:
         (psi, isospin) arrays
     """
     dtypes = get_dtypes()
-    key = jax.random.PRNGKey(42)
+    key = jax.random.PRNGKey(seed)
     
     nstates = nstates_neut + nstates_prot
     shape = (nstates, 2, grid.nx, grid.ny, grid.nz)
@@ -155,7 +182,13 @@ def initialize_wavefunctions(
         jnp.ones(nstates_prot, dtype=dtypes.int),
     ])
     
-    return psi, isospin
+    # Initialize quantum numbers (placeholder values)
+    sp_n = jnp.zeros(nstates, dtype=dtypes.int)
+    sp_l = jnp.zeros(nstates, dtype=dtypes.int)
+    sp_j = jnp.full(nstates, 0.5, dtype=dtypes.float)
+    sp_parity = jnp.ones(nstates, dtype=dtypes.float)
+    
+    return psi, isospin, sp_n, sp_l, sp_j, sp_parity
 
 
 def create_initial_state(
@@ -165,15 +198,28 @@ def create_initial_state(
     target_n: int,
     target_p: int,
     constraint_state: Optional[ConstraintState] = None,
+    seed: int = 42,
 ) -> SolverState:
-    """Create initial HFB state."""
+    """
+    Create initial HFB state.
+    
+    Args:
+        grid: Spatial grid
+        npsi_n, npsi_p: Number of states per isospin
+        target_n, target_p: Target particle numbers
+        constraint_state: Constraint configuration
+        seed: Random seed for reproducibility (default: 42)
+        
+    Returns:
+        Initial solver state
+    """
     dtypes = get_dtypes()
     nstates = npsi_n + npsi_p
     A = target_n + target_p
     
     # Initialize wavefunctions
-    psi, isospin = initialize_wavefunctions(
-        grid, target_n, target_p, npsi_n, npsi_p
+    psi, isospin, sp_n, sp_l, sp_j, sp_parity = initialize_wavefunctions(
+        grid, target_n, target_p, npsi_n, npsi_p, seed=seed
     )
     
     # Initial single-particle energies: harmonic oscillator estimate
@@ -216,11 +262,15 @@ def create_initial_state(
         sp_energy=sp_energy,
         sp_kinetic=sp_kinetic,
         deltaf=deltaf,
+        sp_n=sp_n,
+        sp_l=sp_l,
+        sp_j=sp_j,
         wocc=wocc,
         wguv=wguv,
         wstates=wstates,
         pairwg=pairwg,
         isospin=isospin,
+        sp_parity=sp_parity,
         densities=densities,
         meanfield=meanfield,
         coulomb_solver=coulomb_solver,
@@ -272,7 +322,7 @@ def gradient_step(
         pairwg: Pairing cutoff weights
         sp_energy: Single-particle energies
         isospin: Isospin labels
-        grid: Spatial grid
+        grid: Spatial grid (with precomputed k2)
         x0dmp: Damping factor
         e0dmp: Preconditioning energy (MeV)
         npsi_n: Number of neutron states
@@ -331,7 +381,7 @@ def apply_preconditioner(
     phi: jax.Array,
     e0dmp: float,
     h2ma: float,
-    dx: float, dy: float, dz: float
+    k2: jax.Array,
 ) -> jax.Array:
     """
     Apply preconditioning (inverse kinetic energy operator) in Fourier space.
@@ -341,21 +391,18 @@ def apply_preconditioner(
     This version handles both single wavefunctions and batched wavefunctions.
     For batched input with shape (nstates, 2, nx, ny, nz), the FFT is applied
     to the last 3 dimensions efficiently.
-    """
-    nx, ny, nz = phi.shape[-3:]
     
+    Args:
+        phi: Wavefunction(s) to precondition
+        e0dmp: Damping energy scale (MeV)
+        h2ma: Kinetic energy coefficient (MeV*fm^2)
+        k2: Precomputed k^2 grid with shape (nx, ny, nz)
+        
+    Returns:
+        Preconditioned wavefunction with same shape as phi
+    """
     # FFT to k-space (operates on last 3 dimensions)
     phi_k = jnp.fft.fftn(phi, axes=(-3, -2, -1))
-    
-    # Wavenumbers - computed once and broadcast
-    kx = 2 * jnp.pi * jnp.fft.fftfreq(nx, d=dx)
-    ky = 2 * jnp.pi * jnp.fft.fftfreq(ny, d=dy)
-    kz = 2 * jnp.pi * jnp.fft.fftfreq(nz, d=dz)
-    
-    # k^2 grid (broadcasting)
-    k2 = (kx[:, jnp.newaxis, jnp.newaxis]**2 + 
-          ky[jnp.newaxis, :, jnp.newaxis]**2 + 
-          kz[jnp.newaxis, jnp.newaxis, :]**2)
     
     # Denominator: e0dmp + h2m * k^2
     denom = e0dmp + h2ma * k2
@@ -398,7 +445,7 @@ def _gradient_step_jit(
     # 2. Apply Preconditioner - batched version (FFT on all states at once)
     # hpsi_all has shape (nstates, 2, nx, ny, nz)
     h2ma = 20.73
-    hpsi_pre = apply_preconditioner(hpsi_all, e0dmp, h2ma, grid.dx, grid.dy, grid.dz)
+    hpsi_pre = apply_preconditioner(hpsi_all, e0dmp, h2ma, grid.k2)
     
     # 3. Update Wavefunctions
     psi_new = psi - x0dmp * hpsi_pre
@@ -680,11 +727,15 @@ def hfb_iteration(
         sp_energy=sp_energy,
         sp_kinetic=sp_kinetic,
         deltaf=deltaf,
+        sp_n=state.sp_n,
+        sp_l=state.sp_l,
+        sp_j=state.sp_j,
         wocc=wocc,
         wguv=wguv,
         wstates=wstates,
         pairwg=pairwg,
         isospin=state.isospin,
+        sp_parity=state.sp_parity,
         densities=densities,
         meanfield=meanfield,
         coulomb_solver=state.coulomb_solver,
@@ -709,6 +760,7 @@ def run_hfb(
     callback: Optional[Callable[[SolverState], None]] = None,
     use_coulomb: bool = True,
     constraint: Optional[Constraint] = None,
+    seed: int = 42,
 ) -> SolverState:
     """
     Run HFB calculation to convergence.
@@ -718,9 +770,13 @@ def run_hfb(
         force: Force parameters
         nucleus_z: Proton number
         nucleus_n: Neutron number
+        npsi_n: Number of neutron states
         config: Solver configuration (uses defaults if None)
         initial_state: Starting state (creates new if None)
         callback: Called after each iteration with current state
+        use_coulomb: Whether to include Coulomb interaction
+        constraint: Constraint configuration
+        seed: Random seed for reproducibility (default: 42)
         
     Returns:
         Converged SolverState
@@ -748,6 +804,7 @@ def run_hfb(
             nucleus_n,
             nucleus_z,
             constraint_state=constraint_state,
+            seed=seed,
         )
     else:
         state = initial_state
@@ -798,11 +855,15 @@ def run_hfb(
         sp_energy=initial_sp_energy,
         sp_kinetic=initial_sp_kinetic,
         deltaf=state.deltaf,
+        sp_n=state.sp_n,
+        sp_l=state.sp_l,
+        sp_j=state.sp_j,
         wocc=state.wocc,
         wguv=state.wguv,
         wstates=state.wstates,
         pairwg=state.pairwg,
         isospin=state.isospin,
+        sp_parity=state.sp_parity,
         densities=initial_densities,
         meanfield=initial_meanfield,
         coulomb_solver=state.coulomb_solver,
@@ -880,11 +941,15 @@ def run_hfb(
             sp_energy=state.sp_energy,
             sp_kinetic=state.sp_kinetic,
             deltaf=state.deltaf,
+            sp_n=state.sp_n,
+            sp_l=state.sp_l,
+            sp_j=state.sp_j,
             wocc=state.wocc,
             wguv=state.wguv,
             wstates=state.wstates,
             pairwg=state.pairwg,
             isospin=state.isospin,
+            sp_parity=state.sp_parity,
             densities=state.densities,
             meanfield=state.meanfield,
             coulomb_solver=state.coulomb_solver,

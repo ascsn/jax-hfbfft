@@ -137,7 +137,10 @@ export interface SingleParticleLevel {
   energy: number
   occupation: number
   parity: number
-  label?: string
+  n: number
+  l: number
+  j: number
+  label: string
 }
 
 export interface CalculationResults {

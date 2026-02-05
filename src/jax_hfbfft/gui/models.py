@@ -191,7 +191,10 @@ class SingleParticleLevel(BaseModel):
     energy: float = Field(..., description="Single-particle energy (MeV)")
     occupation: float = Field(..., description="Occupation probability")
     parity: int = Field(1, description="Parity (+1 or -1)")
-    label: Optional[str] = Field(None, description="State label (e.g., '1s1/2')")
+    n: int = Field(..., description="Radial quantum number")
+    l: int = Field(..., description="Orbital angular momentum quantum number")
+    j: float = Field(..., description="Total angular momentum quantum number")
+    label: str = Field(..., description="State label with spectroscopic notation (e.g., '1s1/2')")
 
 
 class CalculationResults(BaseModel):

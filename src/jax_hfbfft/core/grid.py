@@ -82,6 +82,12 @@ class Grid:
     der2z: Optional[jax.Array] = None
     cdmpz: Optional[jax.Array] = None
     
+    # Precomputed FFT arrays for performance
+    kx: Optional[jax.Array] = None  # x wave numbers
+    ky: Optional[jax.Array] = None  # y wave numbers
+    kz: Optional[jax.Array] = None  # z wave numbers
+    k2: Optional[jax.Array] = None  # k^2 grid for Laplacian/preconditioner
+    
     @property
     def shape(self) -> Tuple[int, int, int]:
         """Return the grid shape as a tuple."""
@@ -139,6 +145,16 @@ class Grid:
         cdmpy = jnp.eye(ny)
         cdmpz = jnp.eye(nz)
         
+        # Precompute FFT wave numbers and k^2 grid
+        kx = 2 * jnp.pi * jnp.fft.fftfreq(nx, d=dx)
+        ky = 2 * jnp.pi * jnp.fft.fftfreq(ny, d=dy)
+        kz = 2 * jnp.pi * jnp.fft.fftfreq(nz, d=dz)
+        
+        # Create k^2 grid for Laplacian and preconditioner
+        k2 = (kx[:, jnp.newaxis, jnp.newaxis]**2 + 
+              ky[jnp.newaxis, :, jnp.newaxis]**2 + 
+              kz[jnp.newaxis, jnp.newaxis, :]**2)
+        
         return cls(
             nx=nx, ny=ny, nz=nz,
             dx=dx, dy=dy, dz=dz,
@@ -152,6 +168,7 @@ class Grid:
             der1x=der1x, der2x=der2x, cdmpx=cdmpx,
             der1y=der1y, der2y=der2y, cdmpy=cdmpy,
             der1z=der1z, der2z=der2z, cdmpz=cdmpz,
+            kx=kx, ky=ky, kz=kz, k2=k2,
         )
     
     @classmethod

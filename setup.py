@@ -22,6 +22,13 @@ class BuildWithFrontend(_build_py):
     
     def run(self):
         """Run the build process."""
+        # Check if frontend build should be skipped
+        skip_frontend = os.environ.get('SKIP_FRONTEND_BUILD', '').lower() in ('1', 'true', 'yes')
+        if skip_frontend:
+            print("SKIP_FRONTEND_BUILD is set, skipping frontend build")
+            super().run()
+            return
+        
         # Get the project root directory
         project_root = Path(__file__).parent
         frontend_dir = project_root / "gui-frontend"

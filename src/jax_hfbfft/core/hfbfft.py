@@ -26,6 +26,98 @@ if str(_legacy_path) not in sys.path:
     sys.path.insert(0, str(_legacy_path))
 
 
+def angular_momentum_letter(l: int) -> str:
+    """
+    Convert orbital angular momentum quantum number to spectroscopic letter.
+    
+    Args:
+        l: Orbital angular momentum quantum number
+        
+    Returns:
+        Spectroscopic letter (s, p, d, f, g, h, ...)
+    """
+    letters = ['s', 'p', 'd', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o']
+    if l < len(letters):
+        return letters[l]
+    # For l >= 13, use alphabetic continuation
+    return chr(ord('a') + l)
+
+
+def make_spectroscopic_label(n: int, l: int, j: float) -> str:
+    """
+    Create spectroscopic notation for quantum numbers.
+    
+    Format: {n}{letter}{j_num}/{j_denom}
+    Example: n=1, l=0, j=0.5 -> '1s1/2'
+             n=1, l=1, j=1.5 -> '1p3/2'
+    
+    Args:
+        n: Radial quantum number (principal quantum number for the shell)
+        l: Orbital angular momentum quantum number
+        j: Total angular momentum
+        
+    Returns:
+        Spectroscopic label string
+    """
+    letter = angular_momentum_letter(l)
+    
+    # Convert j to fraction
+    j_times_2 = int(round(2 * j))
+    
+    return f"{n}{letter}{j_times_2}/2"
+
+
+def cartesian_to_spherical_qn(i: int, j: int, k: int, is_spin: int) -> Tuple[int, int, float, float]:
+    """
+    Convert Cartesian harmonic oscillator quantum numbers to approximate spherical quantum numbers.
+    
+    For Cartesian quantum numbers (i, j, k) with principal shell N = i + j + k:
+    - The state contains a mixture of angular momentum values
+    - We assign the maximum angular momentum l_max = N
+    - Radial quantum number n = 0 (lowest radial excitation for this shell)
+    - Total angular momentum j depends on l and spin
+    - Parity π = (-1)^N
+    
+    Args:
+        i, j, k: Cartesian quantum numbers
+        is_spin: Spin component (0 or 1)
+        
+    Returns:
+        (n, l, j, parity) tuple where:
+            n: Radial quantum number
+            l: Orbital angular momentum  
+            j: Total angular momentum
+            parity: Spatial parity (-1)^l
+    """
+    # Principal shell number
+    N = i + j + k
+    
+    # For Cartesian states, we approximate with maximum angular momentum
+    # In reality, the state contains l = N, N-2, N-4, ..., (0 or 1)
+    l = N
+    
+    # Radial quantum number (for lowest radial excitation)
+    n = 0
+    
+    # Total angular momentum: j = l ± 1/2
+    # For l=0, only j=1/2 is possible
+    if l == 0:
+        j = 0.5
+    else:
+        # Assign j based on spin component
+        # is_spin=0 -> j = l + 1/2 (stretch coupling)
+        # is_spin=1 -> j = l - 1/2 (anti-stretch coupling)
+        if is_spin == 0:
+            j = l + 0.5
+        else:
+            j = l - 0.5
+    
+    # Parity
+    parity = (-1.0) ** l
+    
+    return n, l, j, parity
+
+
 @dataclass
 class HFBFFTState:
     """
@@ -74,6 +166,12 @@ class HFBFFTState:
     sp_orbital: Optional[jax.Array] = None    # Orbital angular momentum
     sp_spin: Optional[jax.Array] = None       # Spin
     sp_norm: Optional[jax.Array] = None       # Normalization
+    
+    # Quantum numbers
+    sp_n: Optional[jax.Array] = None          # Radial quantum number
+    sp_l: Optional[jax.Array] = None          # Orbital angular momentum quantum number
+    sp_j: Optional[jax.Array] = None          # Total angular momentum
+    sp_labels: Optional[list] = None          # Spectroscopic labels
     
     # Occupation numbers (for HFB)
     wocc: Optional[jax.Array] = None          # Occupation probabilities
@@ -349,6 +447,12 @@ class HFBFFT:
         self.state.sp_spin = jnp.zeros((nstmax, 3), dtype=jnp.float64)
         self.state.sp_norm = jnp.zeros(nstmax, dtype=jnp.float64)
         
+        # Quantum numbers
+        self.state.sp_n = jnp.zeros(nstmax, dtype=jnp.int32)
+        self.state.sp_l = jnp.zeros(nstmax, dtype=jnp.int32)
+        self.state.sp_j = jnp.full(nstmax, 0.5, dtype=jnp.float64)
+        self.state.sp_labels = None
+        
         # Occupation numbers
         self.state.wocc = jnp.zeros(nstmax, dtype=jnp.float64)
         self.state.wguv = jnp.zeros(nstmax, dtype=jnp.float64)
@@ -440,6 +544,13 @@ class HFBFFT:
         # Pre-allocate quantum number array for the full basis
         nshell = jnp.zeros((3, self._nstmax), dtype=jnp.int32)
         
+        # Also initialize quantum number and parity arrays
+        sp_n_array = jnp.zeros(self._nstmax, dtype=jnp.int32)
+        sp_l_array = jnp.zeros(self._nstmax, dtype=jnp.int32)
+        sp_j_array = jnp.zeros(self._nstmax, dtype=jnp.float64)
+        sp_parity_array = jnp.zeros(self._nstmax, dtype=jnp.float64)
+        sp_labels_list = []
+        
         nst = 0  # Global state counter
         
         # Loop over isospins
@@ -472,6 +583,18 @@ class HFBFFT:
                                         nshell = nshell.at[0, nst].set(i)
                                         nshell = nshell.at[1, nst].set(j)
                                         nshell = nshell.at[2, nst].set(k)
+                                        
+                                        # Calculate spectroscopic quantum numbers
+                                        n_qn, l_qn, j_qn, parity = cartesian_to_spherical_qn(i, j, k, is_spin)
+                                        sp_n_array = sp_n_array.at[nst].set(n_qn)
+                                        sp_l_array = sp_l_array.at[nst].set(l_qn)
+                                        sp_j_array = sp_j_array.at[nst].set(j_qn)
+                                        sp_parity_array = sp_parity_array.at[nst].set(parity)
+                                        
+                                        # Generate spectroscopic label
+                                        label = make_spectroscopic_label(n_qn, l_qn, j_qn)
+                                        sp_labels_list.append(label)
+                                        
                                         nst += 1
                                     else:
                                         done = True
@@ -539,6 +662,13 @@ class HFBFFT:
                     self.state.psi = self.state.psi.at[nst].set(
                         self.state.psi[nst] / psi_norm
                     )
+        
+        # Store quantum numbers and labels in state
+        self.state.sp_n = sp_n_array
+        self.state.sp_l = sp_l_array
+        self.state.sp_j = sp_j_array
+        self.state.sp_parity = sp_parity_array
+        self.state.sp_labels = sp_labels_list
     
     def _init_random(self, seed: int = 42):
         """Initialize wavefunctions with random values."""
@@ -575,6 +705,7 @@ class HFBFFT:
         checkpoint_interval: int = 0,
         checkpoint_file: Optional[str] = None,
         use_legacy: bool = False,
+        seed: int = 42,
     ) -> HFBFFTResults:
         """
         Run the HFB calculation.
@@ -590,6 +721,7 @@ class HFBFFT:
             checkpoint_interval: Save checkpoint every N iterations (0=disabled)
             checkpoint_file: File to save checkpoints to
             use_legacy: Use the legacy implementation (False = modern OOP)
+            seed: Random seed for reproducibility (default: 42)
             
         Returns:
             HFBFFTResults with final energies and properties
@@ -605,6 +737,7 @@ class HFBFFT:
             max_iterations=max_iterations,
             convergence_threshold=convergence_threshold,
             print_interval=print_interval,
+            seed=seed,
         )
     
     def _run_modern(
@@ -612,6 +745,7 @@ class HFBFFT:
         max_iterations: int = 1000,
         convergence_threshold: float = 1e-6,
         print_interval: int = 10,
+        seed: int = 42,
     ) -> HFBFFTResults:
         """Run the calculation using the modern OOP implementation."""
         from jax_hfbfft.physics.solver import (
@@ -668,11 +802,15 @@ class HFBFFT:
                  sp_energy=jnp.zeros(len(self.state.isospin)),
                  sp_kinetic=jnp.zeros(len(self.state.isospin)),
                  deltaf=jnp.zeros(len(self.state.isospin)),
+                 sp_n=self.state.sp_n if self.state.sp_n is not None else jnp.zeros(len(self.state.isospin), dtype=jnp.int32),
+                 sp_l=self.state.sp_l if self.state.sp_l is not None else jnp.zeros(len(self.state.isospin), dtype=jnp.int32),
+                 sp_j=self.state.sp_j if self.state.sp_j is not None else jnp.full(len(self.state.isospin), 0.5),
                  wocc=self.state.wocc,
                  wguv=self.state.wguv,
                  wstates=self.state.wstates,
                  pairwg=self.state.pairwg,
                  isospin=self.state.isospin,
+                 sp_parity=self.state.sp_parity if self.state.sp_parity is not None else jnp.ones(len(self.state.isospin)),
                  densities=Densities.zeros(self.grid.nx, self.grid.ny, self.grid.nz),
                  meanfield=Meanfield.zeros(self.grid.nx, self.grid.ny, self.grid.nz),
                  coulomb_solver=CoulombSolver.create(self.grid),
@@ -714,6 +852,7 @@ class HFBFFT:
             callback=iteration_callback if self._callbacks else None,
             use_coulomb=self.include_coulomb,
             constraint=self.constraint,
+            seed=seed,
         )
         
         elapsed = time.time() - start_time

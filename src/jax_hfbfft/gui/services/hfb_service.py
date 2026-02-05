@@ -675,18 +675,45 @@ class HFBService:
         if calc.state.sp_energy is not None:
             import jax.numpy as jnp
             
+            # Get spectroscopic labels from state (already computed during initialization)
+            labels = calc.state.sp_labels if calc.state.sp_labels is not None else []
+            
+            # Check if quantum numbers are available
+            has_quantum_numbers = (
+                calc.state.sp_n is not None and 
+                calc.state.sp_l is not None and 
+                calc.state.sp_j is not None
+            )
+            
             for i in range(calc._nstmax):
                 isospin = "neutron" if calc.state.isospin[i] == 0 else "proton"
                 occupation = float(calc.state.wocc[i])
                 
                 # Only include occupied or near-occupied states
                 if occupation > 0.01:
+                    # Get label with fallback
+                    label = labels[i] if labels and i < len(labels) else f"State {i}"
+                    
+                    # Get quantum numbers with fallbacks
+                    if has_quantum_numbers:
+                        n = int(calc.state.sp_n[i])
+                        l = int(calc.state.sp_l[i])
+                        j = float(calc.state.sp_j[i])
+                        parity = int(calc.state.sp_parity[i]) if calc.state.sp_parity is not None else 1
+                    else:
+                        # Default values if quantum numbers not available
+                        n, l, j, parity = 0, 0, 0.5, 1
+                    
                     sp_spectrum.append(SingleParticleLevel(
                         index=i,
                         isospin=isospin,
                         energy=float(calc.state.sp_energy[i]),
                         occupation=occupation,
-                        parity=int(calc.state.sp_parity[i]) if calc.state.sp_parity is not None else 1,
+                        parity=parity,
+                        n=n,
+                        l=l,
+                        j=j,
+                        label=label,
                     ))
         
         return CalculationResults(

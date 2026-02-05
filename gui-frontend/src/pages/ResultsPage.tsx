@@ -122,9 +122,9 @@ export function ResultsPage() {
           />
           
           {/* Spectrum plot */}
-          {calculation.results.single_particle_levels && (
+          {calculation.results.single_particle_spectrum && (
             <SpectrumPlot
-              levels={calculation.results.single_particle_levels}
+              levels={calculation.results.single_particle_spectrum}
               fermiNeutron={calculation.results.pairing.fermi_neutron}
               fermiProton={calculation.results.pairing.fermi_proton}
             />

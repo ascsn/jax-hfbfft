@@ -145,7 +145,7 @@ export interface CalculationResults {
   radii: RadiiResults
   deformation: DeformationResults
   pairing: PairingResults
-  single_particle_levels: SingleParticleLevel[]
+  single_particle_spectrum: SingleParticleLevel[]
   converged: boolean
   iterations: number
   final_fluctuation: number
@@ -191,6 +191,7 @@ export interface CalculationStatus {
   error_message?: string
   run_type?: RunType
   surface_results?: BetaSurfaceResult
+  tags?: string[]
 }
 
 export interface CalculationSummary {
@@ -203,6 +204,7 @@ export interface CalculationSummary {
   started_at: string
   completed_at?: string
   run_type?: RunType
+  tags?: string[]
 }
 
 export interface ForceInfo {

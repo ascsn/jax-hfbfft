@@ -236,7 +236,7 @@ class HFBService:
             try:
                 from jax_hfbfft.gui.services.storage import get_storage
                 storage = await get_storage()
-                await storage.save_calculation(self._calculations[calc_id].status)
+                await storage.save_calculation(self._calculations[calc_id].status, request=request)
             except Exception as e:
                 print(f"Warning: Failed to save calculation to history: {e}")
             
@@ -333,7 +333,7 @@ class HFBService:
         try:
             from jax_hfbfft.gui.services.storage import get_storage
             storage = await get_storage()
-            await storage.save_surface(calc_id, result.nucleus, result.force_name, result)
+            await storage.save_surface(calc_id, result.nucleus, result.force_name, result, request=request)
         except Exception as e:
             print(f"Warning: Failed to save surface scan to history: {e}")
 
@@ -360,7 +360,7 @@ class HFBService:
                 force_name=result.force_name,
                 points=result.points,
             )
-            await storage.save_surface(surface_id, request.nucleus, request.force_name, result)
+            await storage.save_surface(surface_id, request.nucleus, request.force_name, result, request=request)
         except Exception as exc:
             print(f"Warning: Failed to save surface scan to history: {exc}")
 
@@ -775,7 +775,7 @@ class HFBService:
             from jax_hfbfft.gui.services.storage import get_storage
             storage = await get_storage()
             if calc_id in self._calculations:
-                await storage.save_calculation(self._calculations[calc_id].status)
+                await storage.save_calculation(self._calculations[calc_id].status, request=self._calculations[calc_id].request if hasattr(self._calculations[calc_id].request, 'nucleus') else None)
         except Exception as e:
             print(f"Warning: Failed to save failed calculation to history: {e}")
     

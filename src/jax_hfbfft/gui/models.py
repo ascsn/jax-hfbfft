@@ -254,6 +254,7 @@ class CalculationStatus(BaseModel):
     error_message: Optional[str] = None
     run_type: RunType = Field(RunType.CALCULATION, description="Run type")
     surface_results: Optional[BetaSurfaceResult] = None
+    tags: List[str] = Field(default_factory=list, description="Automatically generated tags")
 
 
 class CalculationSummary(BaseModel):
@@ -267,6 +268,7 @@ class CalculationSummary(BaseModel):
     started_at: datetime
     completed_at: Optional[datetime] = None
     run_type: RunType = Field(RunType.CALCULATION, description="Run type")
+    tags: List[str] = Field(default_factory=list, description="Automatically generated tags")
 
 
 class ForceInfo(BaseModel):

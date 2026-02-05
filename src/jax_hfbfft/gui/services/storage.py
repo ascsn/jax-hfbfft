@@ -23,6 +23,10 @@ from jax_hfbfft.gui.models import (
     NucleusInput,
     BetaSurfaceResult,
     RunType,
+    CalculationRequest,
+    BetaSurfaceRequest,
+    ConstraintType,
+    PairingType,
 )
 
 
@@ -94,17 +98,20 @@ class RunStorage:
                 error_message TEXT,
                 results_json TEXT,
                 request_json TEXT,
+                tags TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         """)
 
-        # Migrate older databases to include run_type/request_json if missing
+        # Migrate older databases to include run_type/request_json/tags if missing
         async with self._db.execute("PRAGMA table_info(calculations)") as cursor:
             columns = {row[1] async for row in cursor}
         if "run_type" not in columns:
             await self._db.execute("ALTER TABLE calculations ADD COLUMN run_type TEXT NOT NULL DEFAULT 'calculation'")
         if "request_json" not in columns:
             await self._db.execute("ALTER TABLE calculations ADD COLUMN request_json TEXT")
+        if "tags" not in columns:
+            await self._db.execute("ALTER TABLE calculations ADD COLUMN tags TEXT")
         
         # Create indices for common queries
         await self._db.execute("""
@@ -134,12 +141,13 @@ class RunStorage:
             self._db = None
             self._initialized = False
     
-    async def save_calculation(self, status: CalculationStatus):
+    async def save_calculation(self, status: CalculationStatus, request: Optional[CalculationRequest] = None):
         """
         Save a calculation to the database.
         
         Args:
             status: The calculation status to save.
+            request: Optional original request for tag generation.
         """
         await self.initialize()
         
@@ -148,13 +156,17 @@ class RunStorage:
         if status.results:
             results_json = status.results.model_dump_json()
         
+        # Auto-generate tags if not already set
+        tags = status.tags if status.tags else self._generate_tags_from_request(request) if request else self._generate_tags_from_status(status)
+        tags_json = json.dumps(tags) if tags else None
+        
         await self._db.execute("""
             INSERT OR REPLACE INTO calculations (
                 id, protons, neutrons, element_symbol, mass_number,
                 force_name, run_type, phase, started_at, completed_at,
                 total_energy, final_fluctuation, converged, iterations,
-                error_message, results_json, request_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                error_message, results_json, request_json, tags
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             status.id,
             nucleus.protons,
@@ -173,24 +185,87 @@ class RunStorage:
             status.error_message,
             results_json,
             status.progress.model_dump_json() if status.progress else None,
+            tags_json,
         ))
         
         await self._db.commit()
+    
+    def _generate_tags_from_request(self, request: CalculationRequest) -> List[str]:
+        """
+        Auto-generate tags based on calculation request configuration.
+        
+        Args:
+            request: The calculation request.
+            
+        Returns:
+            List of generated tags.
+        """
+        tags = []
+        
+        # Constraint tags
+        if request.constraint.type != ConstraintType.NONE:
+            tags.append("constrained")
+            if request.constraint.type == ConstraintType.MULTIPOLE:
+                tags.append("multipole")
+            elif request.constraint.type == ConstraintType.BETA_GAMMA:
+                tags.append("beta-gamma")
+        
+        # Pairing tags
+        if request.pairing.type != PairingType.NONE:
+            tags.append("pairing")
+            if request.pairing.type == PairingType.VDI:
+                tags.append("vdi")
+            elif request.pairing.type == PairingType.DDDI:
+                tags.append("dddi")
+        
+        return tags
+    
+    def _generate_tags_from_status(self, status: CalculationStatus) -> List[str]:
+        """
+        Auto-generate tags based on calculation status (fallback for backward compatibility).
+        
+        Args:
+            status: The calculation status.
+            
+        Returns:
+            List of generated tags.
+        """
+        tags = []
+        
+        # Surface scan tag
+        if status.run_type == RunType.SURFACE:
+            tags.append("surface-scan")
+        
+        return tags
 
-    async def save_surface(self, surface_id: str, nucleus: NucleusInput, force_name: str, result: BetaSurfaceResult):
+    async def save_surface(self, surface_id: str, nucleus: NucleusInput, force_name: str, result: BetaSurfaceResult, request: Optional[BetaSurfaceRequest] = None):
         """Save a surface scan result to history."""
         await self.initialize()
 
         results_json = result.model_dump_json()
         now = datetime.now().isoformat()
+        
+        # Auto-generate tags for surface scan
+        tags = ["surface-scan"]
+        
+        # Add pairing tags if request is provided
+        if request:
+            if request.pairing.type != PairingType.NONE:
+                tags.append("pairing")
+                if request.pairing.type == PairingType.VDI:
+                    tags.append("vdi")
+                elif request.pairing.type == PairingType.DDDI:
+                    tags.append("dddi")
+        
+        tags_json = json.dumps(tags)
 
         await self._db.execute("""
             INSERT OR REPLACE INTO calculations (
                 id, protons, neutrons, element_symbol, mass_number,
                 force_name, run_type, phase, started_at, completed_at,
                 total_energy, final_fluctuation, converged, iterations,
-                error_message, results_json, request_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                error_message, results_json, request_json, tags
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             surface_id,
             nucleus.protons,
@@ -209,6 +284,7 @@ class RunStorage:
             None,
             results_json,
             None,
+            tags_json,
         ))
 
         await self._db.commit()
@@ -402,6 +478,14 @@ class RunStorage:
         
         phase = CalculationPhase(row["phase"])
         
+        # Parse tags from JSON
+        tags = []
+        if row["tags"]:
+            try:
+                tags = json.loads(row["tags"])
+            except (json.JSONDecodeError, TypeError):
+                tags = []
+        
         return CalculationStatus(
             id=row["id"],
             nucleus=nucleus,
@@ -420,10 +504,19 @@ class RunStorage:
             error_message=row["error_message"],
             run_type=RunType(row["run_type"]) if row["run_type"] else RunType.CALCULATION,
             surface_results=surface_results,
+            tags=tags,
         )
     
     def _row_to_summary(self, row) -> CalculationSummary:
         """Convert a database row to CalculationSummary."""
+        # Parse tags from JSON
+        tags = []
+        if row["tags"]:
+            try:
+                tags = json.loads(row["tags"])
+            except (json.JSONDecodeError, TypeError):
+                tags = []
+        
         return CalculationSummary(
             id=row["id"],
             nucleus_symbol=row["element_symbol"],
@@ -434,6 +527,7 @@ class RunStorage:
             started_at=datetime.fromisoformat(row["started_at"]),
             completed_at=datetime.fromisoformat(row["completed_at"]) if row["completed_at"] else None,
             run_type=RunType(row["run_type"]) if row["run_type"] else RunType.CALCULATION,
+            tags=tags,
         )
 
 

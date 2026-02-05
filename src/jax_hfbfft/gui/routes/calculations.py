@@ -44,7 +44,7 @@ async def start_calculation(
             status = await service.get_calculation(progress.calculation_id)
             if status:
                 storage = await get_storage()
-                await storage.save_calculation(status)
+                await storage.save_calculation(status, request=request)
     
     calc_id = await service.start_calculation(request, progress_callback=save_on_complete)
     

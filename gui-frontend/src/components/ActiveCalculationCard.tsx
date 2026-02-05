@@ -1,7 +1,7 @@
 import { useNavigate } from 'react-router-dom'
 import { CalculationStatus as CalcStatus } from '@/types'
 import { Card, CardContent } from '@/components/ui'
-import { formatNucleus, formatNumber, getPhaseInfo } from '@/lib/utils'
+import { formatNucleus, formatNumber, getPhaseInfo, cn, getTagStyle } from '@/lib/utils'
 import { Loader2, CheckCircle, XCircle, AlertCircle, Ban } from 'lucide-react'
 import { Progress } from '@/components/ui'
 
@@ -62,16 +62,16 @@ export function ActiveCalculationCard({ calculation, onClick }: ActiveCalculatio
   const PhaseIcon = () => {
     switch (progress.phase) {
       case 'converged':
-        return <CheckCircle className="w-4 h-4 text-green-500" />
+        return <CheckCircle className="w-4 h-4 text-green-500 animate-scale-in" />
       case 'failed':
-        return <XCircle className="w-4 h-4 text-destructive" />
+        return <XCircle className="w-4 h-4 text-destructive animate-shake" />
       case 'cancelled':
         return <Ban className="w-4 h-4 text-orange-500" />
       case 'iterating':
         return <Loader2 className="w-4 h-4 text-primary animate-spin" />
       case 'warmup':
       case 'initializing':
-        return <AlertCircle className="w-4 h-4 text-yellow-500" />
+        return <AlertCircle className="w-4 h-4 text-yellow-500 animate-pulse-slow" />
       default:
         return <Loader2 className="w-4 h-4 text-muted-foreground animate-spin" />
     }
@@ -79,8 +79,22 @@ export function ActiveCalculationCard({ calculation, onClick }: ActiveCalculatio
   
   return (
     <Card 
-      className="cursor-pointer hover:bg-accent/50 transition-colors"
+      className={cn(
+        "cursor-pointer transition-all duration-300",
+        "hover:bg-accent/50 hover:-translate-y-1 hover:shadow-lg",
+        "active:scale-98",
+        "animate-scale-in"
+      )}
       onClick={handleClick}
+      role="button"
+      tabIndex={0}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          handleClick()
+        }
+      }}
+      aria-label={`${nucleusName} calculation - ${phaseInfo.label}`}
     >
       <CardContent className="p-3 space-y-2">
         {/* Header: Nucleus, Force, Status */}
@@ -96,13 +110,34 @@ export function ActiveCalculationCard({ calculation, onClick }: ActiveCalculatio
           </span>
         </div>
         
+        {/* Tags display */}
+        {calculation.tags && calculation.tags.length > 0 && (
+          <div className="flex flex-wrap gap-1">
+            {calculation.tags.map((tag, idx) => (
+              <span
+                key={idx}
+                className={cn(
+                  "inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium",
+                  getTagStyle(tag)
+                )}
+                title={tag}
+              >
+                {tag}
+              </span>
+            ))}
+          </div>
+        )}
+        
         {/* Progress bar (only for iterating phase) */}
         {progress.phase === 'iterating' && (
-          <div>
-            <Progress value={iterationProgress} className="h-2" />
-            <div className="flex justify-between text-xs text-muted-foreground mt-1">
-              <span>Iter {progress.iteration}/{progress.max_iterations}</span>
-              <span>{Math.round(iterationProgress)}%</span>
+          <div className="space-y-1">
+            <Progress 
+              value={iterationProgress} 
+              className="h-2 transition-all duration-300"
+            />
+            <div className="flex justify-between text-xs text-muted-foreground">
+              <span className="font-medium">Iter {progress.iteration}/{progress.max_iterations}</span>
+              <span className="font-mono">{Math.round(iterationProgress)}%</span>
             </div>
           </div>
         )}

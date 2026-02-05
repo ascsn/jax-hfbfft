@@ -6,3 +6,4 @@ export { useStartCalculation, useCalculation, useCancelCalculation } from './use
 export { useActiveCalculations } from './useActiveCalculations'
 export { useHistory, useHistoricalCalculation, useHistoricalResults, useDeleteFromHistory, useHistoryStats } from './useHistory'
 export { useDensityData } from './useDensityData'
+export { useTheme, initializeTheme } from './useTheme'

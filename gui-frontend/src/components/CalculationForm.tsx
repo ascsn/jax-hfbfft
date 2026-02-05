@@ -7,7 +7,7 @@ import {
 } from '@/components/ui'
 import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from '@/components/ui'
 import { HelpCircle, Settings2, Grid3X3, Repeat, Atom, Waves, Target, Cog } from 'lucide-react'
-import { formatNucleus } from '@/lib/utils'
+import { formatNucleus, cn } from '@/lib/utils'
 
 function HelpTip({ children }: { children: React.ReactNode }) {
   return (
@@ -33,14 +33,14 @@ export function CalculationForm() {
   const nucleusName = formatNucleus(form.protons, form.neutrons)
   
   return (
-    <Card>
+    <Card className="animate-fade-in">
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
           <Settings2 className="w-5 h-5" />
           Calculation Setup
         </CardTitle>
         <CardDescription>
-          Configure <strong>{nucleusName}</strong> (A = {massNumber}) calculation
+          Configure <strong className="text-foreground">{nucleusName}</strong> (A = {massNumber}) calculation
         </CardDescription>
       </CardHeader>
       
@@ -49,12 +49,16 @@ export function CalculationForm() {
         <div className="space-y-2">
           <Label>Quick Presets</Label>
           <div className="flex flex-wrap gap-2">
-            {presets?.slice(0, 10).map((preset) => (
+            {presets?.slice(0, 10).map((preset, idx) => (
               <Button
                 key={`${preset.symbol}-${preset.a}`}
                 variant={form.protons === preset.z && form.neutrons === preset.n ? 'default' : 'outline'}
                 size="sm"
                 onClick={() => setNucleus(preset.z, preset.n)}
+                className={cn(
+                  "interactive-scale animate-scale-in",
+                  `stagger-${Math.min(idx + 1, 10)}`
+                )}
               >
                 {preset.symbol}-{preset.a}
               </Button>
@@ -76,6 +80,8 @@ export function CalculationForm() {
               max={120}
               value={form.protons}
               onChange={(e) => setFormField('protons', parseInt(e.target.value) || 1)}
+              className="interactive-glow"
+              aria-label="Number of protons"
             />
           </div>
           
@@ -91,6 +97,8 @@ export function CalculationForm() {
               max={200}
               value={form.neutrons}
               onChange={(e) => setFormField('neutrons', parseInt(e.target.value) || 1)}
+              className="interactive-glow"
+              aria-label="Number of neutrons"
             />
           </div>
           
@@ -107,6 +115,8 @@ export function CalculationForm() {
                 forces?.map((f) => ({ value: f.name, label: f.name })) || 
                 [{ value: 'SLy4', label: 'SLy4' }]
               }
+              className="interactive-glow"
+              aria-label="Skyrme force selection"
             />
           </div>
         </div>
@@ -115,13 +125,13 @@ export function CalculationForm() {
         <Accordion type="multiple" className="w-full">
           {/* Grid Settings */}
           <AccordionItem value="grid">
-            <AccordionTrigger className="text-sm">
+            <AccordionTrigger className="text-sm hover:no-underline">
               <div className="flex items-center gap-2">
-                <Grid3X3 className="w-4 h-4" />
+                <Grid3X3 className="w-4 h-4 transition-transform duration-300 group-hover:rotate-180" />
                 Grid Configuration
               </div>
             </AccordionTrigger>
-            <AccordionContent>
+            <AccordionContent className="animate-slide-down">
               <div className="space-y-4 pt-2">
                 <div className="grid grid-cols-3 gap-3">
                   <div className="space-y-1">

@@ -7,3 +7,4 @@ export { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from './tool
 export { Select } from './select'
 export { Accordion, AccordionItem, AccordionTrigger, AccordionContent } from './accordion'
 export { Alert, AlertTitle, AlertDescription } from './alert'
+export { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from './dropdown-menu'

@@ -93,3 +93,31 @@ export function formatDate(dateStr: string): string {
   const date = new Date(dateStr)
   return date.toLocaleString()
 }
+
+// Get tag styling based on semantic meaning
+export function getTagStyle(tag: string): string {
+  const normalizedTag = tag.toLowerCase()
+  
+  // Semantic color mapping
+  if (normalizedTag === 'constrained') {
+    return 'bg-amber-500/10 text-amber-700 dark:text-amber-400'
+  }
+  if (normalizedTag === 'multipole') {
+    return 'bg-yellow-500/10 text-yellow-700 dark:text-yellow-400'
+  }
+  if (normalizedTag === 'beta-gamma' || normalizedTag === 'beta_gamma') {
+    return 'bg-rose-500/10 text-rose-700 dark:text-rose-400'
+  }
+  if (normalizedTag === 'pairing') {
+    return 'bg-purple-500/10 text-purple-700 dark:text-purple-400'
+  }
+  if (normalizedTag === 'vdi' || normalizedTag === 'dddi') {
+    return 'bg-indigo-500/10 text-indigo-700 dark:text-indigo-400'
+  }
+  if (normalizedTag === 'surface-scan' || normalizedTag === 'surface_scan') {
+    return 'bg-blue-500/10 text-blue-700 dark:text-blue-400'
+  }
+  
+  // Default gray for unknown tags
+  return 'bg-muted text-muted-foreground'
+}

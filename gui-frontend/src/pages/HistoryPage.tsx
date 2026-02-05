@@ -2,14 +2,15 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useHistory, useForces, useDeleteFromHistory } from '@/hooks'
 import { Card, CardContent, Button, Input, Select } from '@/components/ui'
-import { Search, Eye, ChevronLeft, ChevronRight, Download, Trash2 } from 'lucide-react'
-import { formatNumber, formatDate, getPhaseInfo, cn } from '@/lib/utils'
+import { Search, Eye, ChevronLeft, ChevronRight, Download, Trash2, X, Tags } from 'lucide-react'
+import { formatNumber, formatDate, getPhaseInfo, cn, getTagStyle } from '@/lib/utils'
 
 export function HistoryPage() {
   const [filters, setFilters] = useState({
     nucleus: '',
     force: '',
     status: '',
+    tags: [] as string[],
   })
   const [page, setPage] = useState(1)
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null)
@@ -56,13 +57,33 @@ export function HistoryPage() {
     setPage(1)
   }
   
+  const handleTagFilterToggle = (tag: string) => {
+    setFilters(prev => ({
+      ...prev,
+      tags: prev.tags.includes(tag)
+        ? prev.tags.filter(t => t !== tag)
+        : [...prev.tags, tag]
+    }))
+    setPage(1)
+  }
+  
+  const clearTagFilters = () => {
+    setFilters(prev => ({ ...prev, tags: [] }))
+    setPage(1)
+  }
+  
+  // Extract unique tags from all calculations
+  const allUniqueTags = history?.calculations
+    ? [...new Set(history.calculations.flatMap(calc => calc.tags || []))].sort()
+    : []
+  
   const totalPages = history ? Math.ceil(history.total / pageSize) : 1
   
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 animate-fade-in">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">Run History</h1>
-        <Button variant="outline" onClick={() => refetch()}>
+        <Button variant="outline" onClick={() => refetch()} className="interactive-scale">
           Refresh
         </Button>
       </div>
@@ -97,6 +118,47 @@ export function HistoryPage() {
               options={statusOptions}
             />
           </div>
+          
+          {/* Tag filter */}
+          {allUniqueTags.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2 pt-4 border-t">
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Tags className="w-4 h-4" />
+                <span>Filter by tags:</span>
+              </div>
+              {allUniqueTags.map(tag => (
+                <button
+                  key={tag}
+                  onClick={() => handleTagFilterToggle(tag)}
+                  className={cn(
+                    "inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium",
+                    "transition-all duration-200 active:scale-95",
+                    "hover:ring-2 hover:ring-offset-1 hover:scale-105",
+                    filters.tags.includes(tag)
+                      ? getTagStyle(tag) + " ring-2 ring-current animate-scale-in"
+                      : "bg-muted text-muted-foreground hover:bg-muted/80"
+                  )}
+                  aria-pressed={filters.tags.includes(tag)}
+                  aria-label={`Filter by ${tag}`}
+                >
+                  {tag}
+                  {filters.tags.includes(tag) && (
+                    <X className="w-3 h-3" />
+                  )}
+                </button>
+              ))}
+              {filters.tags.length > 0 && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={clearTagFilters}
+                  className="text-xs"
+                >
+                  Clear {filters.tags.length} filter{filters.tags.length > 1 ? 's' : ''}
+                </Button>
+              )}
+            </div>
+          )}
         </CardContent>
       </Card>
       
@@ -104,31 +166,61 @@ export function HistoryPage() {
       <Card>
         <CardContent className="p-0">
           {isLoading ? (
-            <div className="p-8 text-center text-muted-foreground">
-              <div className="animate-pulse space-y-3">
-                <div className="h-4 bg-muted rounded w-1/4 mx-auto"></div>
-                <div className="h-4 bg-muted rounded w-1/3 mx-auto"></div>
+            <div className="p-6">
+              {/* Skeleton loading state */}
+              <div className="space-y-4">
+                <div className="grid grid-cols-6 gap-4 pb-3 border-b">
+                  {[...Array(6)].map((_, i) => (
+                    <div key={i} className="h-4 skeleton" />
+                  ))}
+                </div>
+                {[...Array(5)].map((_, rowIdx) => (
+                  <div 
+                    key={rowIdx} 
+                    className={`grid grid-cols-6 gap-4 py-3 animate-slide-up stagger-${rowIdx + 1}`}
+                  >
+                    {[...Array(6)].map((_, colIdx) => (
+                      <div key={colIdx} className="h-4 skeleton" />
+                    ))}
+                  </div>
+                ))}
               </div>
-              <p className="mt-4">Loading history...</p>
+              <p className="mt-6 text-center text-sm text-muted-foreground animate-pulse-slow">
+                Loading history...
+              </p>
             </div>
           ) : !history?.calculations?.length ? (
-            <div className="p-12 text-center">
-              <Search className="w-12 h-12 text-muted-foreground/50 mx-auto mb-4" />
-              <p className="text-lg font-medium mb-2">No calculations found</p>
-              <p className="text-muted-foreground">
-                {filters.nucleus || filters.force || filters.status
-                  ? 'Try adjusting your filters or clearing them.'
-                  : 'Start a new calculation to see it here.'}
+            <div className="p-12 text-center animate-fade-in">
+              <Search className="w-16 h-16 text-muted-foreground/30 mx-auto mb-4" />
+              <p className="text-lg font-semibold mb-2">No calculations found</p>
+              <p className="text-sm text-muted-foreground max-w-md mx-auto">
+                {filters.nucleus || filters.force || filters.status || filters.tags.length > 0
+                  ? 'Try adjusting your filters or clearing them to see more results.'
+                  : 'Start a new calculation to see it appear here.'}
               </p>
+              {(filters.nucleus || filters.force || filters.status || filters.tags.length > 0) && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setFilters({ nucleus: '', force: '', status: '', tags: [] })
+                    setPage(1)
+                  }}
+                  className="mt-4 interactive-scale"
+                >
+                  Clear All Filters
+                </Button>
+              )}
             </div>
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full">
+              <table className="w-full min-w-[800px]">
                 <thead>
                   <tr className="border-b bg-muted/50">
-                    <th className="text-left p-4 font-medium">Nucleus</th>
+                    <th className="text-left p-4 font-medium sticky left-0 bg-muted/50 z-10">Nucleus</th>
                     <th className="text-left p-4 font-medium">Force</th>
                     <th className="text-left p-4 font-medium">Type</th>
+                    <th className="text-left p-4 font-medium">Tags</th>
                     <th className="text-left p-4 font-medium">Status</th>
                     <th className="text-left p-4 font-medium">Energy (MeV)</th>
                     <th className="text-left p-4 font-medium">Iterations</th>
@@ -137,7 +229,7 @@ export function HistoryPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {history.calculations.map((calc) => {
+                  {history.calculations.map((calc, idx) => {
                     const phaseInfo = getPhaseInfo(calc.phase)
                     // Backend returns nucleus_symbol and nucleus_a from CalculationSummary
                     const nucleusName = calc.nucleus_symbol && calc.nucleus_a > 0 
@@ -147,8 +239,16 @@ export function HistoryPage() {
                     const runType = calc.run_type ?? 'calculation'
                     
                     return (
-                      <tr key={calc.id} className="border-b hover:bg-muted/30">
-                        <td className="p-4">
+                      <tr 
+                        key={calc.id} 
+                        className={cn(
+                          "border-b transition-all duration-200",
+                          "hover:bg-muted/50 hover:scale-[1.01]",
+                          "animate-slide-up",
+                          idx < 10 && `stagger-${idx + 1}`
+                        )}
+                      >
+                        <td className="p-4 sticky left-0 bg-background z-10">
                           <span className="font-medium">{nucleusName}</span>
                           {massNumber > 0 && (
                             <span className="text-muted-foreground text-sm ml-1">
@@ -165,6 +265,26 @@ export function HistoryPage() {
                           )}>
                             {runType === 'surface' ? 'Surface' : 'Single'}
                           </span>
+                        </td>
+                        <td className="p-4">
+                          {calc.tags && calc.tags.length > 0 ? (
+                            <div className="flex flex-wrap gap-1">
+                              {calc.tags.map((tag, idx) => (
+                                <span
+                                  key={idx}
+                                  className={cn(
+                                    "inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium",
+                                    getTagStyle(tag)
+                                  )}
+                                  title={tag}
+                                >
+                                  {tag}
+                                </span>
+                              ))}
+                            </div>
+                          ) : (
+                            <span className="text-muted-foreground">—</span>
+                          )}
                         </td>
                         <td className="p-4">
                           <span className={cn(
@@ -216,6 +336,11 @@ export function HistoryPage() {
                               title={deleteConfirm === calc.id ? "Click again to confirm" : "Delete"}
                               onClick={() => handleDelete(calc.id)}
                               disabled={deleteFromHistory.isPending}
+                              className={cn(
+                                "interactive-scale",
+                                deleteConfirm === calc.id && "animate-pulse-slow"
+                              )}
+                              aria-label={deleteConfirm === calc.id ? "Confirm delete" : "Delete calculation"}
                             >
                               <Trash2 className="w-4 h-4" />
                             </Button>

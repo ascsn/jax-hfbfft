@@ -6,9 +6,13 @@
 *log.txt
 *before.txt
 */
+core.*
+runfleet.sh
+scalene-profile.*
 staticbackup.py
 test_res_output.py
 timer.py
+fleettest.py
 
 # Byte-compiled files
 __pycache__/

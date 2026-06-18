@@ -191,6 +191,7 @@ def compute_densities(
     wocc: jax.Array,
     wguv: jax.Array, 
     pairwg: jax.Array,
+    wstates: jax.Array,
     isospin: jax.Array,
     grid,
 ) -> Densities:
@@ -211,7 +212,7 @@ def compute_densities(
         Densities object containing all computed densities
     """
     return _compute_densities_vectorized(
-        psi, wocc, wguv, pairwg, isospin,
+        psi, wocc, wguv, pairwg, wstates, isospin,
         grid.dx, grid.dy, grid.dz, grid.nx, grid.ny, grid.nz
     )
 
@@ -222,6 +223,7 @@ def _compute_densities_vectorized(
     wocc: jax.Array,
     wguv: jax.Array, 
     pairwg: jax.Array,
+    wstates: jax.Array,
     isospin: jax.Array,
     dx: float,
     dy: float,
@@ -237,8 +239,8 @@ def _compute_densities_vectorized(
     nstates = psi.shape[0]
     
     # Compute weights
-    weights = wocc
-    weightsuv = wguv * pairwg
+    weights = wocc * wstates
+    weightsuv = wguv * pairwg * wstates
     
     # Compute per-state contributions using vmap
     def single_state_densities(psi_n, weight, weightuv):

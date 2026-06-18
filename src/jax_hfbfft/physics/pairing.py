@@ -192,68 +192,68 @@ def solve_pairing_isospin(
     pair_cutoff: float = 0.0,
     state_cutoff: float = 0.0,
     softcut_range: float = 0.1,
-) -> Tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array, dict]:
-    """
-    Solve BCS pairing for one isospin.
-    
-    Args:
-        iq: Isospin index (0=neutron, 1=proton)
-        particle_number: Target particle number
-        sp_energy: Single-particle energies for this isospin
-        deltaf: Pairing gaps for this isospin
-        wstates: State weights for this isospin
-        pairwg: Pairing cutoff weights for this isospin
-        pair_cutoff: Pairing space cutoff energy
-        state_cutoff: State space cutoff energy
-        softcut_range: Relative width of soft cutoff
-        
-    Returns:
-        (eferm, wocc, wguv, pairwg_new, wstates_new, stats)
-        where stats contains pairing statistics
-    """
-    # Find Fermi energy
-    eferm = find_fermi_energy(particle_number, sp_energy, deltaf, wstates)
-    
-    # Update cutoffs using jnp.where to avoid TracerBoolConversionError
-    # Pairing cutoff
-    ecut_pair = eferm + pair_cutoff
-    width_pair = softcut_range * pair_cutoff
-    # Use jnp.maximum to avoid division by zero in soft_cutoff if width=0
-    pwg_soft = soft_cutoff(sp_energy, ecut_pair, jnp.maximum(width_pair, 1e-6))
-    pairwg_new = jnp.where(pair_cutoff > 0.0, pwg_soft, pairwg)
-    
-    # State cutoff
-    ecut_state = eferm + state_cutoff
-    width_state = softcut_range * state_cutoff
-    wst_soft = soft_cutoff(sp_energy, ecut_state, jnp.maximum(width_state, 1e-6))
-    wstates_new = jnp.where(state_cutoff > 0.0, wst_soft, wstates)
-    
-    # Use the appropriate weights for calculation
-    wstates_for_calc = jnp.where(state_cutoff > 0.0, wstates_new, wstates)
-    
-    # Compute BCS occupations
-    v2, uv = compute_bcs_occupations(sp_energy, deltaf, eferm)
-    
-    # Compute statistics
-    vol = 0.5 * uv * wstates_for_calc
-    sumuv = jnp.sum(vol)
-    sumduv = jnp.sum(vol * deltaf)
-    sumv2 = jnp.sum(v2 * wstates_for_calc)
-    sumdv2 = jnp.sum(deltaf * v2 * wstates_for_calc)
-    
-    sumuv_safe = jnp.maximum(sumuv, 1.0e-20)
-    sumv2_safe = jnp.maximum(sumv2, 1.0e-20)
-    
-    stats = {
-        'eferm': eferm,
-        'epair': sumduv,
-        'avdelt': sumduv / sumuv_safe,
-        'avdeltv2': sumdv2 / sumv2_safe,
-        'avg': sumduv / sumuv_safe**2,
-    }
-    
-    return eferm, v2, uv, pairwg_new, wstates_new, stats
+):
+    smallp = 1.0e-6
 
+    # deltaf effective = deltaf * pairwg, matching FORTRAN pairgap output
+    deltaf_eff = deltaf * pairwg
+
+    # Find Fermi energy using effective gaps (pairwg baked in)
+    eferm = find_fermi_energy(
+        particle_number, sp_energy, deltaf_eff, wstates,
+        emin=-500.0, emax=500.0,
+    )
+
+    # Update cutoffs
+    pairwg = jax.lax.cond(
+        pair_cutoff > 0.0,
+        lambda _: soft_cutoff(
+            sp_energy, 
+            eferm + pair_cutoff, 
+            jnp.maximum(softcut_range * pair_cutoff, 1e-6)
+        ),
+        lambda _: pairwg,  # The fallback value if pair_cutoff <= 0.0
+        operand=None
+    )
+
+    # 2. Update wstates
+    wstates = jax.lax.cond(
+        state_cutoff > 0.0,
+        lambda _: soft_cutoff(
+            sp_energy, 
+            eferm + state_cutoff, 
+            jnp.maximum(softcut_range * state_cutoff, 1e-6)
+        ),
+        lambda _: wstates,  # The fallback value if state_cutoff <= 0.0
+        operand=None
+    )
+
+    # Final occupations with effective gaps
+    edif = sp_energy - eferm
+    equasi = jnp.sqrt(edif**2 + deltaf_eff**2)
+    equasi_safe = jnp.maximum(equasi, 1.0e-20)
+
+    v2 = 0.5 * (1.0 - edif / equasi_safe)
+    v2 = jnp.clip(v2, smallp, 1.0 - smallp)
+
+    # wguv = sqrt(v2*(1-v2)), no pairwg here (already in deltaf_eff)
+    wguv = jnp.sqrt(jnp.maximum(v2 * (1.0 - v2), smallp))
+
+    # Statistics — vol uses wstates only, NOT pairwg (FORTRAN comment)
+    vol = 0.5 * wguv * wstates
+    sumuv = jnp.maximum(jnp.sum(vol), 1.0e-20)
+    sumduv = jnp.sum(vol * deltaf_eff)   # deltaf_eff consistent with gaps
+    sumv2 = jnp.sum(v2 * wstates)
+    sumdv2 = jnp.sum(deltaf_eff * v2 * wstates)
+
+    stats = {
+        'eferm':   eferm,
+        'epair':   sumduv,
+        'avdelt':  sumduv / sumuv,
+        'avdeltv2': sumdv2 / jnp.maximum(sumv2, 1.0e-20),
+        'avg':     sumduv / sumuv**2,
+    }
+    return eferm, v2, wguv, pairwg, wstates, stats
 
 def compute_pairing_gaps(
     psi: jax.Array,

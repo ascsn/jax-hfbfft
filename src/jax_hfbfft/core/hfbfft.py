@@ -397,7 +397,15 @@ class HFBFFT:
         # Iteration tracking
         self._iteration = 0
         self._converged = False
-        
+
+        # Solver configuration parameters (match legacy defaults)
+        self.x0dmp: float = 0.45
+        self.e0dmp: float = 100.0
+        self.density_mixing: float = 0.2
+        self.diag_start: int = 0
+        self.bcs_start: int = 0
+        self.tvaryx_0: bool = False
+
         # Callbacks for monitoring
         self._callbacks: list = []
     
@@ -498,14 +506,6 @@ class HFBFFT:
             self._load_from_file(**kwargs)
         else:
             raise ValueError(f"Unknown initialization method: {method}")
-            
-        # Orthonormalize the initial wavefunctions
-        from jax_hfbfft.physics.solver import orthonormalize_states
-        self.state.psi = orthonormalize_states(
-            self.state.psi, 
-            self._npsi[0], 
-            self.grid.wxyz
-        )
     
     def _init_harmonic_oscillator(
         self,
@@ -706,14 +706,12 @@ class HFBFFT:
         checkpoint_file: Optional[str] = None,
         use_legacy: bool = False,
         seed: int = 42,
+        save_dir: Optional[str] = None,
+        save_interval: int = 5,
     ) -> HFBFFTResults:
         """
         Run the HFB calculation.
-        
-        This is the main entry point for performing a self-consistent
-        HFB calculation. It will iterate until convergence or until
-        the maximum number of iterations is reached.
-        
+
         Args:
             max_iterations: Maximum number of iterations
             convergence_threshold: Convergence criterion for energy fluctuation
@@ -722,7 +720,9 @@ class HFBFFT:
             checkpoint_file: File to save checkpoints to
             use_legacy: Use the legacy implementation (False = modern OOP)
             seed: Random seed for reproducibility (default: 42)
-            
+            save_dir: Directory to write progress.txt checkpoints (None = disabled)
+            save_interval: Write checkpoint every N iterations (default 5)
+
         Returns:
             HFBFFTResults with final energies and properties
         """
@@ -732,12 +732,14 @@ class HFBFFT:
                 convergence_threshold=convergence_threshold,
                 print_interval=print_interval,
             )
-        
+
         return self._run_modern(
             max_iterations=max_iterations,
             convergence_threshold=convergence_threshold,
             print_interval=print_interval,
             seed=seed,
+            save_dir=save_dir,
+            save_interval=save_interval,
         )
     
     def _run_modern(
@@ -746,6 +748,8 @@ class HFBFFT:
         convergence_threshold: float = 1e-6,
         print_interval: int = 10,
         seed: int = 42,
+        save_dir: Optional[str] = None,
+        save_interval: int = 5,
     ) -> HFBFFTResults:
         """Run the calculation using the modern OOP implementation."""
         from jax_hfbfft.physics.solver import (
@@ -779,6 +783,12 @@ class HFBFFT:
             convergence_criterion=convergence_threshold,
             output_interval=print_interval,
             verbose=True,
+            x0dmp=self.x0dmp,
+            e0dmp=self.e0dmp,
+            density_mixing=self.density_mixing,
+            diag_start=self.diag_start,
+            bcs_start=self.bcs_start,
+            tvaryx_0=self.tvaryx_0,
         )
         
         # Prepare initial state if wavefunctions exist
@@ -799,6 +809,7 @@ class HFBFFT:
              
              initial_state = SolverState(
                  psi=self.state.psi,
+                 lagrange=self.state.lagrange,
                  sp_energy=jnp.zeros(len(self.state.isospin)),
                  sp_kinetic=jnp.zeros(len(self.state.isospin)),
                  deltaf=jnp.zeros(len(self.state.isospin)),
@@ -827,18 +838,340 @@ class HFBFFT:
                  efluct=1e10
              )
 
-        # Create a wrapper callback that invokes all registered callbacks
+        # Build checkpoint writer if save_dir is provided
+        if save_dir is not None:
+            from pathlib import Path
+            import math as _math
+
+            _sd = Path(save_dir)
+            _save_path    = _sd / "progress.txt"
+            _conver_path  = _sd / "conver.res"
+            _energ_path   = _sd / "energies.res"
+            _mono_path    = _sd / "monopoles.res"
+            _quad_path    = _sd / "quadrupoles.res"
+            _dip_path     = _sd / "dipoles.res"
+            _spin_path    = _sd / "spin.res"
+            _mom_path     = _sd / "momenta.res"
+
+            with open(_save_path, 'w') as _f:
+                _f.write(f"{'iter':>6}  {'E_total':>14}  {'tke':>12}  "
+                         f"{'gap_n':>8}  {'gap_p':>8}  {'efluct':>10}\n")
+
+            with open(_conver_path, 'w') as _f:
+                _f.write(
+                    "# Iter   Energy  d_Energy    sp_fluct    max(lam-)  "
+                    "   rms(lam-)      rms    beta2  gamma      x_0  "
+                    "   e_pair(1)    e_pair(2)\n"
+                )
+
+            with open(_energ_path, 'w') as _f:
+                _f.write(
+                    "# Iter    N(n)    N(p)       E(sum)         E(integ)"
+                    "       Ekin         E_Coul         ehfCrho0  "
+                    "     ehfCrho1       ehfCdrho0      ehfCdrho1"
+                    "     ehfCtau0       ehfCtau1       ehfCdJ0  "
+                    "      ehfCdJ1       e_pair(1)    e_pair(2)      e_zpe\n"
+                )
+
+            with open(_mono_path, 'w') as _f:
+                _f.write(
+                    "# Iter    RMS_n     RMS_p     RMS_tot   RMS_diff"
+                    "   N_dens    Z_dens    A_dens\n"
+                )
+
+            with open(_quad_path, 'w') as _f:
+                _f.write(
+                    "# Iter    Q20_n     Q20_p     Q20_tot   Q22_tot"
+                    "   <x²>_tot  <y²>_tot  <z²>_tot  Beta      Gamma\n"
+                )
+
+            with open(_dip_path, 'w') as _f:
+                _f.write(
+                    "# Iter    c.m. x-y-z"
+                    "                                  Isovector dipoles x-y-z\n"
+                )
+
+            with open(_spin_path, 'w') as _f:
+                _f.write(
+                    "# Iter      Lx        Ly        Lz"
+                    "        Sx        Sy        Sz        Jx        Jy        Jz\n"
+                )
+
+            with open(_mom_path, 'w') as _f:
+                _f.write(
+                    "# Iter    Px_n      Py_n      Pz_n"
+                    "      Px_p      Py_p      Pz_p      Px_tot    Py_tot    Pz_tot\n"
+                )
+
+            _grid = self.grid
+            _N = self.nucleus.neutrons
+            _Z = self.nucleus.protons
+            _A = _N + _Z
+            _prev_ehf = [None]
+
+            def _density_moments(state):
+                rho_n  = state.densities.rho[0]
+                rho_p  = state.densities.rho[1]
+                rho    = rho_n + rho_p
+                X = _grid.x[:, None, None]
+                Y = _grid.y[None, :, None]
+                Z = _grid.z[None, None, :]
+                r2 = X**2 + Y**2 + Z**2
+                wxyz = _grid.wxyz
+
+                # Particle numbers from density integrals
+                N_d = float(jnp.sum(rho_n) * wxyz)
+                Z_d = float(jnp.sum(rho_p) * wxyz)
+                A_d = float(jnp.sum(rho)   * wxyz)
+                A_use = A_d if A_d > 1.0 else _A
+
+                # RMS radii
+                rms_n   = float(jnp.sqrt(jnp.maximum(jnp.sum(rho_n * r2) * wxyz / max(N_d, 1e-10), 0.0)))
+                rms_p   = float(jnp.sqrt(jnp.maximum(jnp.sum(rho_p * r2) * wxyz / max(Z_d, 1e-10), 0.0)))
+                rms_tot = float(jnp.sqrt(jnp.maximum(jnp.sum(rho   * r2) * wxyz / A_use,           0.0)))
+                rms_diff = rms_n - rms_p
+
+                # Quadrupole moments
+                Q20_n   = float(jnp.sum(rho_n * (2*Z**2 - X**2 - Y**2)) * wxyz)
+                Q20_p   = float(jnp.sum(rho_p * (2*Z**2 - X**2 - Y**2)) * wxyz)
+                Q20_tot = Q20_n + Q20_p
+                Q22_tot = float(jnp.sum(rho   * (X**2 - Y**2)) * wxyz)
+                x2      = float(jnp.sum(rho * X**2) * wxyz / A_use)
+                y2      = float(jnp.sum(rho * Y**2) * wxyz / A_use)
+                z2      = float(jnp.sum(rho * Z**2) * wxyz / A_use)
+
+                # Deformation
+                r0   = 1.2
+                norm = 4.0 * _math.pi / (3.0 * _A * (r0 * _A**(1.0/3.0))**2)
+                beta2 = norm * _math.sqrt(Q20_tot**2 + 2.0*Q22_tot**2)
+                gamma = _math.degrees(_math.atan2(_math.sqrt(2.0)*Q22_tot, Q20_tot)) % 60.0
+
+                # Dipole moments
+                # c.m. = isoscalar (rho weighted), Isovector = (rho_n - rho_p) weighted
+                cm_x = float(jnp.sum(rho * X) * wxyz / A_use)
+                cm_y = float(jnp.sum(rho * Y) * wxyz / A_use)
+                cm_z = float(jnp.sum(rho * Z) * wxyz / A_use)
+                iv_x = float(jnp.sum((rho_n - rho_p) * X) * wxyz)
+                iv_y = float(jnp.sum((rho_n - rho_p) * Y) * wxyz)
+                iv_z = float(jnp.sum((rho_n - rho_p) * Z) * wxyz)
+
+                # Angular momenta from current j and spin density s
+                jc_n = state.densities.current[0]  # (3, nx, ny, nz)
+                jc_p = state.densities.current[1]
+                jc   = jc_n + jc_p
+                # Orbital L = integral(r × j)
+                Lx = float(jnp.sum(Y * jc[2] - Z * jc[1]) * wxyz)
+                Ly = float(jnp.sum(Z * jc[0] - X * jc[2]) * wxyz)
+                Lz = float(jnp.sum(X * jc[1] - Y * jc[0]) * wxyz)
+                # Spin S = integral(s)
+                s_tot = state.densities.sdens[0] + state.densities.sdens[1]
+                Sx = float(jnp.sum(s_tot[0]) * wxyz)
+                Sy = float(jnp.sum(s_tot[1]) * wxyz)
+                Sz = float(jnp.sum(s_tot[2]) * wxyz)
+
+                # Linear momenta P = integral(j)
+                Px_n = float(jnp.sum(jc_n[0]) * wxyz)
+                Py_n = float(jnp.sum(jc_n[1]) * wxyz)
+                Pz_n = float(jnp.sum(jc_n[2]) * wxyz)
+                Px_p = float(jnp.sum(jc_p[0]) * wxyz)
+                Py_p = float(jnp.sum(jc_p[1]) * wxyz)
+                Pz_p = float(jnp.sum(jc_p[2]) * wxyz)
+
+                return dict(
+                    N_d=N_d, Z_d=Z_d, A_d=A_d,
+                    rms_n=rms_n, rms_p=rms_p, rms_tot=rms_tot, rms_diff=rms_diff,
+                    Q20_n=Q20_n, Q20_p=Q20_p, Q20_tot=Q20_tot, Q22_tot=Q22_tot,
+                    x2=x2, y2=y2, z2=z2, beta2=beta2, gamma=gamma,
+                    cm_x=cm_x, cm_y=cm_y, cm_z=cm_z,
+                    iv_x=iv_x, iv_y=iv_y, iv_z=iv_z,
+                    Lx=Lx, Ly=Ly, Lz=Lz, Sx=Sx, Sy=Sy, Sz=Sz,
+                    Px_n=Px_n, Py_n=Py_n, Pz_n=Pz_n,
+                    Px_p=Px_p, Py_p=Py_p, Pz_p=Pz_p,
+                )
+
+            def _bcs_particle_numbers(state):
+                n_n = float(jnp.sum(jnp.where(state.isospin == 0,
+                                               state.wocc * state.wstates, 0.0)))
+                n_p = float(jnp.sum(jnp.where(state.isospin == 1,
+                                               state.wocc * state.wstates, 0.0)))
+                return n_n, n_p
+
+            def write_checkpoint(state):
+                try:
+                    ehf  = float(state.energies.ehf)
+                    d_ehf = (ehf - _prev_ehf[0]) if _prev_ehf[0] is not None else 0.0
+                    _prev_ehf[0] = ehf
+                    n_n, n_p = _bcs_particle_numbers(state)
+                    m = _density_moments(state)
+                    it = state.iteration
+
+                    with open(_save_path, 'a') as _f:
+                        _f.write(
+                            f"{it:6d}  "
+                            f"{ehf:14.4f}  "
+                            f"{float(state.energies.tke):12.4f}  "
+                            f"{float(state.pairing.avdelt[0]):8.4f}  "
+                            f"{float(state.pairing.avdelt[1]):8.4f}  "
+                            f"{float(state.efluct):.3e}\n"
+                        )
+
+                    with open(_conver_path, 'a') as _f:
+                        _f.write(
+                            f"{it:6d}"
+                            f"  {ehf:8.2f}"
+                            f"  {d_ehf:8.2f}"
+                            f"  {float(state.energies.efluct1[0]):11.3G}"
+                            f"  {float(state.efluct):11.3E}"
+                            f"  {float(state.energies.efluct2[0]):11.3E}"
+                            f"  {m['rms_tot']:8.3f}"
+                            f"  {m['beta2']:7.4f}"
+                            f"  {m['gamma']:6.1f}"
+                            f"  {float(state.x0dmp):6.3f}"
+                            f"  {float(state.pairing.epair[0]):9.3f}"
+                            f"  {float(state.pairing.epair[1]):9.3f}\n"
+                        )
+
+                    with open(_energ_path, 'a') as _f:
+                        e = state.energies
+                        _f.write(
+                            f"{it:6d}"
+                            f"  {n_n:7.3f}"
+                            f"  {n_p:7.3f}"
+                            f"  {ehf:15.7f}"
+                            f"  {float(e.ehfint):15.7f}"
+                            f"  {float(e.tke):15.7f}"
+                            f"  {float(e.ehfc):15.7f}"
+                            f"  {float(e.ehfCrho0):15.7f}"
+                            f"  {float(e.ehfCrho1):15.7f}"
+                            f"  {float(e.ehfCdrho0):15.7f}"
+                            f"  {float(e.ehfCdrho1):15.7f}"
+                            f"  {float(e.ehfCtau0):15.7f}"
+                            f"  {float(e.ehfCtau1):15.7f}"
+                            f"  {float(e.ehfCdJ0):15.7f}"
+                            f"  {float(e.ehfCdJ1):15.7f}"
+                            f"  {float(e.epair[0]):13.7f}"
+                            f"  {float(e.epair[1]):13.7f}"
+                            f"  {float(e.e_zpe):13.7f}\n"
+                        )
+
+                    with open(_mono_path, 'a') as _f:
+                        _f.write(
+                            f"{it:6d}"
+                            f"  {m['rms_n']:9.6f}"
+                            f"  {m['rms_p']:9.6f}"
+                            f"  {m['rms_tot']:9.6f}"
+                            f"  {m['rms_diff']:9.6f}"
+                            f"   {m['N_d']:8.3f}"
+                            f"   {m['Z_d']:8.3f}"
+                            f"   {m['A_d']:8.3f}\n"
+                        )
+
+                    with open(_quad_path, 'a') as _f:
+                        _f.write(
+                            f"{it:6d}"
+                            f"  {m['Q20_n']:9.6f}"
+                            f"  {m['Q20_p']:9.6f}"
+                            f"  {m['Q20_tot']:9.6f}"
+                            f"  {m['Q22_tot']:9.6f}"
+                            f"  {m['x2']:9.6f}"
+                            f"  {m['y2']:9.6f}"
+                            f"  {m['z2']:9.6f}"
+                            f"  {m['beta2']:8.6f}"
+                            f"  {m['gamma']:8.2f}\n"
+                        )
+
+                    with open(_dip_path, 'a') as _f:
+                        _f.write(
+                            f"{it:6d}"
+                            f"  {m['cm_x']:12.7f}"
+                            f"  {m['cm_y']:12.7f}"
+                            f"  {m['cm_z']:12.7f}"
+                            f"  {m['iv_x']:12.7f}"
+                            f"  {m['iv_y']:12.7f}"
+                            f"  {m['iv_z']:12.7f}\n"
+                        )
+
+                    with open(_spin_path, 'a') as _f:
+                        Jx = m['Lx'] + m['Sx']
+                        Jy = m['Ly'] + m['Sy']
+                        Jz = m['Lz'] + m['Sz']
+                        _f.write(
+                            f"{it:6d}"
+                            f"  {m['Lx']:9.6f}"
+                            f"  {m['Ly']:9.6f}"
+                            f"  {m['Lz']:9.6f}"
+                            f"  {m['Sx']:9.6f}"
+                            f"  {m['Sy']:9.6f}"
+                            f"  {m['Sz']:9.6f}"
+                            f"  {Jx:9.6f}"
+                            f"  {Jy:9.6f}"
+                            f"  {Jz:9.6f}\n"
+                        )
+
+                    with open(_mom_path, 'a') as _f:
+                        _f.write(
+                            f"{it:6d}"
+                            f"  {m['Px_n']:9.6f}"
+                            f"  {m['Py_n']:9.6f}"
+                            f"  {m['Pz_n']:9.6f}"
+                            f"  {m['Px_p']:9.6f}"
+                            f"  {m['Py_p']:9.6f}"
+                            f"  {m['Pz_p']:9.6f}"
+                            f"  {m['Px_n']+m['Px_p']:9.6f}"
+                            f"  {m['Py_n']+m['Py_p']:9.6f}"
+                            f"  {m['Pz_n']+m['Pz_p']:9.6f}\n"
+                        )
+
+                except Exception as ex:
+                    print(f"Checkpoint write error: {ex}")
+
+            def write_final(state, config):
+                """Write once-at-end summary files."""
+                try:
+                    with open(_sd / "energies.txt", 'w') as _f:
+                        _f.write(f"Total energy: {float(state.energies.ehf):.6f} MeV\n")
+                        _f.write(f"Iterations: {state.iteration}\n")
+                        _f.write(f"Convergence: {state.efluct:.6e}\n")
+                        _f.write(f"Target convergence: {config.convergence_criterion:.6e}\n")
+                except Exception as ex:
+                    print(f"energies.txt write error: {ex}")
+
+                try:
+                    with open(_sd / "sp_energies.txt", 'w') as _f:
+                        _f.write("# idx  isospin  energy(MeV)  occupation  sp_norm\n")
+                        nst = state.psi.shape[0]
+                        norms = jnp.sum(jnp.real(state.psi * jnp.conj(state.psi)),
+                                        axis=(1, 2, 3, 4)) * _grid.wxyz
+                        for i in range(nst):
+                            _f.write(
+                                f"{i:5d}  {int(state.isospin[i]):1d}"
+                                f"  {float(state.sp_energy[i]):12.6f}"
+                                f"  {float(state.wocc[i]):10.6f}"
+                                f"  {float(norms[i]):10.6f}\n"
+                            )
+                except Exception as ex:
+                    print(f"sp_energies.txt write error: {ex}")
+
+            preloop_cb = write_checkpoint
+        else:
+            write_checkpoint = None
+            write_final = None
+            preloop_cb = None
+
+        # Create a wrapper callback that invokes all registered callbacks and periodic saves
         def iteration_callback(state):
             """Wrapper that calls all registered callbacks."""
             for cb in self._callbacks:
                 try:
                     cb(
                         state.iteration,
-                        float(state.energies.ehfint),
+                        float(state.energies.ehf),
                         float(state.efluct)
                     )
                 except Exception as e:
                     print(f"Callback error: {e}")
+            if write_checkpoint is not None and state.iteration % save_interval == 0:
+                write_checkpoint(state)
 
         # Run the HFB solver (use 'force' with CM correction applied)
         final_state = run_hfb(
@@ -849,14 +1182,18 @@ class HFBFFT:
             npsi_n=int(self._npsi[0]),
             config=config,
             initial_state=initial_state,  # Added
-            callback=iteration_callback if self._callbacks else None,
+            callback=iteration_callback if (self._callbacks or write_checkpoint is not None) else None,
+            preloop_callback=preloop_cb,
             use_coulomb=self.include_coulomb,
             constraint=self.constraint,
             seed=seed,
         )
         
         elapsed = time.time() - start_time
-        
+
+        if write_final is not None:
+            write_final(final_state, config)
+
         # Store the solver state
         self._solver_state = final_state
         
@@ -870,7 +1207,7 @@ class HFBFFT:
             converged=final_state.converged,
             iterations=final_state.iteration,
             final_fluctuation=final_state.efluct,
-            total_energy=float(final_state.energies.ehfint),
+            total_energy=float(final_state.energies.ehf),
             kinetic_energy=float(final_state.energies.ehft),
             potential_energy=float(
                 final_state.energies.ehf0 + 
@@ -1043,7 +1380,7 @@ class HFBFFT:
             'serr': convergence_threshold,
             'x0dmp': 0.45,
             'e0dmp': 100.0,
-            'tvaryx_0': True,
+            'tvaryx_0': False,
             'radinx': 6.0,  # Initial radius for harmonic oscillator (fm)
             'radiny': 6.0,
             'radinz': 6.0,

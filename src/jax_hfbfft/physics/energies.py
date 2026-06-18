@@ -115,24 +115,8 @@ class Energies:
     
     @property
     def total(self) -> float:
-        """Return total energy."""
-        return self.ehfint
-
-
-@jax.tree_util.register_dataclass
-@dataclass
-class Radii:
-    """Container for nuclear radii and moments."""
-    rms_n: float
-    rms_p: float
-    rms_tot: float
-    charge: float
-    
-    # Quadrupole moments
-    q20: float
-    q22: float
-    beta2: float
-    gamma: float
+        """Return total energy (Koopman formula, matches FORTRAN 'Total energy' output)."""
+        return self.ehf
 
 
 def compute_integrated_energy(
@@ -143,13 +127,20 @@ def compute_integrated_energy(
     pairing_energy: Optional[jax.Array] = None,
     mass_number: int = 1,
     use_coulomb: bool = True,
-) -> Energies:
+    # ── Koopman sum inputs (optional; required for correct tke and ehf) ──────
+    wocc: Optional[jax.Array] = None,
+    wstates: Optional[jax.Array] = None,
+    sp_kinetic: Optional[jax.Array] = None,
+    sp_energy: Optional[jax.Array] = None,
+    ecorrp: float = 0.0,   # Pairing rearrangement energy (from DDDI)
+) -> "Energies":
     """
     Compute integrated energy from the Skyrme energy density functional.
-    
-    This integrates the energy density over the spatial grid to get
-    the total nuclear binding energy.
-    
+
+    This integrates the energy density over the spatial grid to get the
+    total nuclear binding e`nergy, and also computes the Koopman sum (ehf, tke)
+    when single-particle level information is provided.
+
     Args:
         densities: Nuclear densities
         force: Force parameters
@@ -158,9 +149,15 @@ def compute_integrated_energy(
         pairing_energy: Pairing energy per isospin (2,)
         mass_number: Total mass number (for c.m. correction)
         use_coulomb: Whether to include Coulomb
-        
+        wocc: BCS occupation factors (nstates,) — required for correct tke/ehf
+        wstates: State degeneracy weights (nstates,) — required for correct tke/ehf
+        sp_kinetic: Single-particle kinetic energies (nstates,) — required for tke
+        sp_energy: Single-particle energies from hmatrix diagonal (nstates,)
+        ecorrp: Pairing rearrangement correction (from DDDI meanfield module)
+
     Returns:
-        Energies object with all contributions
+        Energies object with all contributions.
+        ehf and tke are correctly populated when wocc/wstates/sp_kinetic are given.
     """
     dtypes = get_dtypes()
     wxyz = grid.wxyz
@@ -206,7 +203,9 @@ def compute_integrated_energy(
         rho_tot**force.power * 
         (force.b3 * rho_tot**2 - force.b3p * (rho_p**2 + rho_n**2)) / 3.0
     )
-    e3corr = -force.power * ehf3 / 2.0  # Rearrangement correction
+    # Rearrangement correction: e3corr = -(power/2)*ehf3
+    # Used in Koopman sum but NOT subtracted from ehfint.
+    e3corr = -force.power * ehf3 / 2.0
     
     # =========================================================================
     # Gradient (t1/t2 Laplacian) contribution
@@ -270,7 +269,6 @@ def compute_integrated_energy(
     s_p = densities.sdens[1]
     s_tot = s_n + s_p
     
-    # s · curl(j) dot product summed over spatial components
     s_curl_j_nn = jnp.sum(s_n * curl_j_n, axis=0)
     s_curl_j_pp = jnp.sum(s_p * curl_j_p, axis=0)
     s_curl_j_tot = jnp.sum(s_tot * curl_j_tot, axis=0)
@@ -315,18 +313,31 @@ def compute_integrated_energy(
     )
     
     # =========================================================================
-    # Total integrated energy
-    # =========================================================================
-    epair_total = jnp.where(
-        pairing_energy is not None,
-        jnp.sum(jnp.where(pairing_energy is not None, pairing_energy, 0.0)),
-        0.0
-    )
-    
-    # NOTE: e3corr is the rearrangement energy correction, used in the Kohn-Sham
-    # formula for computing energy from single-particle levels, but NOT subtracted
-    # from the integrated energy density functional.
+    # Total integrated energy (density functional)
+    epair_arr = pairing_energy if pairing_energy is not None else jnp.zeros(2, dtype=dtypes.float)
+    epair_total = jnp.sum(epair_arr)
+
     ehfint = ehft + ehf0 + ehf1 + ehf2 + ehf3 + ehfls + ehfc - epair_total - e_zpe
+
+    # =========================================================================
+    # Koopman sum: tke and ehf
+    # Matches FORTRAN sum_energy:
+    #   tke = SUM(wocc * wstates * sp_kinetic)
+    #   ehf = SUM(wocc * wstates * (sp_kinetic + sp_energy)) / 2
+    #         + e3corr + ecorrp + ecorc - epair(1) - epair(2) - e_zpe
+    # These are ONLY valid when wocc/wstates/sp_kinetic/sp_energy are provided.
+    # =========================================================================
+    if (wocc is not None and wstates is not None and
+            sp_kinetic is not None and sp_energy is not None):
+        tke = jnp.sum(wocc * wstates * sp_kinetic)
+        ehf = (jnp.sum(wocc * wstates * (sp_kinetic + sp_energy)) / 2.0
+               + e3corr + ecorrp + ecorc
+               - epair_total - e_zpe)
+    else:
+        # Fallback: tke from tau integral, ehf unknown.
+        # Caller must update these fields separately if wocc/sp_kinetic unavailable.
+        tke = ehft
+        ehf = 0.0
     
     return Energies(
         ehft=ehft,
@@ -339,8 +350,8 @@ def compute_integrated_energy(
         ehfc=ehfc,
         ecorc=ecorc,
         ehfint=ehfint,
-        ehf=jnp.array(0.0, dtype=dtypes.float),  # Computed separately from s.p. levels
-        tke=ehft,
+        ehf=ehf,
+        tke=tke,
         e3corr=e3corr,
         e_zpe=e_zpe,
         efluct1=jnp.zeros(1, dtype=dtypes.float),
@@ -350,7 +361,7 @@ def compute_integrated_energy(
         orbital=jnp.zeros(3, dtype=dtypes.float),
         spin=jnp.zeros(3, dtype=dtypes.float),
         total_angmom=jnp.zeros(3, dtype=dtypes.float),
-        epair=pairing_energy if pairing_energy is not None else jnp.zeros(2, dtype=dtypes.float),
+        epair=epair_arr,
         ehfCrho0=ehfCrho0,
         ehfCrho1=ehfCrho1,
         ehfCdrho0=ehfCdrho0,
@@ -363,6 +374,96 @@ def compute_integrated_energy(
         ehfCj1=ehfCj1,
     )
 
+def _print_sinfo_impl(
+    energies: "Energies",
+    iteration,
+    pairing=None,
+    ecorrp: float = 0.0,
+) -> None:
+    """
+    Concrete implementation of the print subroutine.
+    jax.debug.callback guarantees that the inputs here are concrete
+    values (NumPy arrays or Python scalars), not JAX Tracers.
+    """
+    # Explicitly cast 0D JAX arrays to Python types for f-string formatting
+    iter_val = int(iteration)
+    
+    efluct1 = float(jnp.max(energies.efluct1))
+    efluct2 = float(jnp.max(energies.efluct2))
+    e3corr  = float(energies.e3corr)
+    ecorc   = float(energies.ecorc)
+    ehf     = float(energies.ehf)
+    tke     = float(energies.tke)
+    e_zpe   = float(energies.e_zpe)
+    ehfint  = float(energies.ehfint)
+
+    stars100 = '*' * 100
+    stars90  = '*' * 90
+
+    print()
+    print(f" ***** Iteration {iter_val:5d} {stars90}")
+    print(f" Total energy: {ehf:12.4f} MeV  Total kinetic energy: {tke:12.4f} MeV")
+    print(f" c.m. energy:  {e_zpe:12.4f} MeV")
+    print(f"      h**2  fluct.:    {efluct1:12.5e} MeV,"
+          f" h*hfluc.:    {efluct2:12.5e} MeV")
+    print(f" Rearrangement E: {e3corr:12.5e} MeV."
+          f" Pairing.Rearr.: {ecorrp:12.5e} MeV."
+          f" Coul.Rearr.: {ecorc:12.5e} MeV")
+
+    print()
+    print(" Energies integrated from density functional:"
+          + "*" * 60)
+    print(f" Total:{ehfint:14.6e} MeV."
+          f" t0 part:{float(energies.ehf0):14.6e} MeV."
+          f" t1 part:{float(energies.ehf1):14.6e} MeV."
+          f" t2 part:{float(energies.ehf2):14.6e} MeV.")
+    print(f"                           t3 part:{float(energies.ehf3):14.6e} MeV."
+          f" t4 part:{float(energies.ehfls):14.6e} MeV."
+          f" Coulomb:{float(energies.ehfc):14.6e} MeV.")
+    print("                           " + "*" * 75)
+    print(f"                           Crho0:  {float(energies.ehfCrho0):14.6e} MeV."
+          f" Crho1:  {float(energies.ehfCrho1):14.6e} MeV.")
+    print(f"                           Cdrho0: {float(energies.ehfCdrho0):14.6e} MeV."
+          f" Cdrho1: {float(energies.ehfCdrho1):14.6e} MeV.")
+    print(f"                           Ctau0:  {float(energies.ehfCtau0):14.6e} MeV."
+          f" Ctau1:  {float(energies.ehfCtau1):14.6e} MeV.")
+    print(f"                           CdJ0:   {float(energies.ehfCdJ0):14.6e} MeV."
+          f" CdJ1:   {float(energies.ehfCdJ1):14.6e} MeV.")
+    print(" " + stars100)
+
+    if pairing is not None:
+        print("          e_ferm      e_pair     <uv delta>   <v2 delta>   aver_force ")
+        labels = ["Neutrons", "Protons "]
+        for iq in range(2):
+            print(f"{labels[iq]}  "
+                  f"{float(pairing.eferm[iq]):12.4g}"
+                  f"{float(pairing.epair[iq]):12.4g}"
+                  f"{float(pairing.avdelt[iq]):12.4g}"
+                  f"{float(pairing.avdeltv2[iq]):12.4g}"
+                  f"{float(pairing.avg[iq]):12.4g}")
+        print(" " + stars100)
+
+
+def print_sinfo(
+    energies: "Energies",
+    iteration: int,
+    pairing=None,      
+    ecorrp: float = 0.0,
+) -> None:
+    """
+    Print the FORTRAN sinfo-style iteration summary.
+
+    This function wraps the standard Python I/O implementation in `jax.debug.callback`
+    to ensure it functions correctly without raising Tracer errors when called 
+    inside a JIT-compiled loop or execution context.
+    """
+    jax.debug.callback(
+        _print_sinfo_impl, 
+        energies, 
+        iteration, 
+        pairing, 
+        ecorrp
+    )
 
 def compute_sp_energy(
     sp_kinetic: jax.Array,
@@ -436,52 +537,82 @@ def compute_angular_momentum(
     return orbital, spin, total
 
 
-def compute_radii(densities: Densities, grid: Grid) -> Radii:
+def compute_radii(densities: Densities, grid: Grid) -> "Radii":
     """Compute nuclear radii and deformation parameters."""
     wxyz = grid.wxyz
     x, y, z = grid.x, grid.y, grid.z
-    nx, ny, nz = grid.nx, grid.ny, grid.nz
-    
-    # Create 3D grids for x, y, z
-    # Since grid.x/y/z are 1D, we use broadcasting
+
     X = x[:, jnp.newaxis, jnp.newaxis]
     Y = y[jnp.newaxis, :, jnp.newaxis]
     Z = z[jnp.newaxis, jnp.newaxis, :]
-    
+
     r2 = X**2 + Y**2 + Z**2
-    
+
     rho_n = densities.rho[0]
     rho_p = densities.rho[1]
-    
+    rho_tot = rho_n + rho_p
+
     n_counts = jnp.sum(rho_n) * wxyz
     p_counts = jnp.sum(rho_p) * wxyz
     tot_counts = n_counts + p_counts
-    
+
     rms_n = jnp.sqrt(jnp.sum(rho_n * r2) * wxyz / (n_counts + 1e-10))
     rms_p = jnp.sqrt(jnp.sum(rho_p * r2) * wxyz / (p_counts + 1e-10))
-    rms_tot = jnp.sqrt(jnp.sum((rho_n + rho_p) * r2) * wxyz / (tot_counts + 1e-10))
-    
-    # Simple charge radius estimate (proton radius + nucleon size)
-    charge = jnp.sqrt(rms_p**2 + 0.64)  # 0.64 fm^2 is roughly <r^2>_proton
-    
-    # Quadrupole moments
-    q20 = jnp.sum((rho_n + rho_p) * (2*Z**2 - X**2 - Y**2)) * wxyz
-    q22 = jnp.sum((rho_n + rho_p) * (X**2 - Y**2)) * wxyz
-    
-    # Deformation parameters beta/gamma (Hill-Wheeler compatible)
-    # Q20 = (3/√(5π)) * β2 * A * R0^2 * cos(γ)
+    rms_tot = jnp.sqrt(jnp.sum(rho_tot * r2) * wxyz / (tot_counts + 1e-10))
+
+    charge = jnp.sqrt(rms_p**2 + 0.64)
+
     A = tot_counts
-    R0 = 1.2 * A**(1.0/3.0)
-    beta = (jnp.sqrt(5 * jnp.pi) / (3 * A * R0**2 + 1e-10)) * q20
-    gamma = jnp.arctan2(jnp.sqrt(3.0) * q22, q20) * 180.0 / jnp.pi
-    
+
+    # Build full quadrupole tensor Q_ij = ∫ρ(3*r_i*r_j - r²*δ_ij)dV (matches legacy output.py)
+    # Diagonalizing finds the principal-axis frame, making beta independent of grid orientation.
+    Q_xx = jnp.sum(rho_tot * (3*X**2 - r2)) * wxyz
+    Q_yy = jnp.sum(rho_tot * (3*Y**2 - r2)) * wxyz
+    Q_zz = jnp.sum(rho_tot * (3*Z**2 - r2)) * wxyz
+    Q_xy = jnp.sum(rho_tot * 3*X*Y) * wxyz
+    Q_xz = jnp.sum(rho_tot * 3*X*Z) * wxyz
+    Q_yz = jnp.sum(rho_tot * 3*Y*Z) * wxyz
+
+    qmat = jnp.array([[Q_xx, Q_xy, Q_xz],
+                       [Q_xy, Q_yy, Q_yz],
+                       [Q_xz, Q_yz, Q_zz]])
+
+    eigvals, _ = jnp.linalg.eigh(qmat)  # ascending order
+
+    # Legacy: q20tot = sqrt(5/(16π))*eigvals[2], beta20tot = q20tot*4π/(5*R²*A)
+    # Simplifies to: beta20tot = sqrt(π/5)*eigvals[2]/(R²*A)
+    q20_eig = jnp.sqrt(5.0 / (16.0 * jnp.pi)) * eigvals[2]
+    q22_eig = jnp.sqrt(5.0 / (96.0 * jnp.pi)) * (eigvals[1] - eigvals[0])
+
+    beta = q20_eig * (4.0 * jnp.pi) / (5.0 * rms_tot**2 * A + 1e-30)
+    beta22 = q22_eig * (4.0 * jnp.pi) / (5.0 * rms_tot**2 * A + 1e-30)
+    gamma = jnp.arctan2(jnp.sqrt(2.0) * beta22, beta) * 180.0 / jnp.pi
+
+    # Z-fixed Q20 (= Q_zz = ∫ρ(2z²-x²-y²)dV) kept for debug comparison
+    q20_zfixed = Q_zz
+
     return Radii(
         rms_n=float(rms_n),
         rms_p=float(rms_p),
         rms_tot=float(rms_tot),
         charge=float(charge),
-        q20=float(q20),
-        q22=float(q22),
+        q20=float(q20_eig),
+        q22=float(q22_eig),
         beta2=float(beta),
         gamma=float(gamma)
     )
+
+
+@jax.tree_util.register_dataclass
+@dataclass
+class Radii:
+    """Container for nuclear radii and moments."""
+    rms_n: float
+    rms_p: float
+    rms_tot: float
+    charge: float
+    
+    q20: float
+    q22: float
+    beta2: float
+    gamma: float

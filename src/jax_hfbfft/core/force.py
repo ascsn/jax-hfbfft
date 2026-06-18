@@ -224,24 +224,25 @@ class Force:
         
         b4 = self.t4 / 2
         
-        # Calculate EDF coupling constants
-        Crho0 = 3 * self.t0 / 8
-        Crho1 = -self.t0 * (0.5 + self.x0) / 4
-        Crho0D = self.t3 / 16
-        Crho1D = -self.t3 * (0.5 + self.x3) / 24
+        # Calculate EDF coupling constants using the b parameters
+        Crho0 = 0.5 * b0 - 0.25 * b0p
+        Crho1 = -0.25 * b0p
         
-        Cdrho0 = (9 * self.t1 - 5 * self.t2 * (1 + 0.5 * self.x2)) / 64
-        Cdrho1 = -(3 * self.t1 * (0.5 + self.x1) + 
-                   self.t2 * (0.5 + self.x2)) / 32
+        Crho0D = (1.0 / 3.0) * b3 - (1.0 / 6.0) * b3p
+        Crho1D = -(1.0 / 6.0) * b3p
         
-        Ctau0 = (3 * self.t1 + self.t2 * (5 + 4 * self.x2)) / 16
-        Ctau1 = (self.t2 * (0.5 + self.x2) - self.t1 * (0.5 + self.x1)) / 8
+        Cdrho0 = -0.5 * b2 + 0.25 * b2p
+        Cdrho1 = 0.25 * b2p
         
-        CdJ0 = -self.b4p * 1.5
-        CdJ1 = -self.b4p * 0.5
+        Ctau0 = b1 - 0.5 * b1p
+        Ctau1 = -0.5 * b1p
         
-        # Calculate Slater parameter
-        slate = (3.0 / jnp.pi) ** (1.0/3.0) * 0.75
+        CdJ0 = -b4 - 0.5 * self.b4p
+        CdJ1 = -0.5 * self.b4p
+        
+        # Coulomb constant integration
+        e2 = 1.4399784085965135   # MeV·fm
+        slate = (3.0 / jnp.pi) ** (1.0 / 3.0) * e2
         
         return dataclasses.replace(
             self,

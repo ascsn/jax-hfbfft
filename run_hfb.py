@@ -239,12 +239,17 @@ def create_force(config):
     # Set BCS flag
     if 'use_bcs' in force_config:
         force.tbcs = force_config['use_bcs']
-    
-    # Set pairing cutoff
+
+    # Set pairing energy window cutoff (pair_cutoff: which states enter the pairing sum)
     if 'pairing_cutoff' in force_config:
         cutoff = force_config['pairing_cutoff']
-        force.state_cutoff = cutoff if isinstance(cutoff, list) else [cutoff, cutoff]
-    
+        force.pair_cutoff = jnp.array(cutoff if isinstance(cutoff, list) else [cutoff, cutoff])
+
+    # Set wstates soft cutoff (state_cutoff: weight suppression above Fermi level)
+    if 'state_cutoff' in force_config:
+        sc = force_config['state_cutoff']
+        force.state_cutoff = jnp.array(sc if isinstance(sc, list) else [sc, sc])
+
     # Center-of-mass correction
     if not force_config.get('include_cm_correction', True):
         force.zpe = 0
@@ -747,7 +752,21 @@ Examples:
         include_coulomb=config['physics']['include_coulomb'],
         constraint=constraint,
     )
-    
+
+    # Wire iteration parameters from config.yml into the solver.
+    # HFBFFT.__init__ hardcodes defaults (bcs_start=0, diag_start=0,
+    # tvaryx_0=False) that would otherwise silently override the config file.
+    iter_params = config['iteration']
+    calc.x0dmp = float(iter_params['x0dmp'])
+    calc.e0dmp = float(iter_params['e0dmp'])
+    calc.density_mixing = float(iter_params['density_mixing'])
+    calc.diag_start = int(iter_params['diag_start'])
+    calc.bcs_start = int(iter_params['bcs_start'])
+    calc.tvaryx_0 = bool(iter_params.get('tvaryx_0', False))
+    print(f"Iteration params: x0dmp={calc.x0dmp}  e0dmp={calc.e0dmp}  "
+          f"density_mixing={calc.density_mixing}  diag_start={calc.diag_start}  "
+          f"bcs_start={calc.bcs_start}  tvaryx_0={calc.tvaryx_0}")
+
     # Initialize wavefunctions
     print("\nInitializing wavefunctions...")
     init_config = config['initialization']
@@ -770,6 +789,8 @@ Examples:
         max_iterations=iter_config['max_iterations'],
         convergence_threshold=iter_config['convergence_threshold'],
         print_interval=config['output']['print_interval'],
+        save_dir=str(output_dir),
+        save_interval=5,
     )
     
     # Save results

@@ -14,7 +14,7 @@ from typing import Tuple
 
 from jax_hfbfft.jax_config import get_dtypes
 from jax_hfbfft.core.grid import Grid
-
+from functools import partial
 
 @jax.tree_util.register_dataclass
 @dataclass
@@ -157,7 +157,7 @@ def solve_poisson(
     )
 
 
-@jax.jit(static_argnums=(3, 4, 5, 6, 7, 8))
+@partial(jax.jit, static_argnums=(3, 4, 5, 6, 7, 8))
 def _solve_poisson_jit(
     rho_proton: jax.Array,
     q: jax.Array,

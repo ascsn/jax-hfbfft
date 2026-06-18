@@ -10,11 +10,11 @@
 # ----------------------------------------------------------------------------
 nucleus:
   # Number of protons and neutrons in the nucleus
-  protons: 8        # Z (atomic number)
-  neutrons: 8       # N (neutron number)
+  protons: 92        # Z (atomic number)
+  neutrons: 146       # N (neutron number)
   
   # Name for output files (optional, auto-generated if not provided)
-  name: "O16"       # e.g., "O16", "Sn132", "Pb208"
+  name: "U238"       # e.g., "O16", "Sn132", "Pb208"
 
 # ----------------------------------------------------------------------------
 # FORCE PARAMETERS
@@ -31,22 +31,27 @@ force:
   
   # Use BCS approximation (true) or HFB (false)
   # BCS is faster and usually sufficient; HFB allows for more complex pairing
-  use_bcs: true
+  use_bcs: false
   
   # Pairing strength (MeV·fm³)
   # Negative values use force-specific defaults
   # Typical values: 300-400 for medium-mass nuclei
-  v0_neutron: -1.0    # Neutron pairing strength
-  v0_proton: -1.0     # Proton pairing strength
+  v0_neutron: 362    # Neutron pairing strength
+  v0_proton: 362    # Proton pairing strength
   
   # Density at which DDDI pairing strength is half of surface value (fm⁻³)
   # Only used with ipair=6 (DDDI)
-  rho0_pairing: 0.16  # Typical nuclear saturation density
+  rho0_pairing: 0.32  # Typical nuclear saturation density
   
   # Energy cutoff for pairing window (MeV)
   # Only states within this energy from Fermi surface participate in pairing
   # Larger values = more states, longer computation
-  pairing_cutoff: [60.0, 60.0]  # [neutron, proton]
+  pairing_cutoff: [0.0, 0.0]  # [neutron, proton] — 0 = no cutoff (legacy default)
+
+  # State cutoff for wstates soft weight (MeV above Fermi energy)
+  # States beyond eferm + state_cutoff get a soft weight < 1 applied to wstates
+  # Legacy default: [15.0, 15.0]
+  state_cutoff: [15.0, 15.0]  # [neutron, proton]
   
   # Include center-of-mass correction (recommended: true)
   include_cm_correction: true
@@ -66,9 +71,9 @@ grid:
   # Smaller = more accurate but needs larger box
   # Typical: 0.8-1.0 fm for most calculations
   # If not specified, auto-determined from nucleus size
-  dx: null  # null = auto-determine
-  dy: null
-  dz: null
+  dx: .8  # null = auto-determine
+  dy: .8
+  dz: .8
   
   # Box size (fm) - alternative to specifying dx/dy/dz
   # Specify either spacing OR box size, not both
@@ -84,8 +89,8 @@ basis:
   # If null, auto-determined based on nucleus and pairing
   # For no pairing: typically set equal to N and Z
   # For pairing: use 2-3× the particle number for convergence
-  npsi_neutron: null  # null = auto-determine
-  npsi_proton: null   # null = auto-determine
+  npsi_neutron: 292  # null = auto-determine
+  npsi_proton: 184   # null = auto-determine
   
   # Manual specification (overrides auto)
   # npsi_neutron: 16
@@ -104,21 +109,21 @@ initialization:
   # Harmonic oscillator parameters (only for method="harmonic_oscillator")
   # Oscillator length parameters in fm
   # Typical: 2.5-3.5 fm for medium-mass nuclei
-  ho_length_x: 3.0
-  ho_length_y: 3.0
-  ho_length_z: 3.0
+  ho_length_x: 3.1
+  ho_length_y: 3.1
+  ho_length_z: 3.1
 
 # ----------------------------------------------------------------------------
 # ITERATION CONTROL
 # ----------------------------------------------------------------------------
 iteration:
   # Maximum number of iterations
-  max_iterations: 500
+  max_iterations: 4000
   
   # Convergence threshold (MeV)
   # Calculation stops when energy fluctuation < threshold
   # Typical: 1e-5 to 1e-7 for production runs
-  convergence_threshold: 1.0e-6
+  convergence_threshold: 1.0e-20
   
   # Gradient descent damping parameter
   # Controls step size in imaginary time evolution
@@ -127,22 +132,26 @@ iteration:
   
   # Preconditioning energy scale (MeV)
   # Typical: 20-100 MeV
-  e0dmp: 20.0
+  e0dmp: 100.0
   
   # Density mixing parameter (0.0 to 1.0)
   # Fraction of new density mixed with old
   # Smaller = more stable; typical: 0.3-0.7
-  density_mixing: 0.5
+  # Legacy value: 0.2
+  density_mixing: 0.2
   
-  # When to start full diagonalization (iteration number)
-  # Before this, use gradient descent only
-  # Typical: 20-50
+  # Full diagonalization for iterations <= diag_start (legacy inidiag)
+  # Legacy run uses inidiag=30: tdiag=True for the first 30 main-loop iterations.
   diag_start: 30
-  
-  # When to start BCS pairing iterations
-  # Before this, pairing gaps are kept constant
-  # Typical: 20-50
+
+  # BCS mode for iterations <= bcs_start (legacy inibcs)
+  # Legacy run uses inibcs=30: tbcs=True (uniform weights, forced tdiag) for
+  # the first 30 main-loop iterations, then switches to full HFB.
   bcs_start: 30
+
+  # Adaptive x0dmp (tvaryx_0): triple x0dmp before main loop and adapt each iteration
+  # Legacy run config (_config.yml) sets tvaryx_0: true
+  tvaryx_0: true
 
 # ----------------------------------------------------------------------------
 # PHYSICS OPTIONS
@@ -168,7 +177,7 @@ output:
   
   # Print interval (iterations)
   # Print progress every N iterations
-  print_interval: 50
+  print_interval: 5
   
   # Save detailed results files
   save_convergence: true      # Iteration-by-iteration convergence data

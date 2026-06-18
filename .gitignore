@@ -10,6 +10,13 @@ runs
 staticbackup.py
 test_res_output.py
 timer.py
+*meanfield.txt
+run_all_nuclei.py
+newmeanfield.txt
+*firstfew.txt
+*comparison.txt
+*log.py
+src/jax_hfbfft/physics/debugsolver.py
 
 # Byte-compiled files
 __pycache__/

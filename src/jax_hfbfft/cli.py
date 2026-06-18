@@ -340,6 +340,15 @@ def run_calculation(config_path: Optional[str], verbose: bool = False):
                 force_kwargs['pair_cutoff'] = jnp.array(cutoff)
             else:
                 force_kwargs['pair_cutoff'] = jnp.array([cutoff, cutoff])
+
+        # Add state cutoff if specified
+        if 'state_cutoff' in force_config:
+            import jax.numpy as jnp
+            sc = force_config['state_cutoff']
+            if isinstance(sc, list):
+                force_kwargs['state_cutoff'] = jnp.array(sc)
+            else:
+                force_kwargs['state_cutoff'] = jnp.array([sc, sc])
         
         # Add pairing density if specified
         if 'rho0_pairing' in force_config:
@@ -455,6 +464,8 @@ def run_calculation(config_path: Optional[str], verbose: bool = False):
             calc.diag_start = iteration_config['diag_start']
         if 'bcs_start' in iteration_config:
             calc.bcs_start = iteration_config['bcs_start']
+        if 'tvaryx_0' in iteration_config:
+            calc.tvaryx_0 = iteration_config['tvaryx_0']
         
         print(f"Starting HFB iteration (max: {max_iterations}, convergence: {convergence:.1e})...")
         print()

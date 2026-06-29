@@ -785,10 +785,12 @@ Examples:
     print("-" * 80)
     
     iter_config = config['iteration']
+    output_cfg = config['output']
     results = calc.run(
         max_iterations=iter_config['max_iterations'],
         convergence_threshold=iter_config['convergence_threshold'],
-        print_interval=config['output']['print_interval'],
+        print_interval=output_cfg['print_interval'],
+        sinfo_interval=output_cfg.get('sinfo_interval', 50),
         save_dir=str(output_dir),
         save_interval=5,
     )

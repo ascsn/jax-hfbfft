@@ -177,7 +177,11 @@ output:
   
   # Print interval (iterations)
   # Print progress every N iterations
-  print_interval: 5
+  print_interval: 50
+
+  # Single-particle info (sinfo) print interval (iterations)
+  # How often to print the detailed sinfo block (Fermi energies, pairing, etc.)
+  sinfo_interval: 50
   
   # Save detailed results files
   save_convergence: true      # Iteration-by-iteration convergence data

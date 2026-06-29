@@ -702,6 +702,8 @@ class HFBFFT:
         max_iterations: int = 1000,
         convergence_threshold: float = 1e-6,
         print_interval: int = 10,
+        sinfo_interval: int = 50,
+        hook=None,
         checkpoint_interval: int = 0,
         checkpoint_file: Optional[str] = None,
         use_legacy: bool = False,
@@ -737,6 +739,8 @@ class HFBFFT:
             max_iterations=max_iterations,
             convergence_threshold=convergence_threshold,
             print_interval=print_interval,
+            sinfo_interval=sinfo_interval,
+            hook=hook,
             seed=seed,
             save_dir=save_dir,
             save_interval=save_interval,
@@ -747,6 +751,8 @@ class HFBFFT:
         max_iterations: int = 1000,
         convergence_threshold: float = 1e-6,
         print_interval: int = 10,
+        sinfo_interval: int = 50,
+        hook=None,
         seed: int = 42,
         save_dir: Optional[str] = None,
         save_interval: int = 5,
@@ -782,6 +788,7 @@ class HFBFFT:
             max_iterations=max_iterations,
             convergence_criterion=convergence_threshold,
             output_interval=print_interval,
+            sinfo_interval=sinfo_interval,
             verbose=True,
             x0dmp=self.x0dmp,
             e0dmp=self.e0dmp,
@@ -1187,6 +1194,7 @@ class HFBFFT:
             use_coulomb=self.include_coulomb,
             constraint=self.constraint,
             seed=seed,
+            hook=hook,
         )
         
         elapsed = time.time() - start_time

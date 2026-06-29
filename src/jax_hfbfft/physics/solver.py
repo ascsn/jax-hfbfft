@@ -140,6 +140,7 @@ class SolverConfig:
 
     # Output
     output_interval: int = 5
+    sinfo_interval: int = field(default=50, metadata=dict(static=True))
     verbose: bool = True
 
 
@@ -702,7 +703,7 @@ def _compute_sp_energies_vmap(
 
 
 
-@partial(jax.jit,static_argnums=(4, 5, 6, 7, 8, 9, 10, 11, 12, 13))
+@partial(jax.jit,static_argnums=(4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14))
 def hfb_iteration(
     state: SolverState,
     grid: Grid,
@@ -718,6 +719,7 @@ def hfb_iteration(
     tbcs: bool = True,
     tdiag: bool = True,
     use_lagrange: bool = True,
+    print_sinfo_flag: bool = False,
 ) -> SolverState:
     """
     Perform one HFB iteration.
@@ -938,8 +940,7 @@ def hfb_iteration(
         efluct2=jnp.reshape(jnp.mean(efluct2q_new), energies.efluct2.shape).astype(energies.efluct2.dtype),
         efluct2q=efluct2q_new.astype(energies.efluct2q.dtype),
     )
-    # Only call print_sinfo when energy was freshly computed; otherwise values are stale.
-    if compute_energy:
+    if print_sinfo_flag and compute_energy:
         print_sinfo(energies, iteration=iteration, pairing=pairing)
 
     return SolverState(
@@ -983,6 +984,7 @@ def run_hfb(
     use_coulomb: bool = True,
     constraint: Optional[Constraint] = None,
     seed: int = 42,
+    hook=None,
 ) -> SolverState:
     """
     Run HFB calculation to convergence.
@@ -1226,12 +1228,16 @@ def run_hfb(
             print(f"ITER {python_iter} START tbcs={tbcs}  tdiag={tdiag}  use_lagrange={use_lagrange}")
 
         need_output = config.verbose and (i + 1) % config.output_interval == 0
+        need_sinfo = config.verbose and (i + 1) % config.sinfo_interval == 0
         is_near_end = i >= config.max_iterations - 1
         # tvaryx_0 needs a fresh ehf every iteration (legacy runs with mprint=1)
-        compute_energy = need_output or is_near_end or config.tvaryx_0
+        compute_energy = need_output or need_sinfo or is_near_end or config.tvaryx_0
 
         # Use per-iteration x0dmp (potentially tripled / adapted from tvaryx_0)
         iter_config = dataclasses.replace(config, x0dmp=current_x0dmp)
+
+        if hook is not None:
+            hook.pre_iteration(python_iter, state)
 
         state = hfb_iteration(
             state, grid, force, iter_config,
@@ -1239,7 +1245,11 @@ def run_hfb(
             use_coulomb=use_coulomb,
             compute_energy=compute_energy, use_pairing=use_pairing,
             tbcs=tbcs, tdiag=tdiag, use_lagrange=use_lagrange,
+            print_sinfo_flag=need_sinfo,
         )
+
+        if hook is not None:
+            hook.post_iteration(python_iter, state)
 
         # tvaryx_0 adaptive x0dmp update (matches legacy static.py lines 1572-1585):
         # improving = (ehf < ehfprev AND efluct1 < efluct1prev*(1-1e-5))
@@ -1305,7 +1315,10 @@ def run_hfb(
             print(f"\nDid not converge after {config.max_iterations} iterations")
             print(f"Final energy: {state.energies.ehfint:.4f} MeV")
             print(f"Final fluctuation: {state.efluct:.2e}")
-    
+
+    if hook is not None:
+        hook.finalize()
+
     # Final energy computation if not already done
     if not compute_energy:
         final_energies = compute_integrated_energy(

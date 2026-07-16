@@ -1,38 +1,12 @@
-runs
-
-*log.txt
-*benchmark.txt
-*perf.txt
-*log2.txt
-*.log
-*log.txt
-*before.txt
-staticbackup.py
-test_res_output.py
-timer.py
-*meanfield.txt
-run_all_nuclei.py
-newmeanfield.txt
-*firstfew.txt
-*comparison.txt
-*log.py
-src/jax_hfbfft/physics/debugsolver.py
-*.pdf
-*.tex
-benchmark_profile/
-
-# Byte-compiled files
+# ============================================================================
+# Python
+# ============================================================================
 __pycache__/
 *.py[cod]
 
-# Virtual environment
-venv/
-env/
-ENV/
-.venv/
-.env/
-
+# ============================================================================
 # Distribution / packaging
+# ============================================================================
 .Python
 build/
 develop-eggs/
@@ -46,29 +20,39 @@ sdist/
 var/
 wheels/
 share/python-wheels/
+*.egg
 *.egg-info/
 .installed.cfg
-*.egg
 
-# Test and coverage
-.coverage
-.coverage.*
-nosetests.xml
-coverage.xml
-*.cover
-*.log
-*.pot
-*.pyc
-*.pyo
+# ============================================================================
+# Virtual environments
+# ============================================================================
+venv/
+env/
+ENV/
+.venv/
+.env/
 
-# Jupyter Notebook checkpoints
-.ipynb_checkpoints
-
-# Pytest
+# ============================================================================
+# Testing / coverage
+# ============================================================================
 .cache
 pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+*.cover
+nosetests.xml
+*.pot
 
-# IDEs and editors
+# ============================================================================
+# Jupyter
+# ============================================================================
+.ipynb_checkpoints
+
+# ============================================================================
+# Editors / IDEs
+# ============================================================================
 .vscode/
 .idea/
 *.swp
@@ -76,12 +60,16 @@ pytest_cache/
 *.sublime-project
 *.sublime-workspace
 
-# Other files
+# ============================================================================
+# OS files
+# ============================================================================
 *.DS_Store
 *.db
 *.sqlite3
 
-# GUI Frontend (Node.js)
+# ============================================================================
+# GUI frontend (Node.js)
+# ============================================================================
 node_modules/
 gui-frontend/node_modules/
 gui-frontend/dist/
@@ -89,16 +77,51 @@ gui-frontend/build/
 gui-frontend/.vite/
 *.tsbuildinfo
 
-# GUI Backend
+# GUI backend (built frontend assets copied in at build time)
 src/jax_hfbfft/gui/frontend/assets/
 src/jax_hfbfft/gui/frontend/index.html
 
-# Calculation results
+# ============================================================================
+# Calculation outputs and results
+# ============================================================================
+runs
 hfb_results/
+benchmark_profile/
 *.npz
 *.res
 
-# Backup files
+# ============================================================================
+# Logs, benchmarks, and scratch output
+# ============================================================================
+*.log
+*log.txt
+*log2.txt
+*before.txt
+*firstfew.txt
+*comparison.txt
+*benchmark.txt
+*perf.txt
+*meanfield.txt
+
+# ============================================================================
+# Documents (papers, drafts)
+# ============================================================================
+*.pdf
+*.tex
+
+# ============================================================================
+# Local dev / scratch scripts (not part of the package)
+# ============================================================================
+*log.py
+staticbackup.py
+test_res_output.py
+timer.py
+run_all_nuclei.py
+src/jax_hfbfft/physics/debugsolver.py
+
+# ============================================================================
+# Backup / temp files
+# ============================================================================
 *.bak
 *.backup
 *.tmp

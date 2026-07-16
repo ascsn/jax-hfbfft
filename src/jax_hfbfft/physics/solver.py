@@ -195,7 +195,6 @@ def initialize_wavefunctions(
 
     nshell_neut = build_nshell(nstates_neut)
     nshell_prot = build_nshell(nstates_prot)
-    nshell_all  = nshell_neut + nshell_prot  # len == nstates
 
     # --- Build the base Gaussian (shared for all states in an isospin) ---
     x = grid.x[:, None, None]   # (nx, 1, 1)
@@ -250,15 +249,27 @@ def initialize_wavefunctions(
     wocc = wocc.at[nstates_neut : nstates_neut + nprot].set(1.0)
     wguv = jnp.zeros(nstates, dtype=dtypes.float)
 
-    # --- Quantum numbers from shell indices ---
-    # sp_n: principal shell (= i + j + k = ka)
-    # sp_l: angular momentum quantum number l = ka (crude, matches FORTRAN convention)
-    # sp_j, sp_parity: placeholder until properly assigned by diagstep
-    sp_n      = jnp.array([s[0] + s[1] + s[2] for s in nshell_all], dtype=dtypes.int)
-    sp_l      = jnp.array([s[0] + s[1] + s[2] for s in nshell_all], dtype=dtypes.int)
-    sp_j      = jnp.full(nstates, 0.5, dtype=dtypes.float)
-    sp_parity = jnp.array([(-1.0) ** (s[0] + s[1] + s[2]) for s in nshell_all],
-                          dtype=dtypes.float)
+    # --- Spectroscopic quantum numbers (n, l, j, parity) ---
+    # The FORTRAN code carries no n/l/j quantum numbers: coordinate-space states
+    # are not eigenstates of angular momentum. These are approximate labels used
+    # only for display (e.g. "1p3/2"), assigned with the same Cartesian->spherical
+    # mapping as the HFBFFT class so both code paths produce identical labels.
+    from jax_hfbfft.core.hfbfft import cartesian_to_spherical_qn  # local: avoid circular import
+
+    sp_n_list, sp_l_list, sp_j_list, sp_parity_list = [], [], [], []
+    for nshell_block in (nshell_neut, nshell_prot):
+        for local_idx, (si, sj, sk) in enumerate(nshell_block):
+            is_spin = local_idx % 2  # matches wavefunction spin assignment above
+            n_qn, l_qn, j_qn, parity = cartesian_to_spherical_qn(si, sj, sk, is_spin)
+            sp_n_list.append(n_qn)
+            sp_l_list.append(l_qn)
+            sp_j_list.append(j_qn)
+            sp_parity_list.append(parity)
+
+    sp_n      = jnp.array(sp_n_list, dtype=dtypes.int)
+    sp_l      = jnp.array(sp_l_list, dtype=dtypes.int)
+    sp_j      = jnp.array(sp_j_list, dtype=dtypes.float)
+    sp_parity = jnp.array(sp_parity_list, dtype=dtypes.float)
 
     return psi, isospin, sp_n, sp_l, sp_j, sp_parity, wocc, wguv
 
@@ -1008,10 +1019,7 @@ def run_hfb(
     if config is None:
         config = SolverConfig()
 
-    if force.ipair is 0:
-        use_pairing = False
-    else:
-        use_pairing = True
+    use_pairing = force.ipair != 0
     
     tbcs_init = not use_pairing
 

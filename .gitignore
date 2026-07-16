@@ -19,6 +19,7 @@ newmeanfield.txt
 src/jax_hfbfft/physics/debugsolver.py
 *.pdf
 *.tex
+benchmark_profile/
 
 # Byte-compiled files
 __pycache__/
@@ -82,10 +83,10 @@ pytest_cache/
 
 # GUI Frontend (Node.js)
 node_modules/
-guι-frontend/node_modules/
-guι-frontend/dist/
-guι-frontend/build/
-guι-frontend/.vite/
+gui-frontend/node_modules/
+gui-frontend/dist/
+gui-frontend/build/
+gui-frontend/.vite/
 *.tsbuildinfo
 
 # GUI Backend
@@ -101,4 +102,3 @@ hfb_results/
 *.bak
 *.backup
 *.tmp
->>>>>>> f06f5519fb6c78e992957f7adf567dc917f92fff

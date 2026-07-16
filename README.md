@@ -26,7 +26,7 @@ jax-hfbfft/
 │   ├── jax_config.py     # JAX configuration (64-bit by default)
 │   └── __init__.py       # Package exports
 ├── legacy/               # Archived legacy implementation
-├── tests/                # Test suite (58 tests)
+├── tests/                # Test suite (75 tests)
 ├── examples/             # Example scripts
 └── pyproject.toml        # Package configuration
 ```

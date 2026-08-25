@@ -1,24 +1,33 @@
+# --- Project-specific outputs ---
 *log.txt
+*log2.txt
 *benchmark.txt
 *perf.txt
-*log2.txt
-*.log
-*log.txt
 *before.txt
-*/
 core.*
-runfleet.sh
 scalene-profile.*
+
+# One-off dev/debug scripts and dirs
+runfleet.sh
 staticbackup.py
 test_res_output.py
 timer.py
 fleettest.py
+debugslop/
+janktest*/
+res_test_output/
+archive/
+logs/
 
-# Byte-compiled files
+# Benchmark run dirs (a100_benchmark_runs/, h200_benchmark_runs/, v100_benchmark_runs/, ...)
+*_benchmark_runs/
+
+# --- Python ---
 __pycache__/
 *.py[cod]
+.Python
 
-# Virtual environment
+# Virtual environments
 venv/
 env/
 ENV/
@@ -26,7 +35,6 @@ ENV/
 .env/
 
 # Distribution / packaging
-.Python
 build/
 develop-eggs/
 dist/
@@ -40,28 +48,24 @@ var/
 wheels/
 share/python-wheels/
 *.egg-info/
-.installed.cfg
 *.egg
+.installed.cfg
 
 # Test and coverage
 .coverage
 .coverage.*
+.cache
+pytest_cache/
 nosetests.xml
 coverage.xml
 *.cover
-*.log
 *.pot
-*.pyc
-*.pyo
+*.log
 
 # Jupyter Notebook checkpoints
 .ipynb_checkpoints
 
-# Pytest
-.cache
-pytest_cache/
-
-# IDEs and editors
+# --- IDEs and editors ---
 .vscode/
 .idea/
 *.swp
@@ -69,8 +73,7 @@ pytest_cache/
 *.sublime-project
 *.sublime-workspace
 
-# Other files
+# --- OS / misc ---
 *.DS_Store
 *.db
 *.sqlite3
->>>>>>> f06f5519fb6c78e992957f7adf567dc917f92fff

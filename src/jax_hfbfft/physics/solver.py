@@ -134,6 +134,14 @@ class SolverConfig:
     diag_start: int = 30          # Start diagonalization after this
     bcs_start: int = 30           # Use pure BCS until this iteration
 
+    # Pairing annealing (FORTRAN static.f90:563-572): for the first `iteranneal`
+    # iterations the pairing strengths V0 are enhanced by a factor decaying from
+    # (1 + pairenhance) at iter 0 down to 1 at iter=iteranneal, then held at 1.
+    # This over-pairs early to prevent premature collapse to the trivial gap.
+    # iteranneal = 0 disables it (FORTRAN default), giving no behavioral change.
+    iteranneal: int = 0
+    pairenhance: float = 0.0
+
     # Adaptive step (tvaryx_0): triple x0dmp before main loop, adapt each iteration
     # Matches legacy static.tvaryx_0 behavior
     tvaryx_0: bool = field(default=False, metadata=dict(static=True))
@@ -901,9 +909,26 @@ def hfb_iteration(
     
     # 6. Compute mean-field potentials
     from jax_hfbfft.physics.meanfield import compute_skyrme_meanfield
+
+    # Pairing annealing (FORTRAN static.f90:563-572): enhance the pairing
+    # strengths V0 for the first `iteranneal` iterations. v0neut/v0prot enter
+    # only the pairing field v_pair (meanfield.py), so this leaves the Skyrme
+    # mean field untouched. With iteranneal = 0 the factor is exactly 1.0.
+    anneal_factor = jnp.where(
+        (config.iteranneal > 0) & (iteration < config.iteranneal),
+        1.0 + config.pairenhance
+        * (config.iteranneal - iteration) / jnp.maximum(config.iteranneal, 1),
+        1.0,
+    )
+    force_annealed = dataclasses.replace(
+        force,
+        v0neut=force.v0neut * anneal_factor,
+        v0prot=force.v0prot * anneal_factor,
+    )
+
     meanfield = compute_skyrme_meanfield(
         densities,
-        force,
+        force_annealed,
         grid,
         coulomb_potential=wcoul,
         constraint_potential=constraint_potential,

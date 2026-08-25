@@ -405,6 +405,9 @@ class HFBFFT:
         self.diag_start: int = 0
         self.bcs_start: int = 0
         self.tvaryx_0: bool = False
+        # Pairing annealing
+        self.iteranneal: int = 0
+        self.pairenhance: float = 0.0
 
         # Callbacks for monitoring
         self._callbacks: list = []
@@ -796,6 +799,8 @@ class HFBFFT:
             diag_start=self.diag_start,
             bcs_start=self.bcs_start,
             tvaryx_0=self.tvaryx_0,
+            iteranneal=self.iteranneal,
+            pairenhance=self.pairenhance,
         )
         
         # Prepare initial state if wavefunctions exist
@@ -947,11 +952,28 @@ class HFBFFT:
                 y2      = float(jnp.sum(rho * Y**2) * wxyz / A_use)
                 z2      = float(jnp.sum(rho * Z**2) * wxyz / A_use)
 
-                # Deformation
-                r0   = 1.2
-                norm = 4.0 * _math.pi / (3.0 * _A * (r0 * _A**(1.0/3.0))**2)
-                beta2 = norm * _math.sqrt(Q20_tot**2 + 2.0*Q22_tot**2)
-                gamma = _math.degrees(_math.atan2(_math.sqrt(2.0)*Q22_tot, Q20_tot)) % 60.0
+                # Bohr-Mottelson deformation from the quadrupole-tensor eigenvalues
+                Q_xx = float(jnp.sum(rho * (3.0*X**2 - r2)) * wxyz)
+                Q_yy = float(jnp.sum(rho * (3.0*Y**2 - r2)) * wxyz)
+                Q_zz = float(jnp.sum(rho * (3.0*Z**2 - r2)) * wxyz)
+                Q_xy = float(jnp.sum(rho * (3.0*X*Y)) * wxyz)
+                Q_xz = float(jnp.sum(rho * (3.0*X*Z)) * wxyz)
+                Q_yz = float(jnp.sum(rho * (3.0*Y*Z)) * wxyz)
+                q_eig = jnp.linalg.eigvalsh(jnp.array(
+                    [[Q_xx, Q_xy, Q_xz],
+                     [Q_xy, Q_yy, Q_yz],
+                     [Q_xz, Q_yz, Q_zz]]))  # ascending
+                q20_sh = _math.sqrt(5.0 / (16.0 * _math.pi)) * float(q_eig[2])
+                q22_sh = _math.sqrt(5.0 / (96.0 * _math.pi)) * float(q_eig[1] - q_eig[0])
+                beta_norm = 4.0 * _math.pi / (5.0 * rms_tot**2 * _A)
+                beta20 = q20_sh * beta_norm
+                beta22 = q22_sh * beta_norm
+                beta2 = _math.sqrt(beta20**2 + 2.0 * beta22**2)
+                gamma = abs(_math.degrees(_math.atan2(_math.sqrt(2.0) * beta22, beta20)))
+                if gamma > 120.0:
+                    gamma -= 120.0
+                elif gamma > 60.0:
+                    gamma = 120.0 - gamma
 
                 # Dipole moments
                 # c.m. = isoscalar (rho weighted), Isovector = (rho_n - rho_p) weighted

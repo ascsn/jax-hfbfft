@@ -466,6 +466,10 @@ def run_calculation(config_path: Optional[str], verbose: bool = False):
             calc.bcs_start = iteration_config['bcs_start']
         if 'tvaryx_0' in iteration_config:
             calc.tvaryx_0 = iteration_config['tvaryx_0']
+        if 'iteranneal' in iteration_config:
+            calc.iteranneal = iteration_config['iteranneal']
+        if 'pairenhance' in iteration_config:
+            calc.pairenhance = iteration_config['pairenhance']
         
         print(f"Starting HFB iteration (max: {max_iterations}, convergence: {convergence:.1e})...")
         print()

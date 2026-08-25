@@ -195,8 +195,11 @@ def solve_pairing_isospin(
 ):
     smallp = 1.0e-6
 
-    # deltaf effective = deltaf * pairwg, matching FORTRAN pairgap output
-    deltaf_eff = deltaf * pairwg
+    # FORTRAN convention (pairs.f90): pairwg is applied to the gap exactly once,
+    # in pairgap/diagstep. The BCS solve does NOT reapply it — see pairs.f90:223,
+    # "there is already pairwg in deltaf and chi, so no pairwg here." The incoming
+    # deltaf already carries pairwg, so use it as-is.
+    deltaf_eff = deltaf
 
     # Find Fermi energy using effective gaps (pairwg baked in)
     eferm = find_fermi_energy(

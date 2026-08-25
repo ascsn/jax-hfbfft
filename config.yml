@@ -118,7 +118,7 @@ initialization:
 # ----------------------------------------------------------------------------
 iteration:
   # Maximum number of iterations
-  max_iterations: 4000
+  max_iterations: 1200
   
   # Convergence threshold (MeV)
   # Calculation stops when energy fluctuation < threshold

@@ -102,6 +102,9 @@ benchmark_profile/
 *benchmark.txt
 *perf.txt
 *meanfield.txt
+diag_*.json
+litreview*
+prospectus*
 
 # ============================================================================
 # Documents (papers, drafts)
@@ -118,6 +121,7 @@ test_res_output.py
 timer.py
 run_all_nuclei.py
 src/jax_hfbfft/physics/debugsolver.py
+run_diagnostics.py
 
 # ============================================================================
 # Backup / temp files

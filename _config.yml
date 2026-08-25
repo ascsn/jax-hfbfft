@@ -78,7 +78,7 @@ levels:
 static:
     tdiag: false
     tlarge: false
-    maxiter: 4000
+    maxiter: 1200
     #maxiter: 400
     #maxiter: 40
     radinx: 3.1

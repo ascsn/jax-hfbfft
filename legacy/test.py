@@ -12,7 +12,7 @@ from grids import init_grids
 from densities import init_densities
 from meanfield import init_meanfield
 from levels import init_levels
-from static import init_static, statichf, harmosc, statichf_with_benchmark, statichf_with_detailed_benchmark, statichf_with_testy_benchmark
+from static import init_static, statichf, harmosc, statichf_with_benchmark
 from coulomb import init_coulomb
 from moment import init_moment
 from energies import init_energies
@@ -21,11 +21,13 @@ from dataclasses import asdict
 from functools import partial
 from output import FortranOutputWriter, complete_sinfo_with_fortran_output
 
+jax.config.update("jax_enable_x64", True)
+
 #os.environ['JAX_PLATFORMS'] = 'cpu'
 #os.environ['CUDA_VISIBLE_DEVICES'] = ''
 
 # Create output directory
-output_dir = "hfb_results_16O_detailed"
+output_dir = "janktest6"
 os.makedirs(output_dir, exist_ok=True)
 
 # Add hash method to make classes hashable for JAX transformations
@@ -136,10 +138,10 @@ def run_hfb(config_file='_config.yml', force_name='SLy4', enable_pairing=True, s
         # Enable or disable pairing
         if enable_pairing:
             config['force']['ipair'] = 6  # Density-dependent delta interaction
-            config['force']['tbcs'] = True
+            config['force']['tbcs'] = False
         else:
             config['force']['ipair'] = 0  # No pairing
-            config['force']['tbcs'] = False
+            config['force']['tbcs'] = True
         
         # Initialize all components
         params = init_params(**config.get('params', {}))
@@ -172,7 +174,7 @@ def run_hfb(config_file='_config.yml', force_name='SLy4', enable_pairing=True, s
         output_writer = FortranOutputWriter(output_dir)
 
         try:
-            coulomb, densities, energies, forces, grids, levels, meanfield, moment, params, static = statichf_with_testy_benchmark(coulomb,densities,energies,forces,grids,levels,meanfield,moment,params,static,pairs,output_writer, 50)
+            coulomb, densities, energies, forces, grids, levels, meanfield, moment, params, static = statichf_with_benchmark(coulomb,densities,energies,forces,grids,levels,meanfield,moment,params,static,pairs,output_writer, 5)
 
             # Ensure all JAX arrays are fully computed
             jax.block_until_ready(coulomb)
@@ -226,11 +228,11 @@ def run_hfb(config_file='_config.yml', force_name='SLy4', enable_pairing=True, s
 if __name__ == "__main__":
     # Set JAX to use 64-bit precision
     jax.config.update('jax_enable_x64', True)
-    #jax.profiler.start_trace("logs")
+    #jax.profiler.start_trace("logs", create_perfetto_trace=True)
     try:
         # Run a calculation for Sn-132 with SLy4 force
-        run_hfb(force_name='SLy4', enable_pairing=False)
+        run_hfb(force_name='SLy4', enable_pairing=True)
     finally:
         #jax.profiler.stop_trace()
         print(f"Error in main execution: {str(e)}")
-        #traceback.print_exc()
+        traceback.print_exc()

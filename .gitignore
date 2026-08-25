@@ -1,12 +1,31 @@
-# ============================================================================
-# Python
-# ============================================================================
+*log.txt
+*benchmark.txt
+*perf.txt
+*log2.txt
+*.log
+*log.txt
+*before.txt
+*/
+core.*
+runfleet.sh
+scalene-profile.*
+staticbackup.py
+test_res_output.py
+timer.py
+fleettest.py
+
+# Byte-compiled files
 __pycache__/
 *.py[cod]
 
-# ============================================================================
+# Virtual environment
+venv/
+env/
+ENV/
+.venv/
+.env/
+
 # Distribution / packaging
-# ============================================================================
 .Python
 build/
 develop-eggs/
@@ -20,39 +39,29 @@ sdist/
 var/
 wheels/
 share/python-wheels/
-*.egg
 *.egg-info/
 .installed.cfg
+*.egg
 
-# ============================================================================
-# Virtual environments
-# ============================================================================
-venv/
-env/
-ENV/
-.venv/
-.env/
-
-# ============================================================================
-# Testing / coverage
-# ============================================================================
-.cache
-pytest_cache/
+# Test and coverage
 .coverage
 .coverage.*
+nosetests.xml
 coverage.xml
 *.cover
-nosetests.xml
+*.log
 *.pot
+*.pyc
+*.pyo
 
-# ============================================================================
-# Jupyter
-# ============================================================================
+# Jupyter Notebook checkpoints
 .ipynb_checkpoints
 
-# ============================================================================
-# Editors / IDEs
-# ============================================================================
+# Pytest
+.cache
+pytest_cache/
+
+# IDEs and editors
 .vscode/
 .idea/
 *.swp
@@ -60,72 +69,8 @@ nosetests.xml
 *.sublime-project
 *.sublime-workspace
 
-# ============================================================================
-# OS files
-# ============================================================================
+# Other files
 *.DS_Store
 *.db
 *.sqlite3
-
-# ============================================================================
-# GUI frontend (Node.js)
-# ============================================================================
-node_modules/
-gui-frontend/node_modules/
-gui-frontend/dist/
-gui-frontend/build/
-gui-frontend/.vite/
-*.tsbuildinfo
-
-# GUI backend (built frontend assets copied in at build time)
-src/jax_hfbfft/gui/frontend/assets/
-src/jax_hfbfft/gui/frontend/index.html
-
-# ============================================================================
-# Calculation outputs and results
-# ============================================================================
-runs
-hfb_results/
-benchmark_profile/
-*.npz
-*.res
-
-# ============================================================================
-# Logs, benchmarks, and scratch output
-# ============================================================================
-*.log
-*log.txt
-*log2.txt
-*before.txt
-*firstfew.txt
-*comparison.txt
-*benchmark.txt
-*perf.txt
-*meanfield.txt
-diag_*.json
-litreview*
-prospectus*
-
-# ============================================================================
-# Documents (papers, drafts)
-# ============================================================================
-*.pdf
-*.tex
-
-# ============================================================================
-# Local dev / scratch scripts (not part of the package)
-# ============================================================================
-*log.py
-staticbackup.py
-test_res_output.py
-timer.py
-run_all_nuclei.py
-src/jax_hfbfft/physics/debugsolver.py
-run_diagnostics.py
-
-# ============================================================================
-# Backup / temp files
-# ============================================================================
-*.bak
-*.backup
-*.tmp
+>>>>>>> f06f5519fb6c78e992957f7adf567dc917f92fff

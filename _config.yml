@@ -32,7 +32,7 @@ params:
 force:
   name: 'SLy4'
   ipair: 6 # Use 6 for DDDI, 5 for VDI, 0 for no pairing
-  tbcs: True
+  tbcs: False
   # --- Custom pairing parameters for this run ---
   # These will be used to override the defaults for SLy4+DDDI
   v0prot: 362.0

@@ -264,7 +264,7 @@ def integ_energy(coulomb, densities, energies, forces, grids, levels, params, pa
     
     # Step 9: Form total energy (for now assuming zero pairing energy)
     total_pairing_energy = jnp.sum(pairs.epair)
-    ehfint = ehft + ehf0 + ehf1 + ehf2 + ehf3 + ehfls + ehfc - total_pairing_energy - e_zpe
+    ehfint = ehft + ehf0 + ehf1 + ehf2 + ehf3 + ehfls + ehfc - e_zpe - total_pairing_energy 
     
     # Update the energies dataclass
     return Energies(

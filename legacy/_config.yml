@@ -1,24 +1,5 @@
-# ============================================================================
-# DEPRECATED: This configuration file format is from the legacy implementation
-# ============================================================================
-#
-# Please use the new configuration system instead:
-#
-#   1. Edit config.yml with your parameters
-#   2. Run: python run_hfb.py
-#
-# See RUN_INSTRUCTIONS.md for detailed documentation.
-#
-# The new system provides:
-#   - Better documentation of all options
-#   - Automatic output directory creation
-#   - Comprehensive result files
-#   - Classic HFB code user experience
-#
-# ============================================================================
-
 params:
-    wffile: "Sn132"
+    wffile: "O16"
     mprint: 1
     mplot: 0
     mrest: 0
@@ -31,8 +12,8 @@ params:
 
 force:
   name: 'SLy4'
-  ipair: 6 # Use 6 for DDDI, 5 for VDI, 0 for no pairing
-  tbcs: False
+  ipair: 0 # Use 6 for DDDI, 5 for VDI, 0 for no pairing
+  tbcs: false
   # --- Custom pairing parameters for this run ---
   # These will be used to override the defaults for SLy4+DDDI
   v0prot: 362.0
@@ -62,9 +43,9 @@ grids:
 #  periodic: False
 
 levels:
-    nneut: 146
-    nprot: 92
-    npsi: [292,184]
+    nneut: 8
+    nprot: 8
+    npsi: [8,8]
     #nneut: 82
     #nprot : 50
     #npsi: [164,100]
@@ -78,7 +59,7 @@ levels:
 static:
     tdiag: false
     tlarge: false
-    maxiter: 1200
+    maxiter: 4000
     #maxiter: 400
     #maxiter: 40
     radinx: 3.1

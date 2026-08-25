@@ -1451,8 +1451,8 @@ def statichf(coulomb, densities, energies, forces, grids, levels, meanfield, mom
             meanfield, moment, params, static, pairs, output_writer
         )
     else:
-        if i % 10 == 0:
-            energies = sinfo(coulomb, densities, energies, forces, grids, levels, meanfield, moment, params, static, pairs)
+        # Initial iteration - always print info
+        energies = sinfo(coulomb, densities, energies, forces, grids, levels, meanfield, moment, params, static, pairs)
     write_convergence_log(log_file_path, params.iteration, energies, static, levels, densities, meanfield, grids, forces, pairs)
     
     # Set x0dmp to 3* its value to get faster convergence
@@ -1586,7 +1586,7 @@ def statichf(coulomb, densities, energies, forces, grids, levels, meanfield, mom
 
     # Final diagonalization to get quasiparticle states
     for iq in range(2):
-        qp_energies, qp_norms = lastdiag(forces, grids, levels, params, static, iq)
+        qp_energies, qp_norms = lastdiag(forces, grids, levels, params, static, pairs, iq)
         
         # Print quasiparticle energies
         if iq == 0:

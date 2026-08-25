@@ -1,0 +1,33 @@
+# Include additional files in source distribution
+include setup.py
+include README.md
+include LICENSE
+include requirements.txt
+include *.yml
+include *.md
+
+# Include frontend source
+recursive-include gui-frontend *.ts *.tsx *.js *.jsx *.json *.html *.css *.svg *.ico
+recursive-include gui-frontend/src *
+recursive-include gui-frontend/public *
+include gui-frontend/package.json
+include gui-frontend/package-lock.json
+include gui-frontend/tsconfig.json
+include gui-frontend/vite.config.ts
+include gui-frontend/tailwind.config.js
+include gui-frontend/postcss.config.js
+
+# Include desktop GUI
+recursive-include gui-desktop *.js *.json *.md
+recursive-include gui-desktop/icons *
+
+# Include documentation
+recursive-include docs *.md
+
+# Include examples
+recursive-include examples *.py
+
+# Exclude compiled files
+global-exclude __pycache__
+global-exclude *.py[co]
+global-exclude .DS_Store

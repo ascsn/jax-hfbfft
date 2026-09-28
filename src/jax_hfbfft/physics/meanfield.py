@@ -12,6 +12,7 @@ This module computes the Skyrme mean-field potentials from nuclear densities:
 The potentials are derived from the Skyrme energy density functional.
 """
 
+import dataclasses
 import jax
 import jax.numpy as jnp
 from dataclasses import dataclass
@@ -131,6 +132,49 @@ def _compute_curl_both(vec: jax.Array, grid: Grid) -> jax.Array:
     """Compute curl for both isospin channels. vec: (2, 3, nx, ny, nz)."""
     return jax.vmap(lambda v: compute_curl(v, grid))(vec)
 
+#Regularization kernel
+def _keff_regularization(
+    eferm: jax.Array,   # (2,) Fermi energy per isospin
+    ecut: jax.Array,    # (2,) cutoff energy per isospin (pairing-active window)
+    upot: jax.Array,    # (2, nx, ny, nz) local potential, BEFORE pairing rearrangement
+    bmass: jax.Array,   # (2, nx, ny, nz) local effective-mass field hbar^2/(2M*(r))
+) -> jax.Array:
+    """
+    Bulgac-Yu regularization kernel K_eff(r)
+    Returns K_eff with the same (2, nx, ny, nz) shape as upot/bmass.
+    Taken from HFBTHO's (hfbtho_solver.f90:4341-4396) 
+
+
+    
+    """
+    ef = eferm[:, None, None, None]
+    ec = ecut[:, None, None, None]
+    bmass_safe = jnp.maximum(bmass, 1.0e-6)
+    fac = jnp.sqrt(1.0 / bmass_safe)
+    pref = 0.25 / (bmass_safe * jnp.pi ** 2)
+
+    cond1 = (upot + ec - ef) < 0.0
+    cond2 = ef > upot
+    cond3 = (upot - ec - ef) < 0.0
+
+    kc = fac * jnp.sqrt(jnp.maximum(ef + ec - upot, 1.0e-12))
+    kf_occ = fac * jnp.sqrt(jnp.maximum(ef - upot, 1.0e-12))
+    log_term_kc = jnp.log((kc + kf_occ) / jnp.maximum(kc - kf_occ, 1.0e-9))
+    a = pref * kc * (1.0 - 0.5 * (kf_occ / kc) * log_term_kc)
+
+    lc = fac * jnp.sqrt(jnp.maximum(ef - ec - upot, 1.0e-12))
+    log_term_lc = jnp.log((lc + kf_occ) / jnp.maximum(jnp.abs(kf_occ - lc), 1.0e-9))
+    b = pref * lc * (1.0 - 0.5 * (kf_occ / lc) * log_term_lc)
+    branch1 = a + b
+
+    branch2 = a 
+    kf_unocc = fac * jnp.sqrt(jnp.maximum(upot - ef, 1.0e-12))
+    branch3 = pref * kc * (1.0 + (kf_unocc / kc) * jnp.arctan(kf_unocc / kc))
+
+    branch4 = jnp.zeros_like(branch1)
+
+    return jnp.where(cond1, branch1, jnp.where(cond2, branch2, jnp.where(cond3, branch3, branch4)))
+
 
 @jax.jit
 def _compute_skyrme_meanfield_core(
@@ -140,11 +184,14 @@ def _compute_skyrme_meanfield_core(
     current: jax.Array,      # (2, 3, nx, ny, nz)
     sdens: jax.Array,        # (2, 3, nx, ny, nz)
     sodens: jax.Array,       # (2, 3, nx, ny, nz)
+    tdens: jax.Array,        # (2, 3, nx, ny, nz)
     coulomb_potential: jax.Array,  # (nx, ny, nz) or zeros
     constraint_potential: jax.Array,  # (2, nx, ny, nz) or zeros
     # Force parameters (flattened for JIT)
     b0: float, b0p: float, b1: float, b1p: float, b2: float, b2p: float,
     b3: float, b3p: float, b4: float, b4p: float,
+    c_s0: float, c_s1: float, c_sDs0: float, c_sDs1: float,
+    c_ds0: float, c_ds1: float,
     h2m_n: float, h2m_p: float,
     power: float, slate: float, ex: float,
     v0neut: float, v0prot: float, rho0pr: float, ipair: int,
@@ -152,12 +199,18 @@ def _compute_skyrme_meanfield_core(
     grid: Grid,
     # Flags
     use_coulomb: bool,
+    # Bulgac-Yu regularized pairing
+    eferm: jax.Array,
+    pairing_reg_cutoff: jax.Array,
+    use_pairing_regularization: jax.Array,
+    time_odd_frac: jax.Array,
 ) -> Meanfield:
     """
     JIT-compiled core of compute_skyrme_meanfield.
     
     All loops over isospin are vectorized for GPU efficiency.
     """
+    _RF = 1.0e-25 # rho floor (for gradient instability)
     dtypes = get_dtypes()
     epsilon = 1.0e-25
     
@@ -165,7 +218,7 @@ def _compute_skyrme_meanfield_core(
     
     # Total density
     rho_tot = rho[0] + rho[1]
-    rho_tot_pow = rho_tot ** power
+    rho_tot_pow = jnp.maximum(rho_tot,_RF) ** power
     
     # =========================================================================
     # Step 1: Three-body density-dependent term (vectorized)
@@ -274,6 +327,48 @@ def _compute_skyrme_meanfield_core(
     ], axis=0)
     
     # =========================================================================
+    # Step 11: Time-odd spin mean-field terms.
+    # Should vanish in even-even nuclei
+    # =========================================================================
+    s_iso = sdens[0] + sdens[1]     # isoscalar spin density  (3, nx, ny, nz)
+    s_vec = sdens[0] - sdens[1]     # isovector spin density  (3, nx, ny, nz)
+
+    # Ramping
+    c_s0 = c_s0 * time_odd_frac
+    c_s1 = c_s1 * time_odd_frac
+    c_ds0 = c_ds0 * time_odd_frac
+    c_ds1 = c_ds1 * time_odd_frac
+    c_sDs0 = c_sDs0 * time_odd_frac
+    c_sDs1 = c_sDs1 * time_odd_frac
+
+    # s^2 term
+    cs0_eff = c_s0 + c_ds0 * rho_tot_pow
+    cs1_eff = c_s1 + c_ds1 * rho_tot_pow
+    spot = spot + jnp.stack([
+        2.0 * cs0_eff * s_iso + 2.0 * cs1_eff * s_vec,
+        2.0 * cs0_eff * s_iso - 2.0 * cs1_eff * s_vec,
+    ], axis=0)
+
+    # Rearrangement
+    s_iso_sq = jnp.sum(s_iso**2, axis=0)
+    s_vec_sq = jnp.sum(s_vec**2, axis=0)
+    _RHO_FLOOR = 1.0e-25 # rho floor for gradient
+    rho_tot = jnp.maximum(rho_tot, _RHO_FLOOR)
+    rearr_odd = (power * rho_tot ** (power - 1.0)
+                 * (c_ds0 * s_iso_sq + c_ds1 * s_vec_sq))
+    upot = upot + jnp.stack([rearr_odd, rearr_odd], axis=0)
+
+    # s.Lap(s) term
+    lap_s_iso = jnp.stack([compute_laplacian(s_iso[k], grid) for k in range(3)], axis=0)
+    lap_s_vec = jnp.stack([compute_laplacian(s_vec[k], grid) for k in range(3)], axis=0)
+    spot = spot + jnp.stack([
+        2.0 * c_sDs0 * lap_s_iso + 2.0 * c_sDs1 * lap_s_vec,
+        2.0 * c_sDs0 * lap_s_iso - 2.0 * c_sDs1 * lap_s_vec,
+    ], axis=0)
+
+    # s.T coupling is absent on purpose
+
+    # =========================================================================
     # Step 11: Divergence of A vector (vectorized)
     # =========================================================================
     divaq = _compute_divergence_both(aq, grid)  # (2, nx, ny, nz)
@@ -295,10 +390,12 @@ def _compute_skyrme_meanfield_core(
     ], axis=0)
     
     # DDDI pairing (ipair == 6)
-    v_pair_dddi = jnp.stack([
-        v0neut * chi[0] * density_factor,
-        v0prot * chi[1] * density_factor,
-    ], axis=0)
+    #Bulgac-Yu regularization applied to density-scaled bare coupling
+    g_bare = jnp.stack([v0neut * density_factor, v0prot * density_factor], axis=0) 
+    keff = _keff_regularization(eferm, pairing_reg_cutoff, upot, bmass)
+    g_reg = g_bare / (1.0 + g_bare * keff)
+    g_eff = jnp.where(use_pairing_regularization, g_reg, g_bare)
+    v_pair_dddi = chi * g_eff
     
     # Rearrangement for DDDI
     rearrange = (v0neut / rho0pr) * chi[0]**2 + (v0prot / rho0pr) * chi[1]**2
@@ -333,6 +430,9 @@ def compute_skyrme_meanfield(
     coulomb_potential: Optional[jax.Array] = None,
     constraint_potential: Optional[jax.Array] = None,
     use_coulomb: bool = True,
+    eferm: Optional[jax.Array] = None,
+    use_pairing_regularization: bool = False,
+    time_odd_frac: jax.Array = 1.0,
 ) -> Meanfield:
     """
     Compute Skyrme mean-field potentials from densities.
@@ -346,6 +446,10 @@ def compute_skyrme_meanfield(
         coulomb_potential: Pre-computed Coulomb potential (optional)
         constraint_potential: External constraint potential (optional)
         use_coulomb: Whether to include Coulomb interaction
+        eferm: Fermi energy per isospin for pairing_regularization (optional).
+        use_pairing_regularization: Bulgac-Yu regularize DDDI pairing coupling.
+        time_odd_frac: multiplier on time-odd couplings for ramping
+
         
     Returns:
         Meanfield object with all potentials
@@ -359,6 +463,8 @@ def compute_skyrme_meanfield(
     if constraint_potential is None:
         constraint_potential = jnp.zeros((2, grid.nx, grid.ny, grid.nz), dtype=dtypes.float)
     
+    if eferm is None:
+        eferm = jnp.zeros(2, dtype=dtypes.float)
     # Call the JIT-compiled core
     return _compute_skyrme_meanfield_core(
         densities.rho,
@@ -367,15 +473,26 @@ def compute_skyrme_meanfield(
         densities.current,
         densities.sdens,
         densities.sodens,
+        densities.tdens,
         coulomb_potential,
         constraint_potential,
         force.b0, force.b0p, force.b1, force.b1p, force.b2, force.b2p,
         force.b3, force.b3p, force.b4, force.b4p,
+        force.c_s0, force.c_s1, force.c_sDs0, force.c_sDs1,
+        force.c_ds0, force.c_ds1,
         force.h2m[0], force.h2m[1],
         force.power, force.slate, force.ex,
         force.v0neut, force.v0prot, force.rho0pr, force.ipair,
         grid,
         use_coulomb,
+        eferm,
+        jnp.asarray(
+            force.pairing_reg_cutoff if force.pairing_reg_cutoff is not None
+            else force.state_cutoff,
+            dtype=dtypes.float,
+        ),
+        jnp.asarray(use_pairing_regularization),
+        jnp.asarray(time_odd_frac, dtype=dtypes.float),
     )
 
 

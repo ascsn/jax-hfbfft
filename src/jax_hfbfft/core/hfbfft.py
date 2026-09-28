@@ -769,17 +769,8 @@ class HFBFFT:
         
         start_time = time.time()
         
-        # Apply center-of-mass correction to h2m if zpe==0
-        # This is the alternative CM correction that scales the effective mass
-        # by (A-1)/A following the legacy implementation
-        mass_number = self.nucleus.protons + self.nucleus.neutrons
-        if self.force.zpe == 0 and mass_number > 1:
-            cm_factor = (mass_number - 1.0) / mass_number
-            corrected_h2m = self.force.h2m * cm_factor
-            force = dataclasses.replace(self.force, h2m=corrected_h2m)
-        else:
-            force = self.force
-        
+        force = self.solver_force
+
         print(f"Starting HFB calculation for {self.nucleus}")
         print(f"Force: {self.force.name}")
         print(f"Grid: {self.grid.nx}x{self.grid.ny}x{self.grid.nz}")
@@ -1530,6 +1521,13 @@ class HFBFFT:
         # Calculate angular momenta
         pass
     
+    @property
+    def solver_force(self) -> Force:
+        """The force run_hfb is given: self.force with the c.m. correction applied.
+        Pass this to prepare_tdhf_state to propagate in the same Hamiltonian."""
+        from jax_hfbfft.physics.solver import apply_cm_correction
+        return apply_cm_correction(self.force, self.nucleus.protons + self.nucleus.neutrons)
+
     @property
     def total_energy(self) -> float:
         """Return the current total energy."""

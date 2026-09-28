@@ -79,6 +79,10 @@ class Force:
     pair_cutoff: Optional[jax.Array] = None  # Energy cutoff for pairing
     state_cutoff: Optional[jax.Array] = None  # State cutoff
     softcut_range: float = 0.1  # Soft cutoff width parameter
+    pair_active_count: Optional[jax.Array] = None #Pairing-Active-Space cutoff
+    pairing_reg_cutoff: Optional[jax.Array] = None #Bulgac-Yu regularization cutoff
+    pair_active_adaptive : bool = False #Pairing active space cutoff flag
+    pairing_smear_width: Optional[jax.Array] = None #Degenerate-cluster smearing width
     tbcs: bool = False  # Use BCS approximation
     
     # Physical constants
@@ -95,7 +99,15 @@ class Force:
     b3: float = 0.0
     b3p: float = 0.0
     b4: float = 0.0
-    
+
+    # Time-odd spin-channel coupling constants
+
+    c_s0: float = 0.0   #s^2, isoscalar
+    c_s1: float = 0.0   #s^2, isovector
+    c_sDs0: float = 0.0 #s.Lap(s), isoscalar
+    c_sDs1: float = 0.0 #s.Lap(s), isovector
+    c_ds0: float = 0.0  #rho^sigma s^2, isoscalar
+    c_ds1: float = 0.0  #rho^sigma s^2, isovector
     # Slater determinant parameter
     slate: float = 0.0
     
@@ -120,6 +132,8 @@ class Force:
             object.__setattr__(self, 'pair_cutoff', jnp.array([0.0, 0.0]))
         if self.state_cutoff is None:
             object.__setattr__(self, 'state_cutoff', jnp.array([0.0, 0.0]))
+        if self.pairing_smear_width is None:
+            object.__setattr__(self, 'pairing_smear_width', jnp.array([0.0, 0.0]))
         if self.h2m is None:
             object.__setattr__(self, 'h2m', jnp.array([self.h2ma, self.h2ma]))
     
@@ -192,11 +206,35 @@ class Force:
             'x3': force_params.get('x3', 0.0),
             'b4p': force_params.get('b4p', 0.0),
             'power': force_params.get('power', 1.0),
+            'c_s0': force_params.get('c_s0', 0.0),
+            'c_s1': force_params.get('c_s1', 0.0),
+            'c_sDs0': force_params.get('c_sDs0', 0.0),
+            'c_sDs1': force_params.get('c_sDs1', 0.0),
         }
-        
+        # Pairing: an optional 'vdi:' / 'dddi:' block in the force file supplies
+        # default strengths for ipair=5/6.  Explicit kwargs always win.
+        ipair = int(kwargs.get('ipair', 0))
+        block = {5: 'vdi', 6: 'dddi'}.get(ipair)
+        pair_params = force_params.get(block) if block else None
+        if pair_params is not None:
+            init_kwargs['v0prot'] = pair_params.get('v0prot', 0.0)
+            init_kwargs['v0neut'] = pair_params.get('v0neut', 0.0)
+            init_kwargs['rho0pr'] = pair_params.get('rho0pr', 0.16)
+        elif block is not None and not {'v0prot', 'v0neut'} <= kwargs.keys():
+            raise ValueError(
+                f"Force '{name}' has no '{block}:' block; pass v0prot/v0neut "
+                f"explicitly for ipair={ipair}."
+            )
         # Apply user overrides
         init_kwargs.update(kwargs)
-        
+        # A negative strength is a file's "not fitted" placeholder.
+        if block is not None and min(init_kwargs['v0prot'], init_kwargs['v0neut']) < 0.0:
+            raise ValueError(
+                f"Force '{name}' has placeholder pairing strengths "
+                f"(v0prot={init_kwargs['v0prot']}, v0neut={init_kwargs['v0neut']}); "
+                f"supply v0prot/v0neut explicitly."
+            )
+
         # Create force and calculate derived coefficients
         force = cls(**init_kwargs)
         return force._calculate_derived_coefficients()
@@ -268,6 +306,10 @@ class Force:
         tbcs: Optional[bool] = None,
         pair_cutoff: Optional[Tuple[float, float]] = None,
         state_cutoff: Optional[Tuple[float, float]] = None,
+        pair_active_count: Optional[Tuple[int, int]] = None,
+        pairing_reg_cutoff: Optional[Tuple[float, float]] = None,
+        pair_active_adaptive: Optional[bool] = None,
+        pairing_smear_width: Optional[Tuple[float, float]] = None,
     ) -> "Force":
         """
         Create a new Force with modified pairing parameters.
@@ -280,6 +322,14 @@ class Force:
             tbcs: Use BCS approximation
             pair_cutoff: Energy cutoff (neutron, proton) in MeV
             state_cutoff: State cutoff (neutron, proton) in MeV
+            pair_active_count: Hard state-COUNT cutoff (neutron, proton) for
+                the pairing-active space
+            pairing_reg_cutoff: Bulgac-Yu regularization ecut (neutron, proton)
+                in MeV
+            pair_active_adaptive: Derive pair_active_count per isospin from
+                sp_energy spectrum structure
+            pairing_smear_width: Degnerate-cluster smearing width (neutron, 
+                proton) in MeV
             
         Returns:
             New Force with updated pairing parameters
@@ -301,8 +351,95 @@ class Force:
             updates['pair_cutoff'] = jnp.array(pair_cutoff)
         if state_cutoff is not None:
             updates['state_cutoff'] = jnp.array(state_cutoff)
+        if pair_active_count is not None:
+            updates['pair_active_count'] = jnp.array(pair_active_count)
+        if pairing_reg_cutoff is not None:
+            updates['pairing_reg_cutoff'] = jnp.array(pairing_reg_cutoff)
+        if pair_active_adaptive is not None:
+            updates['pair_active_adaptive'] = pair_active_adaptive
+        if pairing_smear_width is not None:
+            updates['pairing_smear_width'] = jnp.array(pairing_smear_width)
         
         return dataclasses.replace(self, **updates)
+
+    RHO_SAT = 0.16 # Reference saturation density, fm^-3
+
+    def with_pairing_type(self,kind: str, v0: float = 362.0) -> "Force":
+        """
+        Set density dependence of delta pairing interaction
+
+        Args:
+            kind: 'volume', 'surface', or 'mixed'.
+            v0: Pairing strength for both isospins (MeV fm^3).
+        Returns:
+            New Force with ipair=6 (DDDI) and requested pairing interaction
+        """
+        import dataclasses
+        kind = kind.lower()
+        if kind == 'volume':
+            rho0pr = 1.0e30       # bracket -> 1 everywhere
+        elif kind == 'surface':
+            rho0pr = self.RHO_SAT
+        elif kind == 'mixed':
+            rho0pr = 2.0 * self.RHO_SAT
+        else:
+            raise ValueError(
+                f"Unknown pairing type {kind!r}. Use 'volume', 'surface', or 'mixed'."
+            )
+        return dataclasses.replace(
+            self, ipair=6, v0neut=v0, v0prot=v0, rho0pr=rho0pr,
+        )
+
+    def with_time_odd(
+        self,
+        c_s0: float = 0.0,
+        c_s1: float = 0.0,
+        c_sDs0: float = 0.0,
+        c_sDs1: float = 0.0,
+    ) -> "Force":
+        """
+        Create Force with time-odd spin-channel couplings enabled.
+        Args:
+            c_s0, c_s1: s^2 couplings, isoscalar / isovector (MeV fm^3)
+            c_sDs0, c_sDs1: s.Lap(s) couplings, isoscalar / isovector (MeV fm^5)
+
+        Returns:
+            Force with the time-odd couplings set.
+        """
+        import dataclasses
+
+        return dataclasses.replace(
+            self, c_s0=c_s0, c_s1=c_s1, c_sDs0=c_sDs0, c_sDs1=c_sDs1,
+        )
+
+    def with_time_odd_from_skyrme(self) -> "Force":
+        """
+        Derive the time-odd spin couplings from force parameters.
+        (Taken from HFBTHO's `hfbtho_unedf.f90::C_from_t`)
+
+        Returns:
+            New Force with c_s0, c_s1, c_ds0, c_ds1, c_sDs0, c_sDs1 set.
+        """
+        import dataclasses
+
+        cs0 = -(1.0 / 4.0) * self.t0 * (0.5 - self.x0)
+        cs1 = -(1.0 / 8.0) * self.t0
+        cds0 = -(1.0 / 24.0) * self.t3 * (0.5 - self.x3)
+        cds1 = -(1.0 / 48.0) * self.t3
+        csds0 = (3.0 / 32.0) * self.t1 * (0.5 - self.x1) + (1.0 / 32.0) * self.t2 * (0.5 + self.x2)
+        csds1 = (3.0 / 64.0) * self.t1 + (1.0 / 64.0) * self.t2
+
+        return dataclasses.replace(
+            self, c_s0=cs0, c_s1=cs1, c_ds0=cds0, c_ds1=cds1,
+            c_sDs0=csds0, c_sDs1=csds1,
+        )
+
+    @property
+    def has_time_odd(self) -> bool:
+        """True if any time-odd spin coupling is non-zero."""
+        return any(abs(c) > 0.0 for c in (self.c_s0, self.c_s1, self.c_ds0,
+                                          self.c_ds1, self.c_sDs0, self.c_sDs1))
+
     
     def __str__(self) -> str:
         return f"Force({self.name})"

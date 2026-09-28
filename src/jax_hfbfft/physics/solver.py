@@ -874,13 +874,11 @@ def hfb_iteration(
 
     # Apply density mixing
     mix = config.density_mixing
-    densities = Densities(
+    densities = dataclasses.replace(
+        densities,
         rho=mix * densities.rho + (1 - mix) * old_rho,
         tau=mix * densities.tau + (1 - mix) * old_tau,
         chi=mix * densities.chi + (1 - mix) * old_chi,
-        current=densities.current,
-        sdens=densities.sdens,
-        sodens=densities.sodens,
     )
 
     # Constraint update (if enabled)
@@ -1007,6 +1005,19 @@ def hfb_iteration(
     )
 
 
+def apply_cm_correction(force: Force, mass_number: int) -> Force:
+    """
+    Scale h2m by (A-1)/A, the legacy centre-of-mass correction for zpe == 0 forces.
+
+    Forces with zpe != 0 subtract an explicit c.m. energy instead and are returned
+    unchanged.  run_hfb never calls this: the caller applies it once and passes the
+    result to both run_hfb and prepare_tdhf_state.
+    """
+    if force.zpe != 0 or mass_number <= 1:
+        return force
+    return dataclasses.replace(force, h2m=force.h2m * ((mass_number - 1.0) / mass_number))
+
+
 def run_hfb(
     grid: Grid,
     force,
@@ -1057,9 +1068,12 @@ def run_hfb(
     
     # Initialize state
     if initial_state is None:
-        # Estimate number of states needed (2x particle number)
-        nstates_n = max(int(1.5 * nucleus_n), nucleus_n + 10)
-        nstates_p = max(int(1.5 * nucleus_z), nucleus_z + 10)
+        # The neutron block MUST have exactly npsi_n states: every array below
+        # is split at npsi_n, so any other count mixes protons into the
+        # neutron block (or vice versa).
+        nstates_n = npsi_n
+        nstates_p = max(int(round(npsi_n * nucleus_z / max(nucleus_n, 1))),
+                        nucleus_z + 10)
         
         state = create_initial_state(
             grid,
@@ -1142,22 +1156,29 @@ def run_hfb(
 
     # ── Step 3 (continued): pairing on initial sp_energy ────────────────────
     # FORTRAN: IF(ipair/=0) CALL pair  (after initial grstep, before 2nd diagstep)
-    initial_deltaf = compute_pairing_gaps(
-        state.psi, state.meanfield.v_pair,
-        state.isospin, state.pairwg, grid.wxyz,
-        iteration=0, mass_number=nucleus_n + nucleus_z,
-    )
+    # Guarded: run unconditionally, this overwrote an ipair == 0 calculation's
+    # sharp 0/1 occupations with BCS ones smeared by the 11.2/sqrt(A) gap
+    # estimate, and the no-pairing main loop then carried them forward.
+    if use_pairing:
+        initial_deltaf = compute_pairing_gaps(
+            state.psi, state.meanfield.v_pair,
+            state.isospin, state.pairwg, grid.wxyz,
+            iteration=0, mass_number=nucleus_n + nucleus_z,
+        )
 
-    wocc, wguv, pairwg, wstates, initial_pairing = solve_pairing(
-        state.sp_energy, initial_deltaf, state.wstates, state.pairwg,
-        state.isospin, npsi_n, npsi_p, nucleus_n, nucleus_z, force,
-    )
+        wocc, wguv, pairwg, wstates, initial_pairing = solve_pairing(
+            state.sp_energy, initial_deltaf, state.wstates, state.pairwg,
+            state.isospin, npsi_n, npsi_p, nucleus_n, nucleus_z, force,
+        )
 
-    state = dataclasses.replace(
-        state, deltaf=initial_deltaf,
-        wocc=wocc, wguv=wguv, pairwg=pairwg, wstates=wstates,
-        pairing=initial_pairing,
-    )
+        state = dataclasses.replace(
+            state, deltaf=initial_deltaf,
+            wocc=wocc, wguv=wguv, pairwg=pairwg, wstates=wstates,
+            pairing=initial_pairing,
+        )
+    else:
+        # Keep the sharp filling from create_initial_state.
+        wocc, wguv, pairwg, wstates = state.wocc, state.wguv, state.pairwg, state.wstates
 
 
 
@@ -1331,10 +1352,10 @@ def run_hfb(
                     pairing_energy=state.pairing.epair,
                     mass_number=nucleus_n + nucleus_z,
                     use_coulomb=use_coulomb,
-                    wocc=wocc,
-                    wstates=wstates,
-                    sp_kinetic=sp_kinetic,
-                    sp_energy=sp_energy,         # the sp_energy_for_pairing array
+                    wocc=state.wocc,
+                    wstates=state.wstates,
+                    sp_kinetic=state.sp_kinetic,
+                    sp_energy=state.sp_energy,   # the sp_energy_for_pairing array
                     ecorrp=float(state.meanfield.ecorrp),
 
                 )
@@ -1362,39 +1383,15 @@ def run_hfb(
             pairing_energy=state.pairing.epair,
             mass_number=nucleus_n + nucleus_z,
             use_coulomb=use_coulomb,
-            wocc=wocc,
-            wstates=wstates,
-            sp_kinetic=sp_kinetic,
-            sp_energy=sp_energy,         # the sp_energy_for_pairing array
+            wocc=state.wocc,
+            wstates=state.wstates,
+            sp_kinetic=state.sp_kinetic,
+            sp_energy=state.sp_energy,   # the sp_energy_for_pairing array
             ecorrp=float(state.meanfield.ecorrp),
 
         )
-        state = SolverState(
-            psi=state.psi,
-            sp_energy=state.sp_energy,
-            sp_kinetic=state.sp_kinetic,
-            deltaf=state.deltaf,
-            sp_n=state.sp_n,
-            sp_l=state.sp_l,
-            sp_j=state.sp_j,
-            wocc=state.wocc,
-            wguv=state.wguv,
-            wstates=state.wstates,
-            pairwg=state.pairwg,
-            isospin=state.isospin,
-            sp_parity=state.sp_parity,
-            densities=state.densities,
-            meanfield=state.meanfield,
-            coulomb_solver=state.coulomb_solver,
-            wcoul=state.wcoul,
-            energies=final_energies,
-            pairing=state.pairing,
-            constraint_state=state.constraint_state,
-            iteration=state.iteration,
-            converged=state.converged,
-            efluct=state.efluct,
-        )
-    
+        state = dataclasses.replace(state, energies=final_energies)
+
     return state
 
 @partial(jax.jit, static_argnums=(4, 5, 10, 11))

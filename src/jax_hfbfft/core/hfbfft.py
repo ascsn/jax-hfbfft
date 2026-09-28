@@ -1524,9 +1524,17 @@ class HFBFFT:
     @property
     def solver_force(self) -> Force:
         """The force run_hfb is given: self.force with the c.m. correction applied.
-        Pass this to prepare_tdhf_state to propagate in the same Hamiltonian."""
+
+        This is the Hamiltonian the static state is relaxed in; the final
+        solver_state records it, and TDHF.from_static uses it by default.
+        """
         from jax_hfbfft.physics.solver import apply_cm_correction
         return apply_cm_correction(self.force, self.nucleus.protons + self.nucleus.neutrons)
+
+    @property
+    def solver_state(self):
+        """The SolverState returned by the last run(), or None before one."""
+        return getattr(self, '_solver_state', None)
 
     @property
     def total_energy(self) -> float:

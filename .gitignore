@@ -77,3 +77,26 @@ coverage.xml
 *.DS_Store
 *.db
 *.sqlite3
+
+# --- Paper drafts and LaTeX build products ---
+*.tex
+*.aux
+*.toc
+*.bbl
+*.blg
+*.synctex.gz
+*.pdf
+
+# --- Run output ---
+# examples/tdhf output (.npz, .gif)
+out/
+# CLI default output directory
+hfb_results/
+general_results/
+slurm-*.out
+*.slurm.out
+*.slurm.err
+
+# --- Local cluster environment shims (not part of the package) ---
+tdhf_env.py
+tdhf_env.sh

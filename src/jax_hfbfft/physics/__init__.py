@@ -8,6 +8,8 @@ This subpackage contains the core physics computations:
 - coulomb: Coulomb potential solver
 - energies: Energy functional calculations
 - solver: Main HFB iteration loop
+- dynamics: Time-dependent Hartree-Fock propagation
+- collisions: Initial states for heavy-ion collisions
 """
 
 from jax_hfbfft.physics.densities import compute_densities, Densities
@@ -40,6 +42,15 @@ from jax_hfbfft.physics.solver import (
     hfb_iteration,
     create_initial_state,
 )
+from jax_hfbfft.physics.dynamics import (
+    TDConfig,
+    TDState,
+    prepare_tdhf_state,
+    tdhf_step,
+    advance,
+    run_tdhf,
+    observables,
+)
 
 __all__ = [
     # Densities
@@ -69,4 +80,12 @@ __all__ = [
     "run_hfb",
     "hfb_iteration",
     "create_initial_state",
+    # Dynamics
+    "TDConfig",
+    "TDState",
+    "prepare_tdhf_state",
+    "tdhf_step",
+    "advance",
+    "run_tdhf",
+    "observables",
 ]

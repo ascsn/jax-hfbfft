@@ -487,7 +487,7 @@ def run_calculation(config_path: Optional[str], verbose: bool = False):
         print("=" * 70)
         print()
         print(f"Total Energy:     {results.total_energy:.3f} MeV")
-        print(f"Binding Energy:   {getattr(results, 'binding_energy', 0.0):.3f} MeV")
+        print(f"Binding Energy:   {-results.total_energy:.3f} MeV")
         print(f"E/A:              {results.total_energy/nucleus.mass_number:.3f} MeV")
         print()
         
@@ -534,7 +534,11 @@ def run_calculation(config_path: Optional[str], verbose: bool = False):
             print()
             print(f"Results saved to: {run_dir}")
             print()
-        
+
+        dynamics_config = config.get('dynamics') or {}
+        if dynamics_config.get('enabled', False):
+            _run_dynamics(calc, dynamics_config, run_dir if output_dir_name else None)
+
     except ImportError as e:
         print(f"Error: Missing required dependencies: {e}")
         print("Make sure jax-hfbfft is properly installed.")
@@ -545,6 +549,55 @@ def run_calculation(config_path: Optional[str], verbose: bool = False):
         if verbose:
             traceback.print_exc()
         sys.exit(1)
+
+
+def _run_dynamics(calc, dyn: dict, run_dir: Optional[Path]):
+    """Propagate the converged static state in time (the `dynamics:` section)."""
+    import numpy as np
+    from jax_hfbfft import TDHF, TDConfig
+
+    if calc.force.ipair != 0:
+        print("Skipping dynamics: TDHF needs a static state without pairing "
+              "(force.ipair: 0).")
+        return
+
+    config = TDConfig(
+        dt=float(dyn.get('dt', 0.2)),
+        n_steps=int(dyn.get('steps', 1000)),
+        taylor_order=int(dyn.get('taylor_order', 6)),
+        diag_interval=int(dyn.get('diag_interval', 10)),
+        use_coulomb=calc.include_coulomb,
+    )
+    td = TDHF.from_static(calc, config=config)
+
+    kick = dyn.get('kick') or {}
+    kind = kick.get('type', 'none')
+    eta = float(kick.get('eta', 1.0e-3))
+    if kind == 'quadrupole':
+        td.kick_quadrupole(eta)
+    elif kind == 'monopole':
+        td.kick_monopole(eta)
+    elif kind == 'isovector_dipole':
+        td.kick_isovector_dipole(eta)
+    elif kind == 'boost':
+        td.boost(kick.get('k', [0.0, 0.0, 0.0]))
+    elif kind != 'none':
+        raise ValueError(f"Unknown dynamics.kick.type {kind!r}; use none, quadrupole, "
+                         f"monopole, isovector_dipole or boost.")
+
+    print(f"TDHF: {config.n_steps} steps of {config.dt} fm/c, kick: {kind}")
+    print(f"{'t (fm/c)':>10} {'E (MeV)':>14} {'dE/E':>11} {'Q20 (fm^2)':>12} {'r2_int':>10}")
+    for rec in td.iterate():
+        print(f"{rec['time']:10.2f} {rec['E']:14.6f} {rec['dE_rel']:+11.3e} "
+              f"{rec['Q20']:12.4f} {rec['r2_int']:10.5f}")
+
+    if run_dir is not None:
+        h = td.history_arrays()
+        cols = ['time', 'E', 'dE_rel', 'ortho', 'A', 'cm_x', 'cm_y', 'cm_z',
+                'r2', 'r2_int', 'Q20', 'Q22']
+        np.savetxt(run_dir / "tdhf_history.dat", np.column_stack([h[c] for c in cols]),
+                   header=" ".join(cols), fmt="%.10e")
+        print(f"TDHF history saved to: {run_dir / 'tdhf_history.dat'}")
 
 
 def _save_summary(calc, results, config, output_dir):

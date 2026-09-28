@@ -85,6 +85,9 @@ class SolverState:
     converged: bool
     efluct: float          # Convergence measure
     x0dmp: float = 0.45   # Current gradient step damping (tracks tvaryx_0 adaptation)
+    # The Hamiltonian the state was relaxed in (set by run_hfb on return). Time
+    # evolution must use this same force to start from a stationary state.
+    force: Optional[Force] = None
     
     @property
     def nstates(self) -> int:
@@ -145,6 +148,10 @@ class SolverConfig:
     # Adaptive step (tvaryx_0): triple x0dmp before main loop, adapt each iteration
     # Matches legacy static.tvaryx_0 behavior
     tvaryx_0: bool = field(default=False, metadata=dict(static=True))
+
+    # Reduce densities over states in chunks of this size (0 = all at once).
+    # Lowers peak memory for large bases at a small cost in speed.
+    density_chunk: int = field(default=0, metadata=dict(static=True))
 
     # Output
     output_interval: int = 5
@@ -362,7 +369,7 @@ def create_initial_state(
     )
 
 
-def compute_densities_from_state(state: SolverState, grid: Grid) -> Densities:
+def compute_densities_from_state(state: SolverState, grid: Grid, chunk: int = 0) -> Densities:
     """Compute densities from current wavefunctions and occupations."""
     return compute_densities(
         state.psi,
@@ -372,6 +379,7 @@ def compute_densities_from_state(state: SolverState, grid: Grid) -> Densities:
         state.wstates,
         state.isospin,
         grid,
+        chunk=chunk,
     )
 
 
@@ -867,7 +875,8 @@ def hfb_iteration(
 
     # 4. Compute densities
     densities = compute_densities(
-        psi_new, wocc, wguv, pairwg, wstates, state.isospin, grid
+        psi_new, wocc, wguv, pairwg, wstates, state.isospin, grid,
+        chunk=config.density_chunk,
     )
 
     state = dataclasses.replace(state, densities=densities)
@@ -1068,9 +1077,7 @@ def run_hfb(
     
     # Initialize state
     if initial_state is None:
-        # The neutron block MUST have exactly npsi_n states: every array below
-        # is split at npsi_n, so any other count mixes protons into the
-        # neutron block (or vice versa).
+        # Exactly npsi_n neutron states: every array below is split at npsi_n.
         nstates_n = npsi_n
         nstates_p = max(int(round(npsi_n * nucleus_z / max(nucleus_n, 1))),
                         nucleus_z + 10)
@@ -1085,7 +1092,8 @@ def run_hfb(
             seed=seed,
         )
     else:
-        state = initial_state
+        # A previous run's force is replaced by this run's on return.
+        state = dataclasses.replace(initial_state, force=None)
         if state.constraint_state is None:
             state = dataclasses.replace(state, constraint_state=constraint_state)
 
@@ -1107,7 +1115,7 @@ def run_hfb(
 
 
     # ── Step 2: densities + mean field ───────────────────────────────────────
-    initial_densities = compute_densities_from_state(state, grid)
+    initial_densities = compute_densities_from_state(state, grid, config.density_chunk)
     state = dataclasses.replace(state, densities=initial_densities)
 
 
@@ -1156,9 +1164,7 @@ def run_hfb(
 
     # ── Step 3 (continued): pairing on initial sp_energy ────────────────────
     # FORTRAN: IF(ipair/=0) CALL pair  (after initial grstep, before 2nd diagstep)
-    # Guarded: run unconditionally, this overwrote an ipair == 0 calculation's
-    # sharp 0/1 occupations with BCS ones smeared by the 11.2/sqrt(A) gap
-    # estimate, and the no-pairing main loop then carried them forward.
+    # Without pairing the sharp 0/1 filling from create_initial_state is kept.
     if use_pairing:
         initial_deltaf = compute_pairing_gaps(
             state.psi, state.meanfield.v_pair,
@@ -1177,7 +1183,6 @@ def run_hfb(
             pairing=initial_pairing,
         )
     else:
-        # Keep the sharp filling from create_initial_state.
         wocc, wguv, pairwg, wstates = state.wocc, state.wguv, state.pairwg, state.wstates
 
 
@@ -1240,7 +1245,8 @@ def run_hfb(
     # ── Main iteration loop ───────────────────────────────────────────────────
     start_time = time.time()
 
-    print_sinfo(state.energies, iteration=0, pairing=state.pairing)
+    if config.verbose:
+        print_sinfo(state.energies, iteration=0, pairing=state.pairing)
 
     current_x0dmp = config.x0dmp
     state = dataclasses.replace(state, x0dmp=current_x0dmp)
@@ -1251,7 +1257,8 @@ def run_hfb(
     # Also sets up adaptive x0dmp state.
     if config.tvaryx_0:
         current_x0dmp = config.x0dmp * 3.0
-        print(f"tvaryx_0: x0dmp set to {current_x0dmp:.4f} (3 × {config.x0dmp:.4f})")
+        if config.verbose:
+            print(f"tvaryx_0: x0dmp set to {current_x0dmp:.4f} (3 × {config.x0dmp:.4f})")
     # Legacy initializes efluct1prev/efluct2prev/ehfprev to 0.0 (energies.py:61-67)
     prev_efluct1 = 0.0
     prev_efluct2 = 0.0
@@ -1277,9 +1284,6 @@ def run_hfb(
             tdiag = True
 
         use_lagrange = (not tbcs) and (python_iter > 1)
-
-        if python_iter <= 3:
-            print(f"ITER {python_iter} START tbcs={tbcs}  tdiag={tdiag}  use_lagrange={use_lagrange}")
 
         need_output = config.verbose and (i + 1) % config.output_interval == 0
         need_sinfo = config.verbose and (i + 1) % config.sinfo_interval == 0
@@ -1392,7 +1396,7 @@ def run_hfb(
         )
         state = dataclasses.replace(state, energies=final_energies)
 
-    return state
+    return dataclasses.replace(state, force=force)
 
 @partial(jax.jit, static_argnums=(4, 5, 10, 11))
 def diagstep(

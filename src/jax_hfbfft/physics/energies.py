@@ -38,7 +38,7 @@ class Energies:
     ehf3: float       # t3 (density-dependent) contribution
     ehfls: float      # Spin-orbit contribution (time-even)
     ehflsodd: float   # Spin-orbit contribution (time-odd)
-    ehf_odd: float    # Time-odd spin/T-density energy (b0, b1, b2 terms; zero in even-even)
+    ehf_odd: float    # Time-odd spin-channel energy (c_s, c_ds, c_sDs terms; zero by default)
     ehfc: float       # Coulomb energy
     ecorc: float      # Exchange correlation
     ehfint: float     # Total integrated energy
@@ -161,7 +161,7 @@ def compute_integrated_energy(
         Energies object with all contributions.
         ehf and tke are correctly populated when wocc/wstates/sp_kinetic are given.
     """
-    _RF = 1.0e-25 #rho floor for gradient stability
+    rho_floor = 1.0e-25  # keeps rho^alpha differentiable where rho = 0
     dtypes = get_dtypes()
     wxyz = grid.wxyz
     
@@ -193,17 +193,17 @@ def compute_integrated_energy(
     
     # C^rho contributions (alternative representation)
     ehfCrho0 = wxyz * jnp.sum(
-        (force.Crho0 + force.Crho0D * jnp.maximum(rho0,_RF)**force.power) * rho0**2
+        (force.Crho0 + force.Crho0D * jnp.maximum(rho0, rho_floor)**force.power) * rho0**2
     )
     ehfCrho1 = wxyz * jnp.sum(
-        (force.Crho1 + force.Crho1D * jnp.maximum(rho0,_RF)**force.power) * rho1**2
+        (force.Crho1 + force.Crho1D * jnp.maximum(rho0, rho_floor)**force.power) * rho1**2
     )
     
     # =========================================================================
     # t3 (density-dependent) contribution
     # =========================================================================
     ehf3 = wxyz * jnp.sum(
-        jnp.maximum(rho_tot,_RF)**force.power *  
+        jnp.maximum(rho_tot, rho_floor)**force.power *
         (force.b3 * rho_tot**2 - force.b3p * (rho_p**2 + rho_n**2)) / 3.0
     )
     # Rearrangement correction: e3corr = -(power/2)*ehf3
@@ -284,19 +284,17 @@ def compute_integrated_energy(
     ehfls = ehfls + ehflsodd
 
     # =========================================================================
-    # Spin-energy (time-odd) contribution: (b0, b1, b2 terms)
+    # Time-odd spin-channel energy: c_s s^2, c_ds rho^alpha s^2, c_sDs s.Lap(s)
     # =========================================================================
     s_n = densities.sdens[0]   # (3, nx, ny, nz)
     s_p = densities.sdens[1]
     s_0 = s_n + s_p
-
-    # Time-odd spin energy
     s_1 = s_n - s_p
 
     s_0_sq = jnp.sum(s_0**2, axis=0)
     s_1_sq = jnp.sum(s_1**2, axis=0)
 
-    rho_tot_pow = jnp.maximum(densities.rho[0] + densities.rho[1], _RF) ** force.power
+    rho_tot_pow = jnp.maximum(densities.rho[0] + densities.rho[1], rho_floor) ** force.power
     ehf_odd_s2 = wxyz * jnp.sum(
         (force.c_s0 + force.c_ds0 * rho_tot_pow) * s_0_sq
         + (force.c_s1 + force.c_ds1 * rho_tot_pow) * s_1_sq
@@ -338,7 +336,7 @@ def compute_integrated_energy(
     # Center-of-mass correction (simple estimate)
     # =========================================================================
     e_zpe = jnp.where(
-        ((force.zpe == 1) | (force.zpe == 3)) & (mass_number > 1),   # 3: estimate until the final microscopic E_cm
+        (force.zpe == 1) & (mass_number > 1),
         17.3 / jnp.maximum(1.0, mass_number)**0.2,
         0.0
     )
@@ -347,7 +345,7 @@ def compute_integrated_energy(
     # Total integrated energy (density functional)
     epair_arr = pairing_energy if pairing_energy is not None else jnp.zeros(2, dtype=dtypes.float)
     epair_total = jnp.sum(epair_arr)
-    # Current (j^2) energy
+    # Current (j^2) energy: the Galilean partner of the rho*tau terms
     ehf_curr = ehfCj0 + ehfCj1
 
 

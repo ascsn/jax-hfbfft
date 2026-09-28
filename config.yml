@@ -200,6 +200,21 @@ output:
   make_plots: false
 
 # ----------------------------------------------------------------------------
+# TIME-DEPENDENT HARTREE-FOCK (optional)
+# ----------------------------------------------------------------------------
+# After the static calculation, propagate the ground state in real time.
+# Requires force.ipair: 0 (TDHF has no pairing).
+dynamics:
+  enabled: false
+  dt: 0.2              # time step (fm/c)
+  steps: 1000          # number of time steps
+  taylor_order: 6      # order of the Taylor-series propagator
+  diag_interval: 10    # record observables every N steps
+  kick:
+    type: quadrupole   # none, quadrupole, monopole, isovector_dipole, boost
+    eta: 1.0e-3        # kick strength (boost uses k: [kx, ky, kz] in fm^-1)
+
+# ----------------------------------------------------------------------------
 # ADVANCED OPTIONS (usually don't need to change)
 # ----------------------------------------------------------------------------
 advanced:

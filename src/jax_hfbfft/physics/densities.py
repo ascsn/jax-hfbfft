@@ -19,18 +19,6 @@ from typing import Tuple
 from jax_hfbfft.jax_config import get_dtypes
 from jax_hfbfft.core.grid import deriv_x, deriv_y, deriv_z
 
-# State-Reduction Chunking (for Memory Saving)
-_DENSITY_CHUNK = 0
-
-def set_density_chunk(n: int) -> None:
-    #Set the state-chunk size for density reduction
-    global _DENSITY_CHUNK
-    _DENSITY_CHUNK = int(n)
-
-
-def get_density_chunk() -> int:
-    return _DENSITY_CHUNK
-
 
 @jax.tree_util.register_dataclass
 @dataclass
@@ -51,7 +39,6 @@ class Densities:
     current: jax.Array  # Current density (vector)
     sdens: jax.Array    # Spin density (vector)
     sodens: jax.Array   # Spin-orbit density (vector)
-    tdens: jax.Array    # Spin-kinetic density (vector)
     
     @classmethod
     def zeros(cls, nx: int, ny: int, nz: int) -> "Densities":
@@ -67,135 +54,7 @@ class Densities:
             current=jnp.zeros(shape5d, dtype=dtypes.float),
             sdens=jnp.zeros(shape5d, dtype=dtypes.float),
             sodens=jnp.zeros(shape5d, dtype=dtypes.float),
-            tdens=jnp.zeros(shape5d, dtype=dtypes.float),
         )
-
-
-@jax.jit
-def _add_single_state_density(
-    carry: Tuple[jax.Array, ...],
-    state_data: Tuple[jax.Array, float, float, int]
-) -> Tuple[Tuple[jax.Array, ...], None]:
-    """
-    Add contribution from one single-particle state to densities.
-    
-    This is designed to be used with jax.lax.scan for efficiency.
-    
-    Args:
-        carry: (rho, tau, chi, current, sdens, sodens, dx, dy, dz)
-        state_data: (psi, weight, weightuv, iq) - wavefunction and occupation
-        
-    Returns:
-        Updated densities (same tuple structure as carry)
-    """
-    rho, tau, chi, current, sdens, sodens, dx, dy, dz = carry
-    psi, weight, weightuv, iq = state_data
-    
-    # psi has shape (2, nx, ny, nz) - spinor components
-    psi0 = psi[0]  # Spin-up component
-    psi1 = psi[1]  # Spin-down component
-    
-    # Conjugates
-    psi0_conj = jnp.conjugate(psi0)
-    psi1_conj = jnp.conjugate(psi1)
-    
-    # Particle density: rho = sum_sigma |psi_sigma|^2
-    rho = rho.at[iq].add(
-        weight * jnp.real(psi0_conj * psi0 + psi1_conj * psi1)
-    )
-    
-
-    
-    # Spin density (sdens = <psi|sigma|psi>)
-    # s_x = 2 Re(psi0* psi1)
-    sdens = sdens.at[iq, 0].add(2.0 * weight * jnp.real(psi0_conj * psi1))
-    # s_y = 2 Im(psi0* psi1)  
-    sdens = sdens.at[iq, 1].add(2.0 * weight * jnp.imag(psi0_conj * psi1))
-    # s_z = |psi0|^2 - |psi1|^2
-    sdens = sdens.at[iq, 2].add(
-        weight * jnp.real(psi0_conj * psi0 - psi1_conj * psi1)
-    )
-    
-    # Derivatives for kinetic and spin-orbit densities
-    # d/dx
-    dpsi_dx = deriv_x(psi, dx)
-    dpsi0_dx = dpsi_dx[0]
-    dpsi1_dx = dpsi_dx[1]
-    
-    # Kinetic density contribution from x: |d psi / dx|^2
-    tau = tau.at[iq].add(
-        weight * jnp.real(
-            jnp.conjugate(dpsi0_dx) * dpsi0_dx + 
-            jnp.conjugate(dpsi1_dx) * dpsi1_dx
-        )
-    )
-    
-    # Current density x-component: Im(psi* d psi/dx)
-    current = current.at[iq, 0].add(
-        weight * jnp.imag(psi0_conj * dpsi0_dx + psi1_conj * dpsi1_dx)
-    )
-    
-    # Spin-orbit density from x-derivative
-    # J_y contribution from d/dx
-    sodens = sodens.at[iq, 1].add(
-        -weight * jnp.imag(psi0_conj * dpsi0_dx - psi1_conj * dpsi1_dx)
-    )
-    # J_z contribution from d/dx  
-    sodens = sodens.at[iq, 2].add(
-        -weight * jnp.real(psi0 * jnp.conjugate(dpsi1_dx) - psi1 * jnp.conjugate(dpsi0_dx))
-    )
-    
-    # d/dy
-    dpsi_dy = deriv_y(psi, dy)
-    dpsi0_dy = dpsi_dy[0]
-    dpsi1_dy = dpsi_dy[1]
-    
-    tau = tau.at[iq].add(
-        weight * jnp.real(
-            jnp.conjugate(dpsi0_dy) * dpsi0_dy + 
-            jnp.conjugate(dpsi1_dy) * dpsi1_dy
-        )
-    )
-    
-    current = current.at[iq, 1].add(
-        weight * jnp.imag(psi0_conj * dpsi0_dy + psi1_conj * dpsi1_dy)
-    )
-    
-    # Spin-orbit from y-derivative
-    sodens = sodens.at[iq, 0].add(
-        weight * jnp.imag(psi0_conj * dpsi0_dy - psi1_conj * dpsi1_dy)
-    )
-    sodens = sodens.at[iq, 2].add(
-        -weight * jnp.imag(psi1_conj * dpsi0_dy + psi0_conj * dpsi1_dy)
-    )
-    
-    # d/dz
-    dpsi_dz = deriv_z(psi, dz)
-    dpsi0_dz = dpsi_dz[0]
-    dpsi1_dz = dpsi_dz[1]
-    
-    tau = tau.at[iq].add(
-        weight * jnp.real(
-            jnp.conjugate(dpsi0_dz) * dpsi0_dz + 
-            jnp.conjugate(dpsi1_dz) * dpsi1_dz
-        )
-    )
-    
-    current = current.at[iq, 2].add(
-        weight * jnp.imag(psi0_conj * dpsi0_dz + psi1_conj * dpsi1_dz)
-    )
-    
-    # Spin-orbit from z-derivative
-    # J_x from z: Re(psi0 * conj(dpsi1) - psi1 * conj(dpsi0))
-    sodens = sodens.at[iq, 0].add(
-        weight * jnp.real(psi0 * jnp.conjugate(dpsi1_dz) - psi1 * jnp.conjugate(dpsi0_dz))
-    )
-    # J_y from z: -Im(psi0 * conj(dpsi1) + psi1 * conj(dpsi0))
-    sodens = sodens.at[iq, 1].add(
-        -weight * jnp.imag(psi0 * jnp.conjugate(dpsi1_dz) + psi1 * jnp.conjugate(dpsi0_dz))
-    )
-    
-    return (rho, tau, chi, current, sdens, sodens, dx, dy, dz), None
 
 
 def compute_densities(
@@ -206,12 +65,13 @@ def compute_densities(
     wstates: jax.Array,
     isospin: jax.Array,
     grid,
+    chunk: int = 0,
 ) -> Densities:
     """
     Compute all nuclear densities from wavefunctions.
-    
+
     Uses fully vectorized operations for GPU efficiency.
-    
+
     Args:
         psi: Wavefunctions array with shape (nstates, 2, nx, ny, nz)
         wocc: Occupation weights (BCS v^2) with shape (nstates,)
@@ -219,14 +79,17 @@ def compute_densities(
         pairwg: Pairing cutoff weights with shape (nstates,)
         isospin: Isospin indices (0=neutron, 1=proton) with shape (nstates,)
         grid: Grid object with dx, dy, dz
-        
+        chunk: If > 0, reduce over states in chunks of this size. Peak memory
+            for the per-state intermediates then scales with `chunk` instead of
+            the number of states, at a small cost in speed.
+
     Returns:
         Densities object containing all computed densities
     """
     return _compute_densities_vectorized(
         psi, wocc, wguv, pairwg, wstates, isospin,
         grid.dx, grid.dy, grid.dz, grid.nx, grid.ny, grid.nz,
-        _DENSITY_CHUNK,
+        int(chunk),
     )
 
 
@@ -320,72 +183,51 @@ def _compute_densities_vectorized(
         
         sodens_contrib = jnp.stack([sodens_x, sodens_y, sodens_z], axis=0)
 
-        # Spin-kinetic density T
-        # T_x = 2*Re[Σ_α (∂_α ψ_↑)* (∂_α ψ_↓)]  (σ_x: off-diagonal real)
-        # T_y = 2*Im[Σ_α (∂_α ψ_↑)* (∂_α ψ_↓)]  (σ_y: off-diagonal imag)
-        # T_z = Σ_α (|∂_α ψ_↑|² - |∂_α ψ_↓|²)   (σ_z: diagonal)
-        grad_cross = (jnp.conj(dpsi0_dx)*dpsi1_dx +
-                      jnp.conj(dpsi0_dy)*dpsi1_dy +
-                      jnp.conj(dpsi0_dz)*dpsi1_dz)
-        tdens_x = weight * 2.0 * jnp.real(grad_cross)
-        tdens_y = weight * 2.0 * jnp.imag(grad_cross)
-        tdens_z = weight * jnp.real(
-            jnp.conj(dpsi0_dx)*dpsi0_dx - jnp.conj(dpsi1_dx)*dpsi1_dx +
-            jnp.conj(dpsi0_dy)*dpsi0_dy - jnp.conj(dpsi1_dy)*dpsi1_dy +
-            jnp.conj(dpsi0_dz)*dpsi0_dz - jnp.conj(dpsi1_dz)*dpsi1_dz
-        )
-        tdens_contrib = jnp.stack([tdens_x, tdens_y, tdens_z], axis=0)
+        return rho_contrib, tau_contrib, chi_contrib, current_contrib, sdens_contrib, sodens_contrib
 
-        return rho_contrib, tau_contrib, chi_contrib, current_contrib, sdens_contrib, sodens_contrib, tdens_contrib
-
-    #Chunking- buys ~50-100x memory savings by breaking down densities into chunks
     if chunk <= 0 or chunk >= nstates:
         # Vectorize over states
-        all_rho, all_tau, all_chi, all_current, all_sdens, all_sodens, all_tdens = jax.vmap(
+        all_rho, all_tau, all_chi, all_current, all_sdens, all_sodens = jax.vmap(
             single_state_densities
         )(psi, weights, weightsuv)
         # Shapes: all_rho is (nstates, nx, ny, nz), all_current is (nstates, 3, nx, ny, nz)
-    
+
         # Reduce by isospin using segment_sum
         # isospin is (nstates,) with values 0 or 1
         # We need to sum contributions for each isospin separately
-    
+
         # Create masks for each isospin
         neut_mask = (isospin == 0)[:, None, None, None]  # (nstates, 1, 1, 1)
         prot_mask = (isospin == 1)[:, None, None, None]
-    
+
         # Sum for each isospin
         rho_n = jnp.sum(all_rho * neut_mask, axis=0)
         rho_p = jnp.sum(all_rho * prot_mask, axis=0)
         rho = jnp.stack([rho_n, rho_p], axis=0)
-    
+
         tau_n = jnp.sum(all_tau * neut_mask, axis=0)
         tau_p = jnp.sum(all_tau * prot_mask, axis=0)
         tau = jnp.stack([tau_n, tau_p], axis=0)
-    
+
         chi_n = jnp.sum(all_chi * neut_mask, axis=0)
         chi_p = jnp.sum(all_chi * prot_mask, axis=0)
         chi = jnp.stack([chi_n, chi_p], axis=0)
-    
+
         # For vector quantities, expand mask appropriately
         neut_mask_vec = (isospin == 0)[:, None, None, None, None]  # (nstates, 1, 1, 1, 1)
         prot_mask_vec = (isospin == 1)[:, None, None, None, None]
-    
+
         current_n = jnp.sum(all_current * neut_mask_vec, axis=0)
         current_p = jnp.sum(all_current * prot_mask_vec, axis=0)
         current = jnp.stack([current_n, current_p], axis=0)
-    
+
         sdens_n = jnp.sum(all_sdens * neut_mask_vec, axis=0)
         sdens_p = jnp.sum(all_sdens * prot_mask_vec, axis=0)
         sdens = jnp.stack([sdens_n, sdens_p], axis=0)
-    
+
         sodens_n = jnp.sum(all_sodens * neut_mask_vec, axis=0)
         sodens_p = jnp.sum(all_sodens * prot_mask_vec, axis=0)
         sodens = jnp.stack([sodens_n, sodens_p], axis=0)
-
-        tdens_n = jnp.sum(all_tdens * neut_mask_vec, axis=0)
-        tdens_p = jnp.sum(all_tdens * prot_mask_vec, axis=0)
-        tdens = jnp.stack([tdens_n, tdens_p], axis=0)
 
     else:
         fdt = dtypes.float
@@ -423,13 +265,12 @@ def _compute_densities_vectorized(
                 return t + jnp.stack([jnp.sum(x * mv0, axis=0),
                                       jnp.sum(x * mv1, axis=0)], axis=0)
 
-            t_rho, t_tau, t_chi, t_cur, t_sd, t_so, t_td = carry
+            t_rho, t_tau, t_chi, t_cur, t_sd, t_so = carry
             return (acc_s(t_rho, c[0]), acc_s(t_tau, c[1]), acc_s(t_chi, c[2]),
-                    acc_v(t_cur, c[3]), acc_v(t_sd, c[4]), acc_v(t_so, c[5]),
-                    acc_v(t_td, c[6])), None
+                    acc_v(t_cur, c[3]), acc_v(t_sd, c[4]), acc_v(t_so, c[5])), None
 
-        (rho, tau, chi, current, sdens, sodens, tdens), _ = jax.lax.scan(
-            _body, (zs, zs, zs, zv, zv, zv, zv), (psi_c, w_c, wuv_c, iso_c))
+        (rho, tau, chi, current, sdens, sodens), _ = jax.lax.scan(
+            _body, (zs, zs, zs, zv, zv, zv), (psi_c, w_c, wuv_c, iso_c))
 
     return Densities(
         rho=rho,
@@ -438,7 +279,6 @@ def _compute_densities_vectorized(
         current=current,
         sdens=sdens,
         sodens=sodens,
-        tdens=tdens,
     )
 
 

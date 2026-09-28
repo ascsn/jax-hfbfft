@@ -43,6 +43,8 @@ from jax_hfbfft.core.nucleus import Nucleus
 from jax_hfbfft.core.force import Force
 from jax_hfbfft.core.constraint import Constraint
 from jax_hfbfft.core.grid import Grid
+from jax_hfbfft.core.tdhf import TDHF
+from jax_hfbfft.physics.dynamics import TDConfig
 
 # Configuration utilities
 from jax_hfbfft.config import Config
@@ -57,6 +59,8 @@ __all__ = [
     "Force",
     "Constraint",
     "Grid",
+    "TDHF",
+    "TDConfig",
     # Configuration
     "Config",
     # Force presets

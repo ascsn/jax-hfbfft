@@ -80,7 +80,7 @@ class TestEnergies:
         dtypes = get_dtypes()
         energies = Energies(
             ehft=10.0, ehf0=20.0, ehf1=5.0, ehf2=-3.0, ehf3=15.0,
-            ehfls=2.0, ehflsodd=1.0, ehfc=8.0, ecorc=0.5, ehfint=-100.0,
+            ehfls=2.0, ehflsodd=1.0, ehf_odd=0.0, ehfc=8.0, ecorc=0.5, ehfint=-100.0,
             ehf=-98.0, tke=50.0, e3corr=-5.0, e_zpe=1.0,
             efluct1=jnp.zeros(1, dtype=dtypes.float),
             efluct1q=jnp.zeros(2, dtype=dtypes.float),

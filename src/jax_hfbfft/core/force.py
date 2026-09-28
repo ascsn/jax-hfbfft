@@ -12,6 +12,9 @@ from typing import Optional, Dict, Any, Tuple
 from pathlib import Path
 import yaml
 
+# Nuclear saturation density (fm^-3), the reference for surface/mixed pairing.
+RHO_SAT = 0.16
+
 
 @jax.tree_util.register_dataclass
 @dataclass
@@ -79,10 +82,6 @@ class Force:
     pair_cutoff: Optional[jax.Array] = None  # Energy cutoff for pairing
     state_cutoff: Optional[jax.Array] = None  # State cutoff
     softcut_range: float = 0.1  # Soft cutoff width parameter
-    pair_active_count: Optional[jax.Array] = None #Pairing-Active-Space cutoff
-    pairing_reg_cutoff: Optional[jax.Array] = None #Bulgac-Yu regularization cutoff
-    pair_active_adaptive : bool = False #Pairing active space cutoff flag
-    pairing_smear_width: Optional[jax.Array] = None #Degenerate-cluster smearing width
     tbcs: bool = False  # Use BCS approximation
     
     # Physical constants
@@ -100,14 +99,14 @@ class Force:
     b3p: float = 0.0
     b4: float = 0.0
 
-    # Time-odd spin-channel coupling constants
+    # Time-odd spin-channel couplings (all zero by default)
+    c_s0: float = 0.0    # s^2, isoscalar
+    c_s1: float = 0.0    # s^2, isovector
+    c_ds0: float = 0.0   # rho^alpha s^2, isoscalar
+    c_ds1: float = 0.0   # rho^alpha s^2, isovector
+    c_sDs0: float = 0.0  # s.Lap(s), isoscalar
+    c_sDs1: float = 0.0  # s.Lap(s), isovector
 
-    c_s0: float = 0.0   #s^2, isoscalar
-    c_s1: float = 0.0   #s^2, isovector
-    c_sDs0: float = 0.0 #s.Lap(s), isoscalar
-    c_sDs1: float = 0.0 #s.Lap(s), isovector
-    c_ds0: float = 0.0  #rho^sigma s^2, isoscalar
-    c_ds1: float = 0.0  #rho^sigma s^2, isovector
     # Slater determinant parameter
     slate: float = 0.0
     
@@ -132,8 +131,6 @@ class Force:
             object.__setattr__(self, 'pair_cutoff', jnp.array([0.0, 0.0]))
         if self.state_cutoff is None:
             object.__setattr__(self, 'state_cutoff', jnp.array([0.0, 0.0]))
-        if self.pairing_smear_width is None:
-            object.__setattr__(self, 'pairing_smear_width', jnp.array([0.0, 0.0]))
         if self.h2m is None:
             object.__setattr__(self, 'h2m', jnp.array([self.h2ma, self.h2ma]))
     
@@ -208,6 +205,8 @@ class Force:
             'power': force_params.get('power', 1.0),
             'c_s0': force_params.get('c_s0', 0.0),
             'c_s1': force_params.get('c_s1', 0.0),
+            'c_ds0': force_params.get('c_ds0', 0.0),
+            'c_ds1': force_params.get('c_ds1', 0.0),
             'c_sDs0': force_params.get('c_sDs0', 0.0),
             'c_sDs1': force_params.get('c_sDs1', 0.0),
         }
@@ -306,10 +305,6 @@ class Force:
         tbcs: Optional[bool] = None,
         pair_cutoff: Optional[Tuple[float, float]] = None,
         state_cutoff: Optional[Tuple[float, float]] = None,
-        pair_active_count: Optional[Tuple[int, int]] = None,
-        pairing_reg_cutoff: Optional[Tuple[float, float]] = None,
-        pair_active_adaptive: Optional[bool] = None,
-        pairing_smear_width: Optional[Tuple[float, float]] = None,
     ) -> "Force":
         """
         Create a new Force with modified pairing parameters.
@@ -322,15 +317,7 @@ class Force:
             tbcs: Use BCS approximation
             pair_cutoff: Energy cutoff (neutron, proton) in MeV
             state_cutoff: State cutoff (neutron, proton) in MeV
-            pair_active_count: Hard state-COUNT cutoff (neutron, proton) for
-                the pairing-active space
-            pairing_reg_cutoff: Bulgac-Yu regularization ecut (neutron, proton)
-                in MeV
-            pair_active_adaptive: Derive pair_active_count per isospin from
-                sp_energy spectrum structure
-            pairing_smear_width: Degnerate-cluster smearing width (neutron, 
-                proton) in MeV
-            
+
         Returns:
             New Force with updated pairing parameters
         """
@@ -351,37 +338,27 @@ class Force:
             updates['pair_cutoff'] = jnp.array(pair_cutoff)
         if state_cutoff is not None:
             updates['state_cutoff'] = jnp.array(state_cutoff)
-        if pair_active_count is not None:
-            updates['pair_active_count'] = jnp.array(pair_active_count)
-        if pairing_reg_cutoff is not None:
-            updates['pairing_reg_cutoff'] = jnp.array(pairing_reg_cutoff)
-        if pair_active_adaptive is not None:
-            updates['pair_active_adaptive'] = pair_active_adaptive
-        if pairing_smear_width is not None:
-            updates['pairing_smear_width'] = jnp.array(pairing_smear_width)
         
         return dataclasses.replace(self, **updates)
 
-    RHO_SAT = 0.16 # Reference saturation density, fm^-3
-
-    def with_pairing_type(self,kind: str, v0: float = 362.0) -> "Force":
+    def with_pairing_type(self, kind: str, v0: float = 362.0) -> "Force":
         """
-        Set density dependence of delta pairing interaction
-
+        Create a new Force with a density-dependent delta pairing interaction.
         Args:
-            kind: 'volume', 'surface', or 'mixed'.
+            kind: 'volume' (no density dependence), 'surface' (rho0pr = rho_sat)
+                or 'mixed' (rho0pr = 2 rho_sat).
             v0: Pairing strength for both isospins (MeV fm^3).
         Returns:
-            New Force with ipair=6 (DDDI) and requested pairing interaction
+            New Force with ipair=6 (DDDI) and the requested rho0pr.
         """
         import dataclasses
         kind = kind.lower()
         if kind == 'volume':
-            rho0pr = 1.0e30       # bracket -> 1 everywhere
+            rho0pr = 1.0e30  # makes 1 - rho/rho0pr equal to 1 everywhere
         elif kind == 'surface':
-            rho0pr = self.RHO_SAT
+            rho0pr = RHO_SAT
         elif kind == 'mixed':
-            rho0pr = 2.0 * self.RHO_SAT
+            rho0pr = 2.0 * RHO_SAT
         else:
             raise ValueError(
                 f"Unknown pairing type {kind!r}. Use 'volume', 'surface', or 'mixed'."
@@ -394,28 +371,33 @@ class Force:
         self,
         c_s0: float = 0.0,
         c_s1: float = 0.0,
+        c_ds0: float = 0.0,
+        c_ds1: float = 0.0,
         c_sDs0: float = 0.0,
         c_sDs1: float = 0.0,
     ) -> "Force":
         """
-        Create Force with time-odd spin-channel couplings enabled.
+        Create a new Force with explicit time-odd spin-channel couplings.
+
         Args:
             c_s0, c_s1: s^2 couplings, isoscalar / isovector (MeV fm^3)
+            c_ds0, c_ds1: rho^alpha s^2 couplings, isoscalar / isovector
             c_sDs0, c_sDs1: s.Lap(s) couplings, isoscalar / isovector (MeV fm^5)
 
         Returns:
-            Force with the time-odd couplings set.
+            New Force with all six couplings set (unspecified ones to zero).
         """
         import dataclasses
 
         return dataclasses.replace(
-            self, c_s0=c_s0, c_s1=c_s1, c_sDs0=c_sDs0, c_sDs1=c_sDs1,
+            self, c_s0=c_s0, c_s1=c_s1, c_ds0=c_ds0, c_ds1=c_ds1,
+            c_sDs0=c_sDs0, c_sDs1=c_sDs1,
         )
 
     def with_time_odd_from_skyrme(self) -> "Force":
         """
-        Derive the time-odd spin couplings from force parameters.
-        (Taken from HFBTHO's `hfbtho_unedf.f90::C_from_t`)
+        Create a new Force with the time-odd spin couplings implied by the
+        Skyrme t/x parameters (as in HFBTHO's hfbtho_unedf.f90, C_from_t).
 
         Returns:
             New Force with c_s0, c_s1, c_ds0, c_ds1, c_sDs0, c_sDs1 set.
@@ -440,7 +422,6 @@ class Force:
         return any(abs(c) > 0.0 for c in (self.c_s0, self.c_s1, self.c_ds0,
                                           self.c_ds1, self.c_sDs0, self.c_sDs1))
 
-    
     def __str__(self) -> str:
         return f"Force({self.name})"
     

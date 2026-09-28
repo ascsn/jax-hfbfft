@@ -303,7 +303,6 @@ pytest tests/ -v
 ## Development Status
 
 `HFBFFT` is currently under active development. Planned features include:
-- Time-dependent HFB (TDHFB) for nuclear dynamics.
 - Support for a wider range of Skyrme functionals.
 - Advanced constraint options for multi-dimensional potential energy surfaces.
 

@@ -357,7 +357,8 @@ pytest tests/ -v
 
 ## Development Status
 
-- Support for a wider range of energy density functionals.
+`HFBFFT` is currently under active development. Planned features include:
+- Support for a wider range of Skyrme functionals.
 - Advanced constraint options for multi-dimensional potential energy surfaces.
 
 ## Graphical User Interface

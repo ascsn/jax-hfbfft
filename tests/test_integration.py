@@ -32,10 +32,11 @@ class TestLegacyVsModernConsistency:
         # Initialize wavefunctions
         calc_modern.initialize_wavefunctions(method="harmonic_oscillator")
         
-        # Run modern solver (short iteration for CI speed)
+        # Compare converged energies: two different iteration schemes agree
+        # only at convergence, not after a fixed small number of iterations.
         results_modern = calc_modern.run(
-            max_iterations=20,
-            convergence_threshold=1e-4,
+            max_iterations=400,
+            convergence_threshold=1e-5,
             print_interval=5,
             use_legacy=False,
         )
@@ -49,10 +50,13 @@ class TestLegacyVsModernConsistency:
             npsi=(8, 8),
         )
         
-        # Run legacy solver
+        calc_legacy.initialize_wavefunctions(method="harmonic_oscillator")
+
+        # The legacy solver converges more slowly; 400 iterations bring it
+        # within ~2% of the modern result on this grid.
         results_legacy = calc_legacy.run(
-            max_iterations=20,
-            convergence_threshold=1e-4,
+            max_iterations=400,
+            convergence_threshold=1e-5,
             print_interval=5,
             use_legacy=True,
         )
@@ -64,7 +68,7 @@ class TestLegacyVsModernConsistency:
         
         relative_diff = energy_diff / (energy_avg + 1e-10)
         
-        # Check relative difference is reasonable (< 5% for 20 iterations)
+        # Check relative difference is reasonable (< 5%)
         assert relative_diff < 0.05, (
             f"Energy difference too large: modern={results_modern.total_energy:.4f}, "
             f"legacy={results_legacy.total_energy:.4f}, rel_diff={relative_diff:.2%}"

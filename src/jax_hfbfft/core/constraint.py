@@ -144,20 +144,20 @@ def beta_gamma_to_multipoles(
     
     where R₀ = r₀ × A^(1/3) is the nuclear radius parameter.
     
-    For quadrupole deformation:
-    - Q₂₀ = (3/√(5π)) × |β₂| × A^(5/3) × R₀² × cos(γ)
-    - Q₂₂ = (1/√(5π)) × |β₂| × A^(5/3) × R₀² × sin(γ)
-    
+    For quadrupole deformation (targets for Q₂₀ = 2z² - x² - y², Q₂₂ = x² - y²):
+    - Q₂₀ = (3/√(5π)) × β₂ × A × R₀² × cos(γ)
+    - Q₂₂ = (√3/√(5π)) × β₂ × A × R₀² × sin(γ)
+
     Sign convention for β₂:
-    - β₂ > 0: Prolate (elongated, football shape)
-    - β₂ < 0: Oblate (flattened, pancake shape)
-    - Negative β₂ is equivalent to β₂ > 0 with γ = 60°
-    
+    - β₂ > 0, γ = 0: Prolate about the z axis
+    - β₂ < 0, γ = 0: Oblate about the z axis (same as β₂ > 0 with γ = 180°)
+    - β₂ > 0, γ = 60°: Oblate about the y axis
+
     For octupole:
-    - Q₃₀ = (1/√(7π)) × β₃ × A^(7/3) × R₀³
+    - Q₃₀ = (3/√(7π)) × β₃ × A × R₀³
     
     For hexadecapole:
-    - Q₄₀ = (3/√(9π)) × β₄ × A^(3) × R₀⁴
+    - Q₄₀ = (3/√(9π)) × β₄ × A × R₀⁴
     
     Args:
         beta2: Quadrupole deformation parameter
@@ -175,19 +175,19 @@ def beta_gamma_to_multipoles(
     Examples:
         >>> # Prolate quadrupole deformation
         >>> beta_gamma_to_multipoles(beta2=0.3, mass_number=16)
-        {(2, 0): 5.123}
-        
+        {(2, 0): 33.2}
+
         >>> # Oblate (using negative beta)
         >>> beta_gamma_to_multipoles(beta2=-0.25, mass_number=40)
-        {(2, 0): -8.456}
-        
+        {(2, 0): -127.5}
+
         >>> # Triaxial
         >>> beta_gamma_to_multipoles(beta2=0.25, gamma=30, mass_number=40)
-        {(2, 0): 8.456, (2, 2): 4.882}
-        
+        {(2, 0): 110.4, (2, 2): 36.8}
+
         >>> # Octupole deformation (pear shape)
         >>> beta_gamma_to_multipoles(beta3=0.1, mass_number=224)
-        {(3, 0): 15.234}
+        {(3, 0): 5546.7}
     
     Raises:
         ValueError: If mass_number is not provided when beta parameters are given
@@ -203,41 +203,33 @@ def beta_gamma_to_multipoles(
         A = float(mass_number)
         R0 = r0 * A**(1.0/3.0)  # Nuclear radius parameter
     
+    # Targets are for the solver's operators (physics/constraints.py):
+    #   Q20 = 2z^2 - x^2 - y^2,  Q22 = x^2 - y^2,
+    #   Q30 = 2z^3 - 3z(x^2 + y^2),  Q40 = (35z^4 - 30z^2 r^2 + 3r^4) / 4,
+    # i.e. Q_lam0 = sqrt(16 pi / (2 lam + 1)) r^lam Y_lam0, with
+    # beta_lam = 4 pi <r^lam Y_lam0> / (3 A R0^lam).
+
     # Quadrupole deformation (lambda=2)
     if beta2 is not None:
-        # Handle sign convention: negative beta2 = oblate
-        # Convert negative beta2 to positive with gamma shift
-        if beta2 < 0 and (gamma is None or gamma == 0):
-            # Negative beta means oblate (gamma = 60°)
-            beta2_mag = abs(beta2)
-            gamma = 60.0
-        else:
-            beta2_mag = abs(beta2)
-            if gamma is None:
-                gamma = 0.0
-        
-        gamma_rad = np.deg2rad(gamma)
-        
-        # Normalization factors from spherical harmonics
-        # Y_20: sqrt(5/(4π)) → Q_20 factor is 3/sqrt(5π) for Hill-Wheeler
-        # Y_22: sqrt(15/(8π)) → Q_22 factor is 1/sqrt(5π) for Hill-Wheeler
-        factor_base = beta2_mag * A * R0**2
-        
-        Q20 = factor_base * (3.0 / np.sqrt(5.0 * np.pi)) * np.cos(gamma_rad)
-        Q22 = factor_base * (1.0 / np.sqrt(5.0 * np.pi)) * np.sin(gamma_rad)
-        
-        # Apply sign to Q20 (negative beta2 makes Q20 negative for oblate)
-        if beta2 < 0:
-            Q20 = -Q20
-        
+        gamma_rad = np.deg2rad(gamma if gamma is not None else 0.0)
+
+        # To first order in beta the Hill-Wheeler shape has
+        # <x^2 - y^2> / <2z^2 - x^2 - y^2> = tan(gamma) / sqrt(3), the ratio
+        # HFBFFT's reported gamma inverts. A signed beta2 < 0 is
+        # (|beta2|, gamma + 180 deg): oblate about the z axis.
+        factor_base = beta2 * A * R0**2 / np.sqrt(5.0 * np.pi)
+
+        Q20 = factor_base * 3.0 * np.cos(gamma_rad)
+        Q22 = factor_base * np.sqrt(3.0) * np.sin(gamma_rad)
+
         multipoles[(2, 0)] = float(Q20)
         if abs(Q22) > 1e-10:  # Only include Q22 if non-negligible
             multipoles[(2, 2)] = float(Q22)
-    
+
     # Octupole deformation (lambda=3)
     if beta3 is not None:
         factor_base = beta3 * A * R0**3
-        Q30 = factor_base * (1.0 / np.sqrt(7.0 * np.pi))
+        Q30 = factor_base * (3.0 / np.sqrt(7.0 * np.pi))
         multipoles[(3, 0)] = float(Q30)
     
     # Hexadecapole deformation (lambda=4)
@@ -269,9 +261,9 @@ def multipoles_to_beta_gamma(
         Dictionary with keys 'beta2', 'gamma', 'beta3', 'beta4' as available
         
     Examples:
-        >>> moments = {(2, 0): 10.0, (2, 2): 2.0}
+        >>> moments = {(2, 0): 110.4, (2, 2): 36.8}
         >>> multipoles_to_beta_gamma(moments, mass_number=40, r0=1.2)
-        {'beta2': 0.289, 'gamma': 23.4}
+        {'beta2': 0.25, 'gamma': 30.0}
     """
     result = {}
     
@@ -287,7 +279,7 @@ def multipoles_to_beta_gamma(
         
         # Extract beta2 from magnitude
         q20_norm = Q20 / (factor_base * 3.0 / np.sqrt(5.0 * np.pi))
-        q22_norm = Q22 / (factor_base * 1.0 / np.sqrt(5.0 * np.pi))
+        q22_norm = Q22 / (factor_base * np.sqrt(3.0) / np.sqrt(5.0 * np.pi))
         
         beta2 = np.sqrt(q20_norm**2 + q22_norm**2)
         result['beta2'] = float(beta2)
@@ -305,7 +297,7 @@ def multipoles_to_beta_gamma(
     Q30 = multipoles.get((3, 0), 0.0)
     if Q30 != 0.0:
         factor_base = A * R0**3
-        beta3 = Q30 / (factor_base / np.sqrt(7.0 * np.pi))
+        beta3 = Q30 / (factor_base * 3.0 / np.sqrt(7.0 * np.pi))
         result['beta3'] = float(beta3)
     
     # Extract hexadecapole parameter
@@ -372,9 +364,10 @@ class Constraint:
     alpha22_wanted: float = -1e99  # Q22 quadrupole moment target
     
     # Constraint algorithm parameters
-    c0constr: float = 0.8          # Parameter for Q-corrective step
+    c0constr: float = 0.8          # Penalty weight for the multipole constraints
+    c0_cm: float = 0.2             # Penalty weight for the <z> = 0 (Q10) constraint
     d0constr: float = 1e-4         # Small parameter to avoid division by zero
-    qepsconstr: float = 0.3        # Parameter for Lagrange multiplier update
+    qepsconstr: float = 1.0        # Overall gain on the in-loop multiplier update
     dampgamma: float = 1.0         # Damping parameter for masking function
     damprad: float = 6.0           # Damping radius for masking function
     
@@ -505,8 +498,9 @@ class Constraint:
         - β₃: Octupole deformation (pear shape, typical: 0.0-0.2)
         - β₄: Hexadecapole deformation (typical: 0.0-0.1)
         
-        Sign convention: Use β₂ > 0 for prolate or β₂ < 0 for oblate.
-        This is often more intuitive than using γ = 60°.
+        Sign convention: Use β₂ > 0 for prolate or β₂ < 0 for oblate, both
+        about the z axis. β₂ > 0 with γ = 60° is also oblate, but about the
+        y axis.
         
         Args:
             mass_number: Nuclear mass number A (protons + neutrons)
@@ -535,9 +529,6 @@ class Constraint:
             ...     mass_number=40,
             ...     beta2=-0.30
             ... )
-            ...     beta2=0.3,
-            ...     gamma=60
-            ... )
             
             >>> # Triaxial deformation
             >>> c = Constraint.from_beta_gamma(
@@ -565,8 +556,13 @@ class Constraint:
         Notes:
             - The conversion uses R₀ = r₀ × A^(1/3) for the nuclear radius
             - Standard r₀ = 1.2 fm, but can be adjusted (e.g., 1.1-1.3 fm)
-            - For axially symmetric shapes, set gamma=0 (prolate) or gamma=60 (oblate)
+            - For axially symmetric shapes about z, set gamma=0 and use the sign
+              of beta2 (gamma=60 gives an oblate shape about the y axis)
             - For reflection-asymmetric shapes, include beta3 (octupole)
+            - The multipole operators are damped beyond `damprad` (default 6 fm,
+              a light-nucleus value). For heavy or strongly deformed nuclei pass
+              a damprad well past the nuclear surface, up to about half the box
+              length minus 3 fm (run_constrained_scan picks one automatically)
         """
         # Convert beta-gamma to multipoles
         multipoles = beta_gamma_to_multipoles(
@@ -586,46 +582,50 @@ class Constraint:
         )
     
     @classmethod
-    def prolate(cls, beta2: float = 0.3, **kwargs) -> "Constraint":
+    def prolate(cls, mass_number: float, beta2: float = 0.3, **kwargs) -> "Constraint":
         """
-        Create a prolate deformation constraint.
-        
+        Create a prolate deformation constraint (about the z axis).
+
         Args:
+            mass_number: Nuclear mass number A (needed to convert beta2 to Q20)
             beta2: Axial deformation parameter
-            **kwargs: Additional constraint parameters
-            
+            **kwargs: Passed to from_beta_gamma (e.g. r0, damprad)
+
         Returns:
             Constraint object for prolate deformation
         """
-        return cls(alpha20_wanted=beta2, tconstraint=True, **kwargs)
-    
+        return cls.from_beta_gamma(mass_number, beta2=abs(beta2), **kwargs)
+
     @classmethod
-    def oblate(cls, beta2: float = -0.3, **kwargs) -> "Constraint":
+    def oblate(cls, mass_number: float, beta2: float = -0.3, **kwargs) -> "Constraint":
         """
-        Create an oblate deformation constraint.
-        
+        Create an oblate deformation constraint (about the z axis).
+
         Args:
-            beta2: Axial deformation parameter (negative for oblate)
-            **kwargs: Additional constraint parameters
-            
+            mass_number: Nuclear mass number A (needed to convert beta2 to Q20)
+            beta2: Axial deformation parameter (its sign is ignored)
+            **kwargs: Passed to from_beta_gamma (e.g. r0, damprad)
+
         Returns:
             Constraint object for oblate deformation
         """
-        return cls(alpha20_wanted=beta2, tconstraint=True, **kwargs)
-    
+        return cls.from_beta_gamma(mass_number, beta2=-abs(beta2), **kwargs)
+
     @classmethod
     def triaxial(
-        cls, 
-        alpha20: float = 0.3, 
-        alpha22: float = 0.1, 
+        cls,
+        alpha20: float = 0.3,
+        alpha22: float = 0.1,
         **kwargs
     ) -> "Constraint":
         """
-        Create a triaxial deformation constraint.
-        
+        Create a triaxial deformation constraint from raw moment targets.
+
+        For (beta2, gamma) use from_beta_gamma instead.
+
         Args:
-            alpha20: Q20 deformation parameter
-            alpha22: Q22 deformation parameter (non-axial)
+            alpha20: Q20 = <2z^2 - x^2 - y^2> target in fm^2
+            alpha22: Q22 = <x^2 - y^2> target in fm^2
             **kwargs: Additional constraint parameters
             
         Returns:

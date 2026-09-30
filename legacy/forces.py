@@ -1,3 +1,5 @@
+import os
+
 import jax
 import jax.numpy as jnp
 from reader import read_yaml
@@ -58,7 +60,12 @@ class Forces:
 
 
 def init_forces(params, **kwargs):
-    force = read_yaml('_forces.yml').get(kwargs.get('name', 'SLy4'))
+    # A _forces.yml in the working directory wins; otherwise use the repo's
+    forces_file = '_forces.yml'
+    if not os.path.exists(forces_file):
+        forces_file = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                   os.pardir, '_forces.yml')
+    force = read_yaml(forces_file).get(kwargs.get('name', 'SLy4'))
 
     if force is None:
         raise KeyError(f"Force '{force}' not found in the _forces.yml.")

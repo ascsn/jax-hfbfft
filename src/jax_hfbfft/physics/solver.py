@@ -29,6 +29,8 @@ from jax_hfbfft.physics.constraints import (
     ConstraintState,
     build_constraint_state,
     compute_constraint_potential,
+    linear_response,
+    penalty_qcorr,
     update_constraint_state,
 )
 
@@ -148,6 +150,20 @@ class SolverConfig:
     # Adaptive step (tvaryx_0): triple x0dmp before main loop, adapt each iteration
     # Matches legacy static.tvaryx_0 behavior
     tvaryx_0: bool = field(default=False, metadata=dict(static=True))
+    # Lower bound of the adapted x0dmp, as a fraction of x0dmp. Constrained,
+    # deformed solves need a smaller step than the ground state; 1.0 keeps the
+    # legacy range [x0dmp, 5 x0dmp].
+    x0dmp_min_factor: float = field(default=1.0, metadata=dict(static=True))
+    # Start from initial_state.x0dmp instead of 3 x0dmp (for warm-started scans).
+    resume_x0dmp: bool = field(default=False, metadata=dict(static=True))
+
+    # Do not stop on convergence before this many iterations (a warm-started
+    # solve can otherwise stop at iteration 1, before a changed constraint acts).
+    min_iterations: int = field(default=0, metadata=dict(static=True))
+    # Hold the multipliers of driven constraints (nonzero goal) fixed and bound
+    # the solve with the full augmented-Lagrangian penalty; used by
+    # run_constrained_scan. Symmetry constraints (goal 0) keep their feedback.
+    freeze_constraint: bool = field(default=False, metadata=dict(static=True))
 
     # Reduce densities over states in chunks of this size (0 = all at once).
     # Lowers peak memory for large bases at a small cost in speed.
@@ -369,6 +385,35 @@ def create_initial_state(
     )
 
 
+def _apply_constraint(constraint_state, densities, grid: Grid, config: SolverConfig):
+    """
+    Update the constraint multipliers from `densities` and build the constraint
+    potential. Returns (constraint_state, potential); potential is None when
+    there are no constraints.
+
+    With config.freeze_constraint, the multipliers of driven constraints are
+    kept fixed and the potential uses the full-strength penalty (penalty_qcorr):
+    with lambda fixed, the Hamiltonian is fixed and the inner solve converges,
+    and the penalty is what keeps the problem bounded.
+    """
+    if constraint_state is None or constraint_state.constr_field.shape[0] == 0:
+        return constraint_state, None
+    updated = update_constraint_state(
+        constraint_state, densities, grid, config.e0dmp, config.x0dmp,
+    )
+    if not config.freeze_constraint:
+        return updated, compute_constraint_potential(updated, grid)
+    driven = jnp.abs(constraint_state.goal_crank) > 0.0
+    constraint_state = dataclasses.replace(
+        updated,
+        lambda_crank=jnp.where(driven, constraint_state.lambda_crank, updated.lambda_crank),
+    )
+    effective = dataclasses.replace(
+        constraint_state, qcorr=penalty_qcorr(constraint_state, densities, grid),
+    )
+    return constraint_state, compute_constraint_potential(effective, grid)
+
+
 def compute_densities_from_state(state: SolverState, grid: Grid, chunk: int = 0) -> Densities:
     """Compute densities from current wavefunctions and occupations."""
     return compute_densities(
@@ -581,54 +626,43 @@ def orthonormalize_states(psi: jax.Array, npsi_n: int, wxyz: float) -> jax.Array
 
 def apply_preconditioner(
     phi: jax.Array,
-    wocc: jax.Array,
-    wguv_pairwg: jax.Array,
-    isospin: jax.Array,
-    v_pairmax: jax.Array,
     e0dmp: float,
     h2ma: float,
     k2: jax.Array,
-    tbcs: bool = False,
+    wocc: Optional[jax.Array] = None,
+    wguv_pairwg: Optional[jax.Array] = None,
+    isospin: Optional[jax.Array] = None,
+    v_pairmax: Optional[jax.Array] = None,
 ) -> jax.Array:
     """
-    Apply preconditioning (inverse kinetic energy operator) in Fourier space.
-    
-    ps_out = ps_in / (e0dmp + h2m * k^2)
-    
-    This version handles both single wavefunctions and batched wavefunctions.
-    For batched input with shape (nstates, 2, nx, ny, nz), the FFT is applied
-    to the last 3 dimensions efficiently.
-    
+    Apply the gradient-step preconditioner in Fourier space.
+
+    Without pairing inputs this is the BCS form used by the solver,
+        phi_k / (e0dmp + h2ma k^2).
+    With wocc, wguv_pairwg, isospin and v_pairmax (the signed maximum of the
+    pair potential per isospin) it is the HFB form,
+        phi_k / (w (e0dmp + h2ma k^2) + 0.5 w_uv v_pairmax),
+    with both weights floored at 0.1, as in the legacy laplace routine.
+
     Args:
-        phi: Wavefunction(s) to precondition
+        phi: One wavefunction (2, nx, ny, nz) or a batch (nstates, 2, nx, ny, nz)
         e0dmp: Damping energy scale (MeV)
-        h2ma: Kinetic energy coefficient (MeV*fm^2)
-        k2: Precomputed k^2 grid with shape (nx, ny, nz)
-        
+        h2ma: Kinetic energy coefficient (MeV fm^2)
+        k2: k^2 on the grid, shape (nx, ny, nz)
+
     Returns:
-        Preconditioned wavefunction with same shape as phi
+        The preconditioned wavefunction(s), same shape as phi.
     """
-
-    if tbcs or not use_pairing:
-        weight   = jnp.ones(nstates)
-        weightuv = jnp.zeros(nstates)
-        vpmax    = jnp.zeros(nstates)
-    else:
-        weight   = jnp.maximum(wocc, weightmin)
-        weightuv = jnp.maximum(wguv_pairwg, weightmin)
-        vpmax    = v_pairmax[isospin]
-
-    # Broadcast shapes: (nstates, 1, nx, ny, nz)
-    w  = weight[:, None, None, None, None]
-    wu = weightuv[:, None, None, None, None]
-    vp = vpmax[:, None, None, None, None]
-
-
-    # FFT to k-space (operates on last 3 dimensions)
     phi_k = jnp.fft.fftn(phi, axes=(-3, -2, -1))
-    denom = w * (e0dmp + h2ma * k2) + 0.5 * wu * vp   # broadcasts over spin+spatial
-    phi_k = phi_k / denom
-    return jnp.fft.ifftn(phi_k, axes=(-3, -2, -1))
+    denom = e0dmp + h2ma * k2
+    if wocc is not None:
+        if phi.ndim != 5:
+            raise ValueError("The HFB preconditioner needs a batch (nstates, 2, nx, ny, nz).")
+        w = jnp.maximum(wocc, 0.1)[:, None, None, None, None]
+        wu = jnp.maximum(wguv_pairwg, 0.1)[:, None, None, None, None]
+        vp = v_pairmax[isospin][:, None, None, None, None]
+        denom = w * denom + 0.5 * wu * vp
+    return jnp.fft.ifftn(phi_k / denom, axes=(-3, -2, -1))
 
 
 def normalize_states(psi: jax.Array, wxyz: float) -> jax.Array:
@@ -891,18 +925,9 @@ def hfb_iteration(
     )
 
     # Constraint update (if enabled)
-    constraint_state = state.constraint_state
-    if constraint_state is not None and constraint_state.constr_field.shape[0] > 0:
-        constraint_state = update_constraint_state(
-            constraint_state,
-            densities,
-            grid,
-            config.e0dmp,
-            config.x0dmp,
-        )
-        constraint_potential = compute_constraint_potential(constraint_state, grid)
-    else:
-        constraint_potential = None
+    constraint_state, constraint_potential = _apply_constraint(
+        state.constraint_state, densities, grid, config,
+    )
     
     # 5. Coulomb potential
     wcoul = state.wcoul
@@ -1094,8 +1119,15 @@ def run_hfb(
     else:
         # A previous run's force is replaced by this run's on return.
         state = dataclasses.replace(initial_state, force=None)
-        if state.constraint_state is None:
-            state = dataclasses.replace(state, constraint_state=constraint_state)
+        # Install this run's constraint (new goals and fields), keeping the
+        # converged multipliers of the incoming state when they match in shape.
+        old_cs = state.constraint_state
+        if (old_cs is not None
+                and old_cs.lambda_crank.shape == constraint_state.lambda_crank.shape
+                and old_cs.lambda_crank.shape[0] > 0):
+            constraint_state = dataclasses.replace(
+                constraint_state, lambda_crank=old_cs.lambda_crank)
+        state = dataclasses.replace(state, constraint_state=constraint_state)
 
     
     npsi = state.psi.shape[0]
@@ -1124,12 +1156,18 @@ def run_hfb(
         initial_wcoul = solve_poisson(initial_densities.rho[1], state.coulomb_solver, grid)
 
     constraint_state = state.constraint_state
-    constraint_potential = None
-    if constraint_state is not None and constraint_state.constr_field.shape[0] > 0:
-        constraint_state = update_constraint_state(
-            constraint_state, initial_densities, grid, config.e0dmp, config.x0dmp
+    if (config.freeze_constraint and constraint_state is not None
+            and constraint_state.constr_field.shape[0] > 0):
+        # Fix the penalty stiffness for the whole solve, from the starting
+        # density (see constraints.penalty_qcorr).
+        constraint_state = dataclasses.replace(
+            constraint_state,
+            penalty_denom=linear_response(
+                constraint_state, initial_densities, grid, energy_weighted=True),
         )
-        constraint_potential = compute_constraint_potential(constraint_state, grid)
+    constraint_state, constraint_potential = _apply_constraint(
+        constraint_state, initial_densities, grid, config,
+    )
 
     initial_meanfield = compute_skyrme_meanfield(
         initial_densities, force, grid,
@@ -1256,9 +1294,13 @@ def run_hfb(
     # tvaryx_0: triple x0dmp before main loop for faster convergence (legacy behavior)
     # Also sets up adaptive x0dmp state.
     if config.tvaryx_0:
-        current_x0dmp = config.x0dmp * 3.0
+        if (config.resume_x0dmp and initial_state is not None
+                and float(initial_state.x0dmp) > 0.0):
+            current_x0dmp = float(initial_state.x0dmp)
+        else:
+            current_x0dmp = config.x0dmp * 3.0
         if config.verbose:
-            print(f"tvaryx_0: x0dmp set to {current_x0dmp:.4f} (3 × {config.x0dmp:.4f})")
+            print(f"tvaryx_0: x0dmp set to {current_x0dmp:.4f}")
     # Legacy initializes efluct1prev/efluct2prev/ehfprev to 0.0 (energies.py:61-67)
     prev_efluct1 = 0.0
     prev_efluct2 = 0.0
@@ -1322,7 +1364,9 @@ def run_hfb(
                 current_x0dmp = current_x0dmp * 1.005
             else:
                 current_x0dmp = current_x0dmp * 0.8
-            current_x0dmp = float(jnp.clip(current_x0dmp, config.x0dmp, config.x0dmp * 5.0))
+            current_x0dmp = float(jnp.clip(current_x0dmp,
+                                           config.x0dmp * config.x0dmp_min_factor,
+                                           config.x0dmp * 5.0))
             prev_efluct1 = curr_efluct1
             prev_efluct2 = curr_efluct2
             prev_ehf = curr_ehf
@@ -1345,7 +1389,7 @@ def run_hfb(
                   f"fluct = {state.efluct:.2e}, time = {elapsed:.1f}s  "
                   f"Q_xx={Q_xx:.3f} Q_yy={Q_yy:.3f} Q_zz={Q_zz:.3f} fm^2")
         
-        if state.converged:
+        if state.converged and i + 1 >= config.min_iterations:
             # Make sure we have final energy computed
             if not compute_energy:
                 final_energies = compute_integrated_energy(
@@ -1580,3 +1624,286 @@ def diagstep(
     efluct2q  = jnp.stack([e2q_n, e2q_p])
 
     return psi_new, sp_energy, deltaf, lagrange, efluct1q, efluct2q
+
+
+def run_constrained_scan(
+    grid: Grid,
+    force,
+    nucleus_z: int,
+    nucleus_n: int,
+    npsi_n: int,
+    targets,
+    multipole: str = 'Q20',
+    config: Optional[SolverConfig] = None,
+    damprad: Optional[float] = None,
+    dampgamma: float = 0.8,
+    use_coulomb: bool = True,
+    n_outer: int = 8,
+    inner_iters: int = 200,
+    fix_cm: bool = True,
+    axial: bool = True,
+    tol: float = 0.02,
+    inner_quality: float = 1e-2,
+    c0constr: float = 0.8,
+    verbose: bool = True,
+    initial_state: Optional[SolverState] = None,
+):
+    """
+    Constrained solutions at a sequence of multipole moments (a deformation
+    energy curve), by continuation with an outer/inner split.
+
+    OUTER: the multiplier lambda of the driven constraint, updated once per
+    outer step from a converged <Q> by a secant step on the measured response,
+    lambda <- lambda + (Q_goal - Q) / (dQ/dlambda).
+
+    INNER: an SCF solve (run_hfb) with lambda frozen (freeze_constraint), so
+    the Hamiltonian is fixed and the solve converges; the augmented-Lagrangian
+    penalty keeps it bounded. Updating lambda every iteration instead (the
+    in-loop mode) leaves the residual on a plateau set by lambda's motion.
+
+    Safeguards: an inner solve that runs away (density far above saturation,
+    E > 0, efluct > 1, |<Q>| > 5 |goal|) is rejected and lambda halved back
+    toward the best point; points are ranked on convergence first and then on
+    |<Q> - goal|; an unconverged inner solve gets more iterations instead of
+    feeding the secant; the penalty weight is stiffened (and the best point
+    restored) when the residual stops shrinking, which is what carries the
+    scan across barriers where Q(lambda) is not single-valued.
+
+    <z> = 0 is constrained along with the driven multipole (fix_cm), since Q20
+    alone is not translation invariant.
+
+    Nor is a lab-frame moment rotation invariant: a deformed nucleus can meet
+    a Q20 goal by tilting its symmetry axis away from z at no energy cost (the
+    tilted 24Mg ground state, intrinsic Q20 = 112 fm^2, "hits" Q20 = 20 with
+    lambda = 0). For an axial driven multipole (mu = 0) the scan therefore also
+    constrains Q22 = 0 and the principal axes (<xy> = <xz> = <yz> = 0, which
+    include the centre of mass), keeping the shape axial about z (axial).
+
+    Args:
+        targets: moments in fm^lambda, ordered outward from the ground state;
+            each target warm-starts from the previous one.
+        multipole: the driven multipole ('Q20', 'Q22', 'Q30', ...).
+        axial: for a mu = 0 multipole, also constrain Q22 = 0 and the principal
+            axes (see above). Turn off only for shapes that are meant to be
+            non-axial.
+        n_outer: maximum multiplier updates per target.
+        inner_iters: SCF iterations per inner solve (doubled, up to 800, when
+            an inner solve does not converge).
+        tol: fractional accuracy on the moment at which a target is accepted.
+        inner_quality: efluct below which an inner solve counts as converged.
+        c0constr: initial penalty weight; the stiffness is c0constr / (dQ/dlambda).
+            Stiffened adaptively up to 32 when the residual stalls.
+        damprad: radius of the damping mask. The default scales with the
+            largest requested deformation and keeps 3 fm clear of the box edge;
+            the density must stay inside the mask for the moment to be
+            controlled.
+        initial_state: optional converged state to start the first target from.
+
+    Returns:
+        (results, final_state). Each result is a dict with target, achieved,
+        E, lam, efluct, peak_rho, outer (steps used), zcm and the
+        single-particle energies/occupations of that point.
+    """
+    import numpy as np
+    from jax_hfbfft.core.constraint import MULTIPOLE_NAMES
+    from jax_hfbfft.physics.constraints import compute_constraint_expectations
+
+    if config is None:
+        config = SolverConfig()
+    A = nucleus_z + nucleus_n
+    half_box = grid.nx * grid.dx / 2.0 - 3.0
+    if damprad is None:
+        # A prolate shape at beta2 has a long semi-axis of about R0 (1 + 0.75 beta2);
+        # allow ~2 fm of surface beyond it (6.7 fm at beta2 = 0, ~12 fm at 0.6 for 16O).
+        R = 1.2 * A ** (1.0 / 3.0)
+        beta_max = 0.0
+        if len(targets):
+            conv = A * R**2 * 3.0 / np.sqrt(5.0 * np.pi)
+            beta_max = max(abs(float(t)) for t in targets) / conv
+        want = 2.2 * R * (1.0 + 0.75 * beta_max) + 2.0 * min(beta_max / 0.6, 1.0)
+        damprad = min(want, half_box)
+        if verbose and want > half_box:
+            print(f"  WARNING: deformation up to beta2 = {beta_max:.2f} needs a "
+                  f"damping radius of {want:.1f} fm but the box allows "
+                  f"{half_box:.1f} fm; enlarge the grid", flush=True)
+
+    base_inner_cfg = dataclasses.replace(
+        config, max_iterations=inner_iters, freeze_constraint=True, verbose=False,
+        min_iterations=min(30, inner_iters), x0dmp_min_factor=0.25,
+    )
+
+    if verbose:
+        print(f"constrained scan (outer/inner): {multipole} -> {list(targets)}")
+        print(f"  damping radius {damprad:.1f} fm, {n_outer} outer x "
+              f"{inner_iters} inner iterations", flush=True)
+
+    state = initial_state
+    lam = 0.0
+    results = []
+    rho_sat = 0.16
+    lam_mu = MULTIPOLE_NAMES[multipole]
+    # The principal-axes constraints include <x>, <y>, <z> = 0, so they replace Q10.
+    with_axes = axial and lam_mu[1] == 0 and multipole != 'Q10'
+    with_cm = fix_cm and multipole != 'Q10' and not with_axes
+
+    for q in targets:
+        spec = {multipole: float(q)}
+        if with_cm:
+            spec['Q10'] = 0.0
+        if with_axes:
+            spec['Q22'] = 0.0
+        con = Constraint.from_multipoles(spec, principal_axes=with_axes, damprad=damprad,
+                                         dampgamma=dampgamma, c0constr=c0constr)
+        # get_multipole_list sorts by (lambda, mu): find the driven entry.
+        idx = [k for k, _ in con.get_multipole_list()].index(MULTIPOLE_NAMES[multipole])
+        prev = None                          # (lambda, <Q>) of the last converged step
+        best = None                          # (rank key, record, state, lambda)
+        good_state, good_lam = state, lam    # backtracking point
+        step_cap = None
+        degraded = 0
+        c0 = c0constr
+        prev_resid = None
+        inner_cfg = base_inner_cfg
+        for outer in range(n_outer):
+            trial = run_hfb(grid, force, nucleus_z=nucleus_z, nucleus_n=nucleus_n,
+                            npsi_n=npsi_n, config=inner_cfg, constraint=con,
+                            initial_state=state, use_coulomb=use_coulomb)
+            cs = trial.constraint_state
+            got = float(compute_constraint_expectations(cs, trial.densities, grid)[idx])
+            rho = trial.densities.rho[0] + trial.densities.rho[1]
+            zcm = float(jnp.sum(rho * grid.z[None, None, :]) * grid.wxyz
+                        / jnp.maximum(jnp.sum(rho) * grid.wxyz, 1e-12))
+            peak = float(jnp.max(rho))
+            E = float(trial.energies.ehfint)
+            fluct = float(trial.efluct)
+
+            # Reject a runaway inner solve and backtrack halfway to the best point.
+            if (not np.isfinite(E) or peak > 1.5 * rho_sat or fluct > 1.0 or E > 0.0
+                    or abs(got) > 5.0 * max(abs(q), 1.0)):
+                if verbose:
+                    print(f"    outer {outer+1}  lam={lam:9.5f}  rejected "
+                          f"(<Q>={got:.1f}, peak rho={peak:.3f}, E={E:.1f}); "
+                          f"backtracking", flush=True)
+                state, lam = good_state, 0.5 * (lam + good_lam)
+                if (state is not None and state.constraint_state is not None
+                        and state.constraint_state.lambda_crank.shape[0] > idx):
+                    cs0 = dataclasses.replace(
+                        state.constraint_state,
+                        lambda_crank=state.constraint_state.lambda_crank.at[idx].set(lam))
+                    state = dataclasses.replace(state, constraint_state=cs0)
+                step_cap = 0.5 * abs(lam - good_lam) if step_cap is None else 0.5 * step_cap
+                prev = None
+                continue
+
+            state = trial
+            rec = dict(target=float(q), achieved=got, E=E, lam=lam, efluct=fluct,
+                       peak_rho=peak, outer=outer + 1, zcm=zcm,
+                       sp_energy=np.asarray(trial.sp_energy), wocc=np.asarray(trial.wocc),
+                       isospin=np.asarray(trial.isospin))
+
+            # Rank on convergence first, then on the moment.
+            converged = fluct <= inner_quality
+            key = (0 if converged else 1, abs(got - q))
+            if best is None or key < best[0]:
+                best = (key, rec, trial, lam)
+                good_state, good_lam = trial, lam
+            if verbose:
+                print(f"    outer {outer+1}  lam={lam:9.5f}  <Q>={got:8.2f}  "
+                      f"E={E:10.3f}  efluct={fluct:.1e}  <z>={zcm:+6.3f}", flush=True)
+            if abs(got - q) <= tol * max(abs(q), 1.0) and converged:
+                break
+
+            # Stop pushing a target whose solves are degrading after a good point.
+            if best[0][0] == 0 and not converged:
+                degraded += 1
+                if degraded >= 2:
+                    if verbose:
+                        print(f"    inner solves degrading (efluct {fluct:.1e}); "
+                              f"keeping the best point", flush=True)
+                    break
+            else:
+                degraded = 0
+
+            # Only a converged solve feeds the secant; otherwise give the same
+            # lambda more iterations.
+            if not converged:
+                if verbose:
+                    print(f"      efluct {fluct:.1e} > {inner_quality:.1e}; "
+                          f"extending the inner solve", flush=True)
+                inner_cfg = dataclasses.replace(
+                    inner_cfg, max_iterations=min(inner_cfg.max_iterations * 2, 800))
+                prev = None
+                continue
+
+            dQdl = None
+            if (prev is not None and abs(got - prev[1]) > 1e-9
+                    and abs(lam - prev[0]) > 1e-12):
+                dQdl = (got - prev[1]) / (lam - prev[0])
+            if dQdl is None or dQdl <= 0:
+                dQdl = float(linear_response(cs, trial.densities, grid, mass_number=A)[idx])
+            prev = (lam, got)
+
+            # Stiffen the penalty when the residual stops shrinking (harder if
+            # it grew), and restart from the best point with more iterations.
+            resid = abs(got - q)
+            if prev_resid is not None and resid > 0.75 * prev_resid:
+                grew = resid > prev_resid
+                c0 = min(c0 * (4.0 if grew else 2.0), 32.0)
+                con = Constraint.from_multipoles(spec, principal_axes=with_axes,
+                                                 damprad=damprad, dampgamma=dampgamma,
+                                                 c0constr=c0)
+                if best is not None:
+                    state, lam = best[2], best[3]
+                    prev = None
+                degraded = 0
+                inner_cfg = dataclasses.replace(
+                    inner_cfg,
+                    max_iterations=min(inner_cfg.max_iterations * 2, 800),
+                    x0dmp_min_factor=max(inner_cfg.x0dmp_min_factor * 0.5, 0.05),
+                    resume_x0dmp=True,
+                )
+                if verbose:
+                    print(f"      residual {'grew' if grew else 'stalled'} "
+                          f"({prev_resid:.2f} -> {resid:.2f}); penalty weight -> {c0:.1f}",
+                          flush=True)
+                prev_resid = resid
+                continue
+            prev_resid = resid
+
+            # Secant step, bounded so the potential deepens by at most max_dv MeV.
+            op_scale = float(jnp.max(jnp.abs(cs.constr_field[idx])))
+            cap = float(cs.max_dv) / max(op_scale, 1e-12)
+            if step_cap is not None:
+                cap = min(cap, step_cap)
+            lam = lam + float(np.clip((q - got) / dQdl, -cap, cap))
+            cs = dataclasses.replace(cs, lambda_crank=cs.lambda_crank.at[idx].set(lam))
+            state = dataclasses.replace(trial, constraint_state=cs)
+
+        if best is None:
+            if verbose:
+                print(f"  {multipole}={q:8.1f}  failed: every inner solve was "
+                      f"rejected; target skipped", flush=True)
+            state, lam = good_state, good_lam
+            continue
+        _, rec, state, lam = best
+        results.append(rec)
+        if verbose:
+            hit = ("hit" if (abs(rec['achieved'] - q) <= tol * max(abs(q), 1.0)
+                             and rec['efluct'] <= inner_quality) else "short")
+            print(f"  {multipole}={q:8.1f} -> {rec['achieved']:8.2f}  [{hit}]  "
+                  f"E={rec['E']:10.3f}  lam={rec['lam']:8.5f}  efluct={rec['efluct']:.1e}  "
+                  f"peak rho={rec['peak_rho']:.4f}  <z>={rec['zcm']:+6.3f}", flush=True)
+
+    # Consistency check: at a constrained minimum dE/dQ equals lambda.
+    if verbose and len(results) > 1:
+        print("  check: dE/dQ between neighbouring points vs lambda (ratio ~1)")
+        for a, b in zip(results[:-1], results[1:]):
+            dq = b['achieved'] - a['achieved']
+            if abs(dq) > 1e-6:
+                dEdQ = (b['E'] - a['E']) / dq
+                lm = 0.5 * (a['lam'] + b['lam'])
+                ratio = dEdQ / lm if abs(lm) > 1e-9 else float('nan')
+                print(f"    Q ~ {0.5 * (a['achieved'] + b['achieved']):7.2f}   "
+                      f"dE/dQ = {dEdQ:9.5f}   lambda = {lm:9.5f}   ratio {ratio:7.3f}",
+                      flush=True)
+    return results, state

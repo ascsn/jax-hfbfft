@@ -9,7 +9,7 @@ pip install -e ".[viz]"
 
 | Script | What it does |
 |---|---|
-| `collision.py` | Heavy-ion collision of two closed-shell nuclei (default 16O + 16O at E_cm = 34 MeV) |
+| `collision.py` | Heavy-ion collision of two nuclei (default 16O + 16O at E_cm = 34 MeV) |
 | `oscillations.py` | Collective modes of one nucleus: release from a Q20 constraint, giant dipole, quadrupole, monopole |
 | `render_views.py` | Extra views of a saved collision: spacetime diagram, three planes, 3D isosurface, isospin transfer |
 

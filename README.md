@@ -11,6 +11,8 @@
   - **Performance**: Just-In-Time (JIT) compilation via XLA for near-native performance.
   - **Portability**: Runs seamlessly on CPUs, GPUs, and TPUs without code changes.
   - **Differentiability**: Ready for future applications involving automatic differentiation.
+- **Time-Dependent Hartree-Fock (TDHF)**: Real-time propagation of converged static states for collective modes, linear response and heavy-ion collisions (see `examples/tdhf`).
+- **Constrained Calculations**: Multipole constraints (Q10 to Q40) and deformation scans with an outer/inner augmented-Lagrangian solver.
 - **Flexible Configuration**: Easily configure nuclei, forces, and grid parameters using YAML files.
 - **Extensible Architecture**: Designed to be modular, allowing for easy integration of new functionals or physical observables.
 
@@ -19,15 +21,23 @@
 ```
 jax-hfbfft/
 ├── src/jax_hfbfft/       # Modern OOP implementation (use this)
-│   ├── core/             # Core classes (HFBFFT, Force, Nucleus, Grid)
-│   ├── physics/          # Physics modules (densities, meanfield, pairing, etc.)
-│   ├── forces/           # Force parameter definitions
+│   ├── core/             # Core classes (HFBFFT, TDHF, Force, Nucleus, Grid, Constraint)
+│   ├── physics/          # Physics modules (densities, meanfield, pairing, dynamics, etc.)
+│   ├── viz/              # Optional plotting (TDHF renders)
+│   ├── forces/           # Force presets
+│   ├── data/             # Skyrme parameter sets (_forces.yml)
+│   ├── gui/              # Web GUI backend (FastAPI)
 │   ├── utils/            # Utility functions
+│   ├── cli.py            # `hfbfft` command-line interface
 │   ├── jax_config.py     # JAX configuration (64-bit by default)
 │   └── __init__.py       # Package exports
+├── gui-frontend/         # Web GUI frontend (built during pip install)
+├── gui-desktop/          # Electron desktop app
 ├── legacy/               # Archived legacy implementation
 ├── tests/                # Test suite (75 tests)
-├── examples/             # Example scripts
+├── examples/             # Example scripts (TDHF examples in examples/tdhf)
+├── run_hfb.py            # Classic config-file driver
+├── config.yml            # Fully commented configuration template
 └── pyproject.toml        # Package configuration
 ```
 
@@ -40,40 +50,35 @@ jax-hfbfft/
 - `src/jax_hfbfft/physics/pairing.py`: BCS/HFB pairing
 - `src/jax_hfbfft/physics/coulomb.py`: Coulomb potential (FFT-based)
 - `src/jax_hfbfft/physics/energies.py`: Energy functional calculations
+- `src/jax_hfbfft/physics/constraints.py`: Multipole constraints (augmented Lagrangian)
+- `src/jax_hfbfft/physics/dynamics.py`: TDHF time propagation
+- `src/jax_hfbfft/physics/collisions.py`: Initial states for heavy-ion collisions
+- `src/jax_hfbfft/core/tdhf.py`: TDHF class - entry point for time-dependent runs
 
 ## Installation
 
-Ensure you have a modern Python environment. You can install the required dependencies via pip:
+Requires Python 3.9 or newer. The core dependencies are `jax`, `numpy`, `scipy` and `PyYAML`.
 
 ```bash
-pip install -r requirements.txt
-```
-
-Common dependencies include:
-- `jax`
-- `jaxlib`
-- `PyYAML`
-
-## Quick Start
-
-**👉 See the [Quickstart Guide](docs/Quickstart.md) for detailed installation and usage instructions.**
-
-### Installation
-
-```bash
-# Install from source with GUI
-git clone https://github.com/your-org/jax-hfbfft.git
+git clone https://github.com/ascsn/jax-hfbfft.git
 cd jax-hfbfft
+
+# Python API and CLI only
+SKIP_FRONTEND_BUILD=1 pip install -e .
+
+# With the GUI (needs Node.js/npm to build the frontend)
 pip install -e ".[gui]"
 
-# With GPU support (CUDA 12)
-pip install -e ".[gui,cuda]"
+# GPU support (CUDA 12); combine extras as needed, e.g. ".[gui,cuda]"
+pip install -e ".[cuda]"
 
 # Apple Silicon (Metal)
-pip install -e ".[gui,metal]"
+pip install -e ".[metal]"
 ```
 
-**Note:** The frontend automatically builds during installation. Set `SKIP_FRONTEND_BUILD=1` if you only need the Python API.
+Other extras: `viz` (matplotlib, for TDHF renders), `dev` (pytest and linters), `all`.
+
+## Quick Start
 
 ### Command-Line Interface (Recommended for beginners)
 
@@ -91,7 +96,7 @@ hfbfft run
 hfbfft
 ```
 
-See [docs/CLI_WORKFLOW.md](docs/CLI_WORKFLOW.md) for complete CLI documentation.
+`hfbfft init` writes a fully commented `config.yml` template. Other commands: `hfbfft info --forces` lists the available Skyrme forces, `hfbfft info --devices` shows the JAX devices (CPU/GPU), and `hfbfft version`. Run `hfbfft --help` for everything.
 
 ### Python API
 
@@ -130,9 +135,10 @@ This provides the classic HFB code workflow:
 - Run executable
 - Output written to directory with comprehensive result files
 - Easy benchmarking against other codes (HFBTHO, Sky3D, etc.)
-- **Arbitrary multipole constraints** (Q20, Q30, Q40, etc.)
+- **Multipole constraints** (Q20, Q22, Q30, Q32, Q40 and the centre of mass, Q10)
+- **Optional TDHF run** after the static solve (`dynamics:` section)
 
-See [RUN_INSTRUCTIONS.md](RUN_INSTRUCTIONS.md) for complete documentation and example configurations.
+The commented `config.yml` in the repository root documents every option.
 
 **Example config.yml:**
 ```yaml
@@ -143,7 +149,9 @@ nucleus:
 
 force:
   name: "SLy4"
-  ipair: 6  # DDDI pairing
+  ipair: 6          # DDDI pairing
+  v0_neutron: 362   # Pairing strengths (required for ipair 5/6)
+  v0_proton: 362
 
 grid:
   nx: 32
@@ -151,8 +159,8 @@ grid:
   nz: 32
 
 iteration:
-  max_iterations: 500
-  convergence_threshold: 1.0e-6
+  max_iterations: 1000
+  convergence_threshold: 1.0e-6   # stops early only if reached; otherwise runs all iterations
 
 # Optional: Constrain multipole moments
 constraints:
@@ -170,7 +178,7 @@ python run_hfb.py config_Sn132.yml
 
 ### Multipole Constraints
 
-The code supports **arbitrary multipole moment constraints** Q_λμ for exploring deformation and potential energy surfaces. Constraints can be specified using either:
+The code supports **multipole moment constraints** Q_λμ for exploring deformation and potential energy surfaces. Constraints can be specified using either:
 
 1. **Direct multipole moments** (Q₂₀, Q₃₀, etc. in fm^λ)
 2. **Beta-gamma parameters** (β₂, γ - Hill-Wheeler parameterization)
@@ -199,23 +207,32 @@ calc = HFBFFT(nucleus, force, grid, constraint=constraint)
 The standard β-γ parameterization commonly used in publications:
 
 ```python
-# Prolate deformation (football shape)
+from jax_hfbfft import HFBFFT, Nucleus, Force, Grid, Constraint
+
+# Prolate deformation of U-238 (football shape)
+nucleus = Nucleus.from_symbol("U", 238)
+grid = Grid.create(nx=48, ny=48, nz=48, dx=0.8, dy=0.8, dz=0.8)   # 38.4 fm box
 constraint = Constraint.from_beta_gamma(
     mass_number=238,
-    beta2=0.25,    # Deformation parameter
-    gamma=0        # 0° = prolate, 60° = oblate
+    beta2=0.25,     # > 0 prolate, < 0 oblate (both about the z axis)
+    gamma=0,        # triaxiality angle in degrees
+    damprad=16.0,   # see the note below
 )
+calc = HFBFFT(nucleus, Force.from_name("SLy4"), grid, constraint=constraint)
 
 # Octupole deformation (pear shape, e.g., Ra-224)
 constraint = Constraint.from_beta_gamma(
     mass_number=224,
     beta2=0.10,
-    beta3=0.08,    # Octupole
-    gamma=0
+    beta3=0.08,     # Octupole
+    gamma=0,
+    damprad=16.0,
 )
-
-calc = HFBFFT(nucleus, force, grid, constraint=constraint)
 ```
+
+`from_beta_gamma` converts to Q20, Q22, Q30 and Q40 targets for the solver's operators (Q20 = 2z² − x² − y², Q22 = x² − y², ...). β₂ < 0 gives an oblate shape about the z axis; β₂ > 0 with γ = 60° is also oblate, but about the y axis. A single constrained solve only fixes the lab-frame moments, so a deformed nucleus can satisfy them by rotating; pass `principal_axes=True` to lock the orientation, or use `run_constrained_scan` (below), which does this automatically.
+
+**Damping radius.** The multipole operators grow like r^λ, so they are damped beyond `damprad` (default 6 fm). That default only suits light nuclei; for heavy or strongly deformed nuclei it cuts into the nucleus itself and the constraint pulls on the wrong shape. Set `damprad` well past the nuclear surface, up to about half the box length minus 3 fm (the box must extend beyond it). `run_constrained_scan` (below) chooses it automatically.
 
 Config file format:
 ```yaml
@@ -224,11 +241,49 @@ constraints:
     beta2: 0.25
     gamma: 0     # Prolate
     beta3: 0.05  # Optional octupole
+  damprad: 16.0  # Damping radius (fm); the 6 fm default is for light nuclei
 ```
 
-Available multipole names: Q00, Q10, Q20, Q21, Q22, Q30, Q40, Q50, Q60, etc., or specify directly as (λ, μ) tuples for arbitrary multipoles.
+Supported multipoles: Q10 (the centre of mass, `<z>`), Q20, Q22, Q30, Q32 and Q40, plus the optional principal-axes constraints. Multipoles can also be given as (λ, μ) tuples. See `examples/constrained_calculation.py`.
 
-See [docs/multipole_constraints.md](docs/multipole_constraints.md), `examples/constrained_multipoles.py`, and `examples/beta_gamma_constraints.py` for details.
+#### Deformation Scans
+
+A single constrained solve updates the Lagrange multiplier every iteration, which is slow to reach the target and can stall. For accurate constrained points, or an energy curve, use `run_constrained_scan`: it converges each point with the multiplier frozen and updates the multiplier between solves by a secant step. For an axial multipole (Q20, Q30, Q40) it also constrains Q22 = 0 and the principal axes by default (`axial=True`); without them a deformed nucleus can meet a lab-frame Q20 target by tilting its symmetry axis instead of changing shape.
+
+```python
+from jax_hfbfft import Force, Grid
+from jax_hfbfft.physics import run_constrained_scan
+from jax_hfbfft.physics.solver import apply_cm_correction
+
+grid = Grid.create(nx=24, ny=24, nz=24, dx=1.0, dy=1.0, dz=1.0)
+force = apply_cm_correction(Force.from_name("SLy4", ipair=0), 16)
+results, state = run_constrained_scan(grid, force, nucleus_z=8, nucleus_n=8, npsi_n=20,
+                                      targets=[10.0, 15.0, 20.0, 25.0, 30.0])   # Q20 in fm^2
+for r in results:
+    print(r['target'], r['achieved'], r['E'])
+```
+
+Each target warm-starts from the previous one, so keep the steps small (here about β₂ = 0.05). The scan prints each point as `[hit]` or `[short]` and ends with a check that dE/dQ between neighbouring points matches λ (ratio ≈ 1); treat `[short]` points, or a ratio far from 1, as unconverged.
+
+## Time-Dependent Hartree-Fock
+
+`TDHF` propagates a converged static state in real time. Pairing is not included, so the static calculation must use `ipair=0`.
+
+```python
+from jax_hfbfft import HFBFFT, Nucleus, Force, TDHF, TDConfig
+
+calc = HFBFFT(nucleus=Nucleus(protons=8, neutrons=8),
+              force=Force.from_name("SLy4", ipair=0), npsi=(20, 20))
+calc.initialize_wavefunctions(method="harmonic_oscillator")
+calc.run(max_iterations=300)
+
+td = TDHF.from_static(calc, config=TDConfig(dt=0.2, diag_interval=10))
+td.kick_quadrupole(eta=1e-3)
+for rec in td.iterate(1500):          # time, energy drift, moments, ...
+    print(rec['time'], rec['Q20'], rec['dE_rel'])
+```
+
+The relative energy drift `dE_rel` is the main accuracy check. `examples/tdhf` has heavy-ion collisions, collective modes and rendering (`pip install -e ".[viz]"`); the CLI runs TDHF after the static solve when `dynamics: enabled: true` is set in `config.yml`.
 
 ## Object-Oriented API
 
@@ -302,9 +357,7 @@ pytest tests/ -v
 
 ## Development Status
 
-`HFBFFT` is currently under active development. Planned features include:
-- Time-dependent HFB (TDHFB) for nuclear dynamics.
-- Support for a wider range of Skyrme functionals.
+- Support for a wider range of energy density functionals.
 - Advanced constraint options for multi-dimensional potential energy surfaces.
 
 ## Graphical User Interface
@@ -351,6 +404,5 @@ The desktop app wraps the web GUI with:
 
 On first launch, the GUI pre-warms JAX's JIT compilation with a large configuration (256 states, 32³ grid). This takes ~60-90 seconds but ensures subsequent calculations start instantly.
 
-See [docs/GUI_IMPLEMENTATION_PLAN.md](docs/GUI_IMPLEMENTATION_PLAN.md) for architecture details.
 
 

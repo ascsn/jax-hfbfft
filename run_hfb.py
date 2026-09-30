@@ -79,13 +79,13 @@ def validate_config(config):
         if dim not in grid:
             grid[dim] = 32
     
-    # Iteration defaults
+    # Iteration defaults (e0dmp and density_mixing as in HFBFFT and config.yml)
     iter_defaults = {
         'max_iterations': 500,
         'convergence_threshold': 1e-6,
         'x0dmp': 0.45,
-        'e0dmp': 20.0,
-        'density_mixing': 0.5,
+        'e0dmp': 100.0,
+        'density_mixing': 0.2,
         'diag_start': 30,
         'bcs_start': 30,
     }

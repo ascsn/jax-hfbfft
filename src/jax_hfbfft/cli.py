@@ -272,7 +272,7 @@ output:
     print()
     print("For detailed documentation:")
     print("  • hfbfft info --forces    # List available forces")
-    print("  • See docs/RUN_INSTRUCTIONS.md")
+    print("  • The comments in config.yml document every option")
 
 
 def run_calculation(config_path: Optional[str], verbose: bool = False):
@@ -375,7 +375,14 @@ def run_calculation(config_path: Optional[str], verbose: bool = False):
         if 'constraints' in config and config['constraints']:
             constraints_config = config['constraints']
             mass_number = nucleus.protons + nucleus.neutrons
-            
+
+            # Algorithm parameters (if specified), as in run_hfb.py
+            constraint_kwargs = {
+                param: constraints_config[param]
+                for param in ['c0constr', 'qepsconstr', 'dampgamma', 'damprad']
+                if param in constraints_config
+            }
+
             # Check for beta_gamma
             if 'beta_gamma' in constraints_config and constraints_config['beta_gamma']:
                 bg = constraints_config['beta_gamma']
@@ -386,7 +393,8 @@ def run_calculation(config_path: Optional[str], verbose: bool = False):
                     beta3=bg.get('beta3'),
                     beta4=bg.get('beta4'),
                     r0=bg.get('r0', 1.2),
-                    principal_axes=constraints_config.get('principal_axes', False)
+                    principal_axes=constraints_config.get('principal_axes', False),
+                    **constraint_kwargs
                 )
             # Check for multipoles
             elif 'multipoles' in constraints_config and constraints_config['multipoles']:
@@ -398,7 +406,8 @@ def run_calculation(config_path: Optional[str], verbose: bool = False):
                         multipoles[key] = value
                 constraint = Constraint.from_multipoles(
                     multipoles=multipoles,
-                    principal_axes=constraints_config.get('principal_axes', False)
+                    principal_axes=constraints_config.get('principal_axes', False),
+                    **constraint_kwargs
                 )
         
         # Print configuration
@@ -460,10 +469,9 @@ def run_calculation(config_path: Optional[str], verbose: bool = False):
             calc.e0dmp = iteration_config['e0dmp']
         if 'density_mixing' in iteration_config:
             calc.density_mixing = iteration_config['density_mixing']
-        if 'diag_start' in iteration_config:
-            calc.diag_start = iteration_config['diag_start']
-        if 'bcs_start' in iteration_config:
-            calc.bcs_start = iteration_config['bcs_start']
+        # HFBFFT defaults both to 0; use run_hfb.py's and config.yml's 30 unless set
+        calc.diag_start = iteration_config.get('diag_start', 30)
+        calc.bcs_start = iteration_config.get('bcs_start', 30)
         if 'tvaryx_0' in iteration_config:
             calc.tvaryx_0 = iteration_config['tvaryx_0']
         if 'iteranneal' in iteration_config:
@@ -806,12 +814,13 @@ def show_info(args):
     show_all = args.all if hasattr(args, 'all') else False
     
     if args.forces or show_all:
+        import yaml
         print("Available Skyrme Forces:")
         print("-" * 40)
-        forces = [
-            "SLy4", "SLy5", "SkM*", "SkP", 
-            "SV-min", "UNEDF0", "UNEDF1", "UNEDF2"
-        ]
+        # The file Force.from_name reads by default
+        forces_file = Path(__file__).parent / "data" / "_forces.yml"
+        with open(forces_file) as f:
+            forces = list(yaml.safe_load(f))
         for force in forces:
             print(f"  • {force}")
         print()

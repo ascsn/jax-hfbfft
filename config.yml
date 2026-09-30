@@ -306,7 +306,7 @@ advanced:
 #   # beta_gamma:
 #   #   beta2: -0.20
 #   
-#   # Oblate (alternative using gamma=60)
+#   # Oblate about the y axis instead of z (gamma=60)
 #   # beta_gamma:
 #   #   beta2: 0.20
 #   #   gamma: 60
@@ -338,7 +338,9 @@ advanced:
 #   # ALGORITHM PARAMETERS (advanced users)
 #   # =========================================================================
 #   # c0constr: 0.8       # Q-corrective step parameter
-#   # qepsconstr: 0.3     # Lagrange multiplier update rate
+#   # qepsconstr: 1.0     # Lagrange multiplier update rate
 #   # dampgamma: 1.0      # Damping for masking function
-#   # damprad: 6.0        # Damping radius (fm)
+#   # damprad: 6.0        # Damping radius (fm); 6 fm suits light nuclei only. For
+#   #                     # heavy/deformed ones set it well past the surface, up to
+#   #                     # ~half the box length minus 3 fm (e.g. 16 fm on 48^3 x 0.8)
 

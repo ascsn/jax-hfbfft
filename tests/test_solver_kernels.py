@@ -21,6 +21,9 @@ from jax_hfbfft.physics.solver import (
 )
 from jax_hfbfft.physics.meanfield import Meanfield
 
+H2MA = 20.73553
+H2M = jnp.array([H2MA, H2MA])
+
 
 class TestApplyPreconditioner:
     """Tests for the preconditioner kernel."""
@@ -170,23 +173,18 @@ class TestOrthonormalize:
         
         psi_ortho = orthonormalize_states(psi, npsi_n, grid.wxyz)
         
-        # The orthonormalized states should be linear combinations of originals
-        # Test: project first ortho state onto all original states
-        # and check that we can reconstruct it
-        projections = jnp.array([
-            jnp.sum(jnp.conjugate(psi[i]) * psi_ortho[0]) * grid.wxyz
-            for i in range(nstates)
-        ])
-        
-        reconstruction = sum(projections[i] * psi[i] for i in range(nstates))
-        
-        # Normalize reconstruction
-        norm = jnp.sqrt(jnp.sum(jnp.abs(reconstruction)**2) * grid.wxyz)
-        reconstruction = reconstruction / norm
-        
-        # Should match original ortho state up to phase
-        overlap = jnp.abs(jnp.sum(jnp.conjugate(reconstruction) * psi_ortho[0]) * grid.wxyz)
-        np.testing.assert_allclose(overlap, 1.0, rtol=1e-5)
+        # Every orthonormalized state must lie in the span of the originals:
+        # its projection onto that span, sum_ij psi_i (S^-1)_ij <psi_j|phi>
+        # with S the overlap matrix of the (non-orthogonal) originals, must
+        # reproduce it exactly.
+        flat = psi.reshape(nstates, -1)
+        S = (jnp.conjugate(flat) @ flat.T) * grid.wxyz
+        for k in range(nstates):
+            phi = psi_ortho[k].reshape(-1)
+            b = (jnp.conjugate(flat) @ phi) * grid.wxyz
+            coeffs = jnp.linalg.solve(S, b)
+            projection = coeffs @ flat
+            np.testing.assert_allclose(projection, phi, atol=1e-8)
 
 
 class TestNormalizeStates:
@@ -243,7 +241,7 @@ class TestComputeSpEnergies:
         isospin = jnp.array([0, 0, 1, 1])
         
         # Compute energies
-        sp_energy, sp_kinetic = compute_sp_energies(psi, meanfield, isospin, grid)
+        sp_energy, sp_kinetic = compute_sp_energies(psi, meanfield, isospin, grid, H2M)
         
         assert sp_energy.shape == (nstates,)
         assert sp_kinetic.shape == (nstates,)
@@ -268,11 +266,12 @@ class TestComputeSpEnergies:
             wlspot=jnp.zeros((2, 3, 8, 8, 8)),
             dbmass=jnp.zeros((2, 3, 8, 8, 8)),
             divaq=jnp.zeros((2, 8, 8, 8)),
+            ecorrp=jnp.asarray(0.0),
         )
         
         isospin = jnp.array([0])
         
-        sp_energy, sp_kinetic = compute_sp_energies(psi, meanfield, isospin, grid)
+        sp_energy, sp_kinetic = compute_sp_energies(psi, meanfield, isospin, grid, H2M)
         
         # For constant wavefunction with constant potential,
         # kinetic energy should be zero and total should be ~V
@@ -302,17 +301,20 @@ class TestIntegrationSmallGrid:
         wocc = jnp.array([1.0, 1.0, 1.0, 1.0])
         wguv = jnp.zeros(nstates)
         pairwg = jnp.ones(nstates)
+        wstates = jnp.ones(nstates)
         sp_energy = jnp.linspace(-5, 5, nstates)
         isospin = jnp.array([0, 0, 1, 1])
+        lagrange = jnp.zeros_like(psi)
         
         x0dmp = 0.3
         e0dmp = 20.0
         
         # Multiple gradient steps
         for _ in range(5):
-            psi = gradient_step(
-                psi, meanfield, wocc, wguv, pairwg, sp_energy,
-                isospin, grid, x0dmp, e0dmp, npsi_n
+            psi, sp_energy, _, _ = gradient_step(
+                psi, meanfield, wocc, wguv, pairwg, wstates, sp_energy,
+                isospin, lagrange, grid, x0dmp, e0dmp, H2MA, npsi_n,
+                use_pairing=False,
             )
             
             # Check stability

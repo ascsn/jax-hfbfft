@@ -39,6 +39,7 @@ from jax_hfbfft.physics.solver import (
     SolverState,
     SolverConfig,
     run_hfb,
+    run_constrained_scan,
     hfb_iteration,
     create_initial_state,
 )
@@ -78,6 +79,7 @@ __all__ = [
     "SolverState",
     "SolverConfig",
     "run_hfb",
+    "run_constrained_scan",
     "hfb_iteration",
     "create_initial_state",
     # Dynamics

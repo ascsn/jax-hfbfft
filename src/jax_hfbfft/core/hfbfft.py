@@ -738,6 +738,12 @@ class HFBFFT:
                 print_interval=print_interval,
             )
 
+        # The constructor leaves psi at zero, and the solver then "converges" at
+        # E = 0 in one step; default to the harmonic oscillator start that the
+        # CLI, run_hfb.py and the GUI all use.
+        if self.state.psi is None or not bool(jnp.any(self.state.psi != 0)):
+            self.initialize_wavefunctions(method="harmonic_oscillator")
+
         return self._run_modern(
             max_iterations=max_iterations,
             convergence_threshold=convergence_threshold,

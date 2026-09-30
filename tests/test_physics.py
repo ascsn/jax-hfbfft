@@ -94,7 +94,9 @@ class TestEnergies:
             ehfCtau0=0.0, ehfCtau1=0.0, ehfCdJ0=0.0, ehfCdJ1=0.0,
             ehfCj0=0.0, ehfCj1=0.0,
         )
-        assert energies.total == -100.0
+        # `total` is the Koopman-sum energy ehf (the FORTRAN "Total energy"),
+        # not the density-functional ehfint.
+        assert energies.total == energies.ehf == -98.0
 
 
 class TestPairing:
@@ -184,7 +186,7 @@ class TestSolverConfig:
         assert config.max_iterations == 200
         assert config.convergence_criterion == 1e-6
         assert config.x0dmp == 0.45
-        assert config.density_mixing == 0.5  # Updated to match actual default
+        assert config.density_mixing == 0.2
     
     def test_custom_config(self):
         """Test custom configuration."""

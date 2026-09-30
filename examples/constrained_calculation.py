@@ -17,30 +17,35 @@ def main():
     print(f"Force: {force.name}")
     print("=" * 60)
     
-    # Define deformation points along the fission path
+    # Define deformation points along the fission path. Each point is an
+    # independent constrained solve; for converged energy curves use
+    # jax_hfbfft.physics.run_constrained_scan instead.
     beta2_values = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]
-    
+
     print(f"\nCalculating {len(beta2_values)} deformation points...")
-    
+
     results = []
-    
+
     for beta2 in beta2_values:
         print(f"\nβ₂ = {beta2:.2f}")
-        
-        # Create constraint for this deformation
+
+        # Create constraint for this deformation. The damping radius must reach
+        # well past the surface of a heavy, elongated nucleus (the 6 fm default
+        # is for light nuclei); 16 fm fits inside the 38.4 fm box below.
         if beta2 == 0.0:
             constraint = Constraint.spherical()
         else:
-            constraint = Constraint.prolate(beta2=beta2)
-        
+            constraint = Constraint.prolate(nucleus.mass_number, beta2=beta2,
+                                            damprad=16.0)
+
         print(f"  Constraint: {constraint}")
-        
+
         # Create calculation
         calc = HFBFFT(
             nucleus=nucleus,
             force=force,
             constraint=constraint,
-            nx=32, ny=32, nz=32,
+            nx=48, ny=48, nz=48,
             dx=0.8, dy=0.8, dz=0.8,
         )
         
@@ -93,8 +98,9 @@ def constrained_triaxial():
     print(f"\nTriaxial calculation for {nucleus.name}")
     print("=" * 60)
     
-    # Create triaxial constraint
-    constraint = Constraint.triaxial(alpha20=0.3, alpha22=0.1)
+    # Create triaxial constraint (default grid: 32^3 at 0.8 fm, so damprad < 9.8 fm)
+    constraint = Constraint.from_beta_gamma(nucleus.mass_number, beta2=0.25, gamma=30,
+                                            damprad=9.5)
     
     calc = HFBFFT(
         nucleus=nucleus,

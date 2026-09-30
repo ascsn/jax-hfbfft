@@ -2,15 +2,18 @@
 """
 Collective oscillations of a single nucleus in TDHF, with animation.
 
-    python oscillations.py --mode release  --nucleus Mg24
+    python oscillations.py --mode release  --nucleus O16
     python oscillations.py --mode gdr      --nucleus O16
     python oscillations.py --mode quad     --nucleus O16
     python oscillations.py --mode monopole --nucleus O16
-    python oscillations.py --render out/release_Mg24.npz    # re-render only
+    python oscillations.py --render out/release_O16.npz     # re-render only
 
 Modes:
-    release   Converge under a Q20 constraint (a prolate shape), then release
-              the constraint and propagate: large-amplitude shape oscillation.
+    release   Converge under a Q20 constraint (a prolate shape, via
+              run_constrained_scan), then release the constraint and
+              propagate: large-amplitude shape oscillation. Choose --q20 away
+              from the ground state's own Q20 (Mg24 is already prolate,
+              Q20 ~ 60 fm^2 with SLy4).
     gdr       Isovector giant dipole: protons and neutrons are kicked in
               opposite directions (weights +N/A and -Z/A, so the centre of
               mass is not excited). Animates rho_n - rho_p.
@@ -37,41 +40,45 @@ import jax_hfbfft  # noqa: F401  (enables 64-bit JAX before jax is imported)
 import numpy as np
 
 from jax_hfbfft import TDHF, TDConfig
-from jax_hfbfft.core.constraint import Constraint
 from jax_hfbfft.core.force import Force
 from jax_hfbfft.core.grid import Grid
-from jax_hfbfft.physics.solver import SolverConfig, apply_cm_correction, run_hfb
+from jax_hfbfft.physics.densities import compute_densities
+from jax_hfbfft.physics.solver import (SolverConfig, apply_cm_correction, run_hfb,
+                                       run_constrained_scan)
 
 NUCLEI = {'O16': (8, 8, 20), 'Mg24': (12, 12, 26), 'Ca40': (20, 20, 40)}
 
 
 def static_state(args, grid, force):
     z, n, npsi = NUCLEI[args.nucleus]
-    constraint = None
-    if args.mode == 'release':
-        # The constraining operator 2z^2 - x^2 - y^2 is unbounded below along z;
-        # the damping mask confines it to about twice the nuclear radius and at
-        # least 3 fm inside the box.
-        R = 1.2 * (z + n) ** (1.0 / 3.0)
-        damprad = min(2.2 * R, args.nx * args.dx / 2.0 - 3.0)
-        constraint = Constraint.from_multipoles({'Q20': args.q20},
-                                                damprad=damprad, dampgamma=0.8)
-        print(f"constraining Q20 to {args.q20} fm^2 (damping radius {damprad:.1f} fm)")
-
     cfg = SolverConfig(max_iterations=args.static_iter, verbose=False, bcs_start=30,
                        diag_start=30, output_interval=10**9, sinfo_interval=10**9,
                        tvaryx_0=True)
     t0 = time.time()
-    s = run_hfb(grid, force, nucleus_z=z, nucleus_n=n, npsi_n=npsi,
-                config=cfg, constraint=constraint)
-    rho = np.asarray(s.densities.rho[0] + s.densities.rho[1])
+    constrained = args.mode == 'release'
+    if constrained:
+        # Constrained deformed state, approached in two steps from the ground
+        # state with the multiplier converged between solves (and <z> = 0).
+        results, s = run_constrained_scan(grid, force, z, n, npsi,
+                                          targets=[0.5 * args.q20, args.q20], config=cfg)
+        if not results:
+            raise SystemExit("The constrained solve failed; lower --q20.")
+    else:
+        s = run_hfb(grid, force, nucleus_z=z, nucleus_n=n, npsi_n=npsi, config=cfg)
+    # Density of the final wavefunctions: the state that is actually propagated.
+    # (s.densities is the solver's mixed density, equal to it only at convergence.)
+    d = compute_densities(s.psi, s.wocc, s.wguv, s.pairwg, s.wstates, s.isospin, grid)
+    rho = np.asarray(d.rho[0] + d.rho[1])
     X, Y, Z = (np.asarray(a) for a in grid.get_meshgrid())
     q20 = float((rho * (2 * Z**2 - X**2 - Y**2)).sum() * grid.wxyz)
     centre = rho[args.nx // 2, args.nx // 2, args.nx // 2]
     print(f"static {args.nucleus}: E = {float(s.energies.ehfint):.4f} MeV, "
-          f"{s.iteration} iterations ({time.time() - t0:.0f} s)")
+          f"{s.iteration} iterations, efluct = {float(s.efluct):.2e} ({time.time() - t0:.0f} s)")
+    if float(s.efluct) > 1e-3:
+        print("  WARNING: the static state is not converged; the propagated state "
+              "may differ from the intended one. Increase --static-iter.")
     print(f"  peak rho = {rho.max():.5f} fm^-3, central rho = {centre:.5f}, Q20 = {q20:.1f} fm^2")
-    if constraint is not None and abs(q20 - args.q20) > 0.25 * abs(args.q20):
+    if constrained and abs(q20 - args.q20) > 0.1 * abs(args.q20):
         print(f"  WARNING: the constraint did not reach its target "
               f"({q20:.1f} vs {args.q20:.1f} fm^2)")
     if rho.max() < 0.10 or centre < 0.05:
@@ -135,7 +142,7 @@ def main():
                                 epilog=__doc__)
     p.add_argument('--mode', choices=['release', 'gdr', 'quad', 'monopole'],
                    default='release')
-    p.add_argument('--nucleus', default='Mg24', choices=list(NUCLEI))
+    p.add_argument('--nucleus', default='O16', choices=list(NUCLEI))
     p.add_argument('--nx', type=int, default=24, help='grid points per direction')
     p.add_argument('--dx', type=float, default=1.0, help='grid spacing, fm')
     p.add_argument('--dt', type=float, default=0.2, help='time step, fm/c')
@@ -145,7 +152,7 @@ def main():
                    help='kick strength for quad and monopole (fm^-2)')
     p.add_argument('--eta-dip', type=float, default=0.03,
                    help='kick strength for gdr (fm^-1)')
-    p.add_argument('--q20', type=float, default=60.0,
+    p.add_argument('--q20', type=float, default=20.0,
                    help='target Q20 for release, fm^2')
     p.add_argument('--static-iter', type=int, default=200)
     p.add_argument('--time-odd', choices=['sky3d', 'skyrme'], default='sky3d',

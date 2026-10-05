@@ -214,7 +214,7 @@ def compute_coulomb_energy(
     slater_coeff = -3.0 / 4.0 * force.slate
     e_exchange = jnp.where(
         force.ex != 0,
-        wxyz * jnp.sum(slater_coeff * rho_proton ** (4.0 / 3.0)),
+        wxyz * jnp.sum(slater_coeff * jnp.maximum(rho_proton, 0.0) ** (4.0 / 3.0)),
         0.0
     )
     

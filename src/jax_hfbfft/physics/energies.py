@@ -322,8 +322,8 @@ def compute_integrated_energy(
         # Slater exchange
         if force.ex != 0:
             slater_coeff = -3.0 / 4.0 * force.slate
-            ehfc = ehfc + wxyz * jnp.sum(slater_coeff * rho_p**(4.0/3.0))
-            ecorc = wxyz * jnp.sum(slater_coeff / 3.0 * rho_p**(4.0/3.0))
+            ehfc = ehfc + wxyz * jnp.sum(slater_coeff * jnp.maximum(rho_p, 0.0)**(4.0/3.0))   # clamp: see meanfield.py
+            ecorc = wxyz * jnp.sum(slater_coeff / 3.0 * jnp.maximum(rho_p, 0.0)**(4.0/3.0))
     
     # =========================================================================
     # Kinetic energy (free nucleon masses)

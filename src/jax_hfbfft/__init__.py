@@ -44,6 +44,7 @@ from jax_hfbfft.core.force import Force
 from jax_hfbfft.core.constraint import Constraint
 from jax_hfbfft.core.grid import Grid
 from jax_hfbfft.core.tdhf import TDHF
+from jax_hfbfft.core.tdhfb import TDHFB
 from jax_hfbfft.physics.dynamics import TDConfig
 
 # Configuration utilities
@@ -60,6 +61,7 @@ __all__ = [
     "Constraint",
     "Grid",
     "TDHF",
+    "TDHFB",
     "TDConfig",
     # Configuration
     "Config",

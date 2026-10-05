@@ -196,6 +196,20 @@ class Grid:
         return jnp.meshgrid(self.x, self.y, self.z, indexing='ij')
 
 
+def _fft_der_matrix(nmax: int, d: float, order: int) -> jnp.ndarray:
+    """
+    Spectral derivative matrix for an odd grid, built from the DFT.
+
+    An odd grid has no Nyquist mode, so ik is exact for every mode and
+    der1 @ der1 == der2. The FORTRAN formulas below assume an even nmax.
+    """
+    import numpy as _np
+    k = 2 * _np.pi * _np.fft.fftfreq(nmax, d=d)
+    fac = (1j * k) ** order
+    M = _np.real(_np.fft.ifft(fac[:, None] * _np.fft.fft(_np.eye(nmax), axis=0), axis=0))
+    return jnp.asarray(M)
+
+
 def _sder(nmax: int, d: float) -> jnp.ndarray:
     """
     Compute first derivative matrix using Fourier spectral method.
@@ -207,6 +221,8 @@ def _sder(nmax: int, d: float) -> jnp.ndarray:
     Returns:
         First derivative matrix
     """
+    if nmax % 2 == 1:
+        return _fft_der_matrix(nmax, d, 1)
     icn = (nmax + 1) // 2
     afac = jnp.pi / icn
 
@@ -233,6 +249,8 @@ def _sder2(nmax: int, d: float) -> jnp.ndarray:
     Returns:
         Second derivative matrix
     """
+    if nmax % 2 == 1:
+        return _fft_der_matrix(nmax, d, 2)
     icn = (nmax + 1) // 2
     afac = jnp.pi / icn
 
@@ -252,6 +270,11 @@ def _sder2(nmax: int, d: float) -> jnp.ndarray:
 # FFT-based derivative operators for wavefunctions
 # These are more efficient than matrix multiplication for 3D fields
 # =============================================================================
+
+def _fftfreq_int(n):
+    import numpy as _np
+    return _np.rint(_np.fft.fftfreq(n) * n)
+
 
 @jax.jit
 def deriv_x(psi: jax.Array, dx: float) -> jax.Array:
@@ -275,8 +298,11 @@ def deriv_x(psi: jax.Array, dx: float) -> jax.Array:
     
     # Build wave numbers
     k = jnp.zeros(n)
-    k = k.at[:half_n].set(jnp.arange(half_n))
-    k = k.at[half_n+1:].set(jnp.arange(-(half_n-1), 0))
+    if n % 2 == 1:                       # odd grid: no Nyquist mode
+        k = jnp.asarray(_fftfreq_int(n))
+    else:
+        k = k.at[:half_n].set(jnp.arange(half_n))
+        k = k.at[half_n+1:].set(jnp.arange(-(half_n-1), 0))
     
     # Reshape k for broadcasting
     shape = [1] * psi.ndim
@@ -285,7 +311,8 @@ def deriv_x(psi: jax.Array, dx: float) -> jax.Array:
     
     # Multiply by ik
     psi_k = psi_k * (1j * k * kfac)
-    psi_k = psi_k.at[..., half_n, :, :].set(0.0)  # Zero Nyquist frequency
+    if n % 2 == 0:
+        psi_k = psi_k.at[..., half_n, :, :].set(0.0)  # Zero Nyquist frequency
     
     return jnp.fft.ifft(psi_k, axis=axis)
 
@@ -301,15 +328,19 @@ def deriv_y(psi: jax.Array, dy: float) -> jax.Array:
     psi_k = jnp.fft.fft(psi, axis=axis, norm="backward")
     
     k = jnp.zeros(n)
-    k = k.at[:half_n].set(jnp.arange(half_n))
-    k = k.at[half_n+1:].set(jnp.arange(-(half_n-1), 0))
+    if n % 2 == 1:                       # odd grid: no Nyquist mode
+        k = jnp.asarray(_fftfreq_int(n))
+    else:
+        k = k.at[:half_n].set(jnp.arange(half_n))
+        k = k.at[half_n+1:].set(jnp.arange(-(half_n-1), 0))
     
     shape = [1] * psi.ndim
     shape[axis] = n
     k = k.reshape(shape)
     
     psi_k = psi_k * (1j * k * kfac)
-    psi_k = psi_k.at[..., :, half_n, :].set(0.0)
+    if n % 2 == 0:
+        psi_k = psi_k.at[..., :, half_n, :].set(0.0)
     
     return jnp.fft.ifft(psi_k, axis=axis)
 
@@ -325,15 +356,19 @@ def deriv_z(psi: jax.Array, dz: float) -> jax.Array:
     psi_k = jnp.fft.fft(psi, axis=axis, norm="backward")
     
     k = jnp.zeros(n)
-    k = k.at[:half_n].set(jnp.arange(half_n))
-    k = k.at[half_n+1:].set(jnp.arange(-(half_n-1), 0))
+    if n % 2 == 1:                       # odd grid: no Nyquist mode
+        k = jnp.asarray(_fftfreq_int(n))
+    else:
+        k = k.at[:half_n].set(jnp.arange(half_n))
+        k = k.at[half_n+1:].set(jnp.arange(-(half_n-1), 0))
     
     shape = [1] * psi.ndim
     shape[axis] = n
     k = k.reshape(shape)
     
     psi_k = psi_k * (1j * k * kfac)
-    psi_k = psi_k.at[..., half_n].set(0.0)
+    if n % 2 == 0:
+        psi_k = psi_k.at[..., half_n].set(0.0)
     
     return jnp.fft.ifft(psi_k, axis=axis)
 

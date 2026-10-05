@@ -197,8 +197,11 @@ def _compute_skyrme_meanfield_core(
     # Use jnp.where for JIT compatibility instead of if statement
     upot = upot.at[1].add(jnp.where(use_coulomb, coulomb_potential, 0.0))
     
-    # Slater exchange - apply only if use_coulomb and ex != 0
-    slater = -slate * jnp.power(rho[1] + epsilon, 1.0/3.0)
+    # Slater exchange - apply only if use_coulomb and ex != 0.
+    # Clamped at 0: TDHFB builds rho(r) from a full density matrix, which can
+    # dip to ~ -1e-12 in the far tail, and a negative base to the 1/3 power is
+    # NaN. Exact for rho >= 0.
+    slater = -slate * jnp.power(jnp.maximum(rho[1], 0.0) + epsilon, 1.0/3.0)
     upot = upot.at[1].add(jnp.where(use_coulomb & (ex != 0), slater, 0.0))
     
     # =========================================================================
@@ -438,21 +441,31 @@ def apply_hamiltonian(
     return pout
 
 
+def _kinetic_term(psi, dpsi, der1, der2, bmass, dbmass, spec):
+    """
+    Effective-mass kinetic term along one axis.
+
+    Even axes use the expanded form -B d2 - dB d (matches FORTRAN). Odd axes
+    use the divergence form -d(B d), which is the exact gradient of the grid
+    kinetic energy (tau is built from der1); time-dependent runs need that for
+    energy conservation. On an even axis the divergence form leaves the
+    Nyquist mode undamped, so it is used only where there is none.
+    """
+    if der1.shape[0] % 2:
+        return -jnp.einsum(spec, der1, bmass[None] * dpsi)
+    return -bmass[None] * jnp.einsum(spec, der2, psi) - dbmass[None] * dpsi
+
+
 def _add_derivative_terms_x(pout, psi, mf, iq, grid, sigis):
     """Add x-direction derivative terms."""
     # Use matrix derivatives for better JIT performance on GPU
     # psi is (2, nx, ny, nz), der1x is (nx, nx)
     dpsi_dx = jnp.einsum('ij,sjkl->sikl', grid.der1x, psi)
-    d2psi_dx2 = jnp.einsum('ij,sjkl->sikl', grid.der2x, psi)
-    
-    # Effective mass contribution: -B * d²/dx² - dB/dx * d/dx
-    pout = pout.at[0].add(
-        -mf.bmass[iq] * d2psi_dx2[0] - mf.dbmass[iq, 0] * dpsi_dx[0]
-    )
-    pout = pout.at[1].add(
-        -mf.bmass[iq] * d2psi_dx2[1] - mf.dbmass[iq, 0] * dpsi_dx[1]
-    )
-    
+
+    # Effective mass contribution
+    pout = pout + _kinetic_term(psi, dpsi_dx, grid.der1x, grid.der2x,
+                                mf.bmass[iq], mf.dbmass[iq, 0], 'ij,sjkl->sikl')
+
     # Spin-orbit coupling terms from x-derivative
     pout = pout.at[0].add(
         -(1j * (0.5 * mf.aq[iq, 0] - sigis[0] * mf.wlspot[iq, 1])) * dpsi_dx[0] -
@@ -476,15 +489,10 @@ def _add_derivative_terms_x(pout, psi, mf, iq, grid, sigis):
 def _add_derivative_terms_y(pout, psi, mf, iq, grid, sigis):
     """Add y-direction derivative terms."""
     dpsi_dy = jnp.einsum('ij,skjl->skil', grid.der1y, psi)
-    d2psi_dy2 = jnp.einsum('ij,skjl->skil', grid.der2y, psi)
-    
+
     # Effective mass contribution
-    pout = pout.at[0].add(
-        -mf.bmass[iq] * d2psi_dy2[0] - mf.dbmass[iq, 1] * dpsi_dy[0]
-    )
-    pout = pout.at[1].add(
-        -mf.bmass[iq] * d2psi_dy2[1] - mf.dbmass[iq, 1] * dpsi_dy[1]
-    )
+    pout = pout + _kinetic_term(psi, dpsi_dy, grid.der1y, grid.der2y,
+                                mf.bmass[iq], mf.dbmass[iq, 1], 'ij,skjl->skil')
     
     # Spin-orbit coupling
     pout = pout.at[0].add(
@@ -508,15 +516,10 @@ def _add_derivative_terms_y(pout, psi, mf, iq, grid, sigis):
 def _add_derivative_terms_z(pout, psi, mf, iq, grid, sigis):
     """Add z-direction derivative terms."""
     dpsi_dz = jnp.einsum('ij,sklj->skli', grid.der1z, psi)
-    d2psi_dz2 = jnp.einsum('ij,sklj->skli', grid.der2z, psi)
-    
+
     # Effective mass contribution
-    pout = pout.at[0].add(
-        -mf.bmass[iq] * d2psi_dz2[0] - mf.dbmass[iq, 2] * dpsi_dz[0]
-    )
-    pout = pout.at[1].add(
-        -mf.bmass[iq] * d2psi_dz2[1] - mf.dbmass[iq, 2] * dpsi_dz[1]
-    )
+    pout = pout + _kinetic_term(psi, dpsi_dz, grid.der1z, grid.der2z,
+                                mf.bmass[iq], mf.dbmass[iq, 2], 'ij,sklj->skli')
     
     # Spin-orbit coupling
     pout = pout.at[0].add(

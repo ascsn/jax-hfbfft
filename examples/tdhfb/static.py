@@ -61,7 +61,14 @@ def main():
     p.add_argument('--v0p', type=float, default=None, help='proton pairing strength (default --v0)')
     p.add_argument('--iters', type=int, default=3000)
     p.add_argument('--restart', default=None, help='start from this static .npz (same grid and basis)')
+    p.add_argument('--uv-floor', type=float, default=1e-6,
+                   help='floor on v2(1-v2) in the BCS solution (FORTRAN 1e-6; 0 is consistent with TDHFB)')
+    p.add_argument('--precond-floor', type=float, default=0.1,
+                   help='floor on the occupation weights in the preconditioner (FORTRAN 0.1); '
+                        'smaller lets nearly empty orbitals converge')
     p.add_argument('--out', default=None)
+    p.add_argument('--radin-z', type=float, default=None,
+                   help='HO start radius along z (fm); larger than the default gives a prolate start')
     a = p.parse_args()
 
     Z, N, npsi, radin = NUCLEI.get(a.nucleus, (None, None, None, 3.1))
@@ -78,15 +85,18 @@ def main():
     v0p = a.v0 if a.v0p is None else a.v0p
     force = Force.from_name(a.functional).with_pairing(
         ipair=6, v0neut=a.v0, v0prot=v0p, rho0pr=0.32, tbcs=False,
-        pair_cutoff=(0.0, 0.0), state_cutoff=(0.0, 0.0))
+        pair_cutoff=(0.0, 0.0), state_cutoff=(0.0, 0.0), uv_floor=a.uv_floor)
     grid = Grid.create(nx=a.nx, ny=ny, nz=nz, dx=a.dx, dy=a.dx, dz=a.dx)
     calc = HFBFFT(nucleus=Nucleus(protons=Z, neutrons=N), force=force, grid=grid, npsi=npsi)
     calc.diag_start, calc.bcs_start, calc.tvaryx_0 = 30, 30, True
-    calc.initialize_wavefunctions(method="harmonic_oscillator", radinx=radin, radiny=radin, radinz=radin)
+    calc.precond_floor = a.precond_floor
+    calc.initialize_wavefunctions(method="harmonic_oscillator", radinx=radin, radiny=radin, radinz=a.radin_z or radin)
     if a.restart:
         r = np.load(a.restart)
         for k in ('psi', 'wocc', 'wguv', 'pairwg', 'wstates'):
             setattr(calc.state, k, jnp.asarray(r[k]))
+        # a converged start needs no BCS warm-up, h-diagonalisation phase or tripled first step
+        calc.diag_start, calc.bcs_start, calc.tvaryx_0 = 0, 0, False
         print(f"  restart from {a.restart} (E {float(r['E']):.4f}, efluct {float(r['efluct']):.2e})")
     print(f"  {a.nucleus}: Z={Z} N={N} npsi={npsi}  box {a.nx}x{ny}x{nz} @ {a.dx} fm  v0={a.v0:g}/{v0p:g}")
 
@@ -102,8 +112,23 @@ def main():
         m = iso == q
         print(f"  mean gap {name:<8} {float((uv[m] * gap[m]).sum() / max(uv[m].sum(), 1e-12)):.3f} MeV")
     save_static(out, st, grid, functional=a.functional, v0=a.v0, v0p=v0p, ipair=6, rho0pr=0.32,
-                nucleus=a.nucleus)
+                nucleus=a.nucleus, uv_floor=a.uv_floor, precond_floor=a.precond_floor)
     print(f"  wrote {out}")
+    report_stationarity(out)
+
+
+def report_stationarity(path):
+    """Largest TDHFB out-of-span velocity (MeV) per occupation band; ~0 means stationary under TDHFB."""
+    from jax_hfbfft import TDHFB
+    from jax_hfbfft.physics import tdhfb as T
+    td = TDHFB.from_static(path, max_defect=1e-2)
+    occ, r = T.stationarity(td.state, td.grid, td.force, td.cs)
+    print("  TDHFB stationarity, max |Q (h phi + F/rho)| by occupation band:")
+    for lo, hi in ((0.1, 0.9), (1e-3, 0.1), (1e-5, 1e-3), (0.0, 1e-5)):
+        m = (np.minimum(occ, 1 - occ) >= lo) & (np.minimum(occ, 1 - occ) < hi)
+        if m.any():
+            print(f"    {lo:7.0e} <= min(v2, 1-v2) < {hi:7.0e}: {int(m.sum()):4d} orbitals, "
+                  f"max {r[m].max():9.3e}, median {np.median(r[m]):9.3e} MeV")
 
 
 if __name__ == '__main__':

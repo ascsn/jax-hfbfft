@@ -147,6 +147,13 @@ class SolverConfig:
     iteranneal: int = 0
     pairenhance: float = 0.0
 
+    # Lipkin-Nogami approximate particle-number projection (pairing.py).  UNEDF
+    # functionals were fitted with it (HFBTHO type_of_calculation = -1).
+    # ln_passes = Illinois iterations for lambda_2; each re-solves the LN BCS
+    # problem, so LN runs cost ~5x plain HFB per iteration.
+    use_ln: bool = field(default=False, metadata=dict(static=True))
+    ln_passes: int = field(default=12, metadata=dict(static=True))
+
     # Adaptive step (tvaryx_0): triple x0dmp before main loop, adapt each iteration
     # Matches legacy static.tvaryx_0 behavior
     tvaryx_0: bool = field(default=False, metadata=dict(static=True))
@@ -164,6 +171,13 @@ class SolverConfig:
     # the solve with the full augmented-Lagrangian penalty; used by
     # run_constrained_scan. Symmetry constraints (goal 0) keep their feedback.
     freeze_constraint: bool = field(default=False, metadata=dict(static=True))
+
+    # Floor on the occupation weights in the HFB preconditioner (FORTRAN: 0.1).
+    # The gradient of a canonical state scales with its occupation, so with the
+    # floor a state with v2 << 0.1 moves ~v2/0.1 of its natural step and nearly
+    # empty states never converge. Their unconverged tails make the static
+    # non-stationary under TDHFB; statics for TDHFB use ~1e-8.
+    precond_floor: float = 0.1
 
     # Reduce densities over states in chunks of this size (0 = all at once).
     # Lowers peak memory for large bases at a small cost in speed.
@@ -446,11 +460,12 @@ def gradient_step(
     use_pairing: bool = True,
     tbcs: bool = True,
     use_lagrange: bool = False,
+    precond_floor: float = 0.1,
 ) -> Tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
     return _gradient_step_jit(
         psi, meanfield, wocc, wguv, pairwg, wstates, sp_energy,
         isospin, lagrange, grid, x0dmp, e0dmp, h2ma,
-        npsi_n, use_pairing, tbcs, use_lagrange,
+        npsi_n, use_pairing, tbcs, use_lagrange, precond_floor,
     )
 
 
@@ -473,6 +488,7 @@ def _gradient_step_jit(
     use_pairing: bool,      # static 13
     tbcs: bool,             # static 14
     use_lagrange: bool,     # static 15
+    precond_floor: float = 0.1,
 ) -> Tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
     """JIT-compiled preconditioned gradient step."""
     nstates = psi.shape[0]
@@ -514,10 +530,11 @@ def _gradient_step_jit(
     else:
         # Full HFB denominator: weight*(e0dmp + h2ma*k²) + 0.5*weightuv*v_pairmax
         # Legacy laplace (levels.py:399-401) floors BOTH weights at 0.1, so the
-        # denominator is at least 0.1*e0dmp even for empty states.
+        # denominator is at least 0.1*e0dmp even for empty states
+        # (SolverConfig.precond_floor; see there).
         # v_pairmax is the SIGNED maximum (FORTRAN MAXVAL), not max(abs).
-        weight      = jnp.maximum(wocc,          0.1)           # (nstates,) — no wstates, matches FORTRAN
-        weightuv    = jnp.maximum(wguv * pairwg, 0.1)           # (nstates,)
+        weight      = jnp.maximum(wocc,          precond_floor)   # (nstates,) — no wstates, matches FORTRAN
+        weightuv    = jnp.maximum(wguv * pairwg, precond_floor)   # (nstates,)
         v_pairmax   = jnp.array([
             jnp.max(meanfield.v_pair[0]),
             jnp.max(meanfield.v_pair[1]),
@@ -835,6 +852,7 @@ def hfb_iteration(
         use_pairing=use_pairing,
         tbcs=tbcs,
         use_lagrange=use_lagrange,
+        precond_floor=config.precond_floor,
     )
 
     # ── 2. Diagstep: Löwdin + optional diagonalization ───────────────────────
@@ -897,6 +915,8 @@ def hfb_iteration(
             nucleus_n,
             nucleus_z,
             force,
+            use_ln=config.use_ln,
+            ln_passes=config.ln_passes,
         )
     else:
         deltaf  = jnp.zeros_like(state.deltaf)
@@ -989,6 +1009,7 @@ def hfb_iteration(
             # skyrme); it was wrongly read from pairing (no such attr → 0.0).
             # Keep as traced JAX scalar: hfb_iteration is jitted.
             ecorrp=meanfield.ecorrp,
+            e_ln=pairing.e_ln,
         )
     else:
         energies = state.energies
@@ -1213,6 +1234,7 @@ def run_hfb(
         wocc, wguv, pairwg, wstates, initial_pairing = solve_pairing(
             state.sp_energy, initial_deltaf, state.wstates, state.pairwg,
             state.isospin, npsi_n, npsi_p, nucleus_n, nucleus_z, force,
+            use_ln=config.use_ln, ln_passes=config.ln_passes,
         )
 
         state = dataclasses.replace(
@@ -1274,6 +1296,7 @@ def run_hfb(
         sp_kinetic=state.sp_kinetic,       # Now this contains non-zero data
         sp_energy=state.sp_energy,         # the sp_energy_for_pairing array
         ecorrp=float(state.meanfield.ecorrp),
+        e_ln=state.pairing.e_ln,
     )
 
     # 4. Update state with final initial energies
@@ -1405,7 +1428,7 @@ def run_hfb(
                     sp_kinetic=state.sp_kinetic,
                     sp_energy=state.sp_energy,   # the sp_energy_for_pairing array
                     ecorrp=float(state.meanfield.ecorrp),
-
+                    e_ln=state.pairing.e_ln,
                 )
                 state = dataclasses.replace(state, energies=final_energies, converged=True)
             if config.verbose:
@@ -1436,9 +1459,23 @@ def run_hfb(
             sp_kinetic=state.sp_kinetic,
             sp_energy=state.sp_energy,   # the sp_energy_for_pairing array
             ecorrp=float(state.meanfield.ecorrp),
-
+            e_ln=state.pairing.e_ln,
         )
         state = dataclasses.replace(state, energies=final_energies)
+
+    # zpe == 3: microscopic c.m. correction <P^2>/2mA on the final state (SkyAx
+    # zpe=1, which the Fayans functionals were fitted with); the iterations used
+    # the 17.3/A^0.2 estimate, as SkyAx does between its zpe_cm calls.
+    if force.zpe == 3:
+        from jax_hfbfft.physics.cm_correction import microscopic_cm_energy
+        e = state.energies
+        ecm = microscopic_cm_energy(state.psi, state.wocc, state.wstates, state.isospin,
+                                    grid, force.h2m)
+        state = dataclasses.replace(state, energies=dataclasses.replace(
+            e, e_zpe=ecm, ehfint=e.ehfint + e.e_zpe - ecm, ehf=e.ehf + e.e_zpe - ecm))
+        if config.verbose:
+            print(f"Microscopic c.m. correction {float(ecm):.4f} MeV -> "
+                  f"E = {float(state.energies.ehfint):.4f} MeV")
 
     return dataclasses.replace(state, force=force)
 
@@ -1647,6 +1684,7 @@ def run_constrained_scan(
     c0constr: float = 0.8,
     verbose: bool = True,
     initial_state: Optional[SolverState] = None,
+    on_target: Optional[Callable[[dict, SolverState], None]] = None,
 ):
     """
     Constrained solutions at a sequence of multipole moments (a deformation
@@ -1698,6 +1736,8 @@ def run_constrained_scan(
             the density must stay inside the mask for the moment to be
             controlled.
         initial_state: optional converged state to start the first target from.
+        on_target: optional callback(record, state) after each target, e.g. to
+            save the state of every point of a long scan as it finishes.
 
     Returns:
         (results, final_state). Each result is a dict with target, achieved,
@@ -1887,6 +1927,8 @@ def run_constrained_scan(
             continue
         _, rec, state, lam = best
         results.append(rec)
+        if on_target is not None:
+            on_target(rec, state)
         if verbose:
             hit = ("hit" if (abs(rec['achieved'] - q) <= tol * max(abs(q), 1.0)
                              and rec['efluct'] <= inner_quality) else "short")

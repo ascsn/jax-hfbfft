@@ -1,0 +1,787 @@
+<title>__TITLE__</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+:root {
+  color-scheme: dark;
+  --ground: #0b0e12;
+  --panel: #141920;
+  --line: #262e38;
+  --ink: #e2e7ec;
+  --muted: #8b97a4;
+  --amber: #f0b64e;
+  --cyan: #6cc6e0;
+  --rose: #ef7f8f;
+  --display: "Bricolage Grotesque", "Segoe UI", system-ui, sans-serif;
+  --sans: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+* { box-sizing: border-box; }
+body { background: var(--ground); color: var(--ink); font: 14px/1.5 var(--sans); }
+.wrap { max-width: 1240px; margin: 0 auto; padding-inline: 20px; padding-block: 22px 40px; display: grid; gap: 14px; }
+header { display: flex; flex-wrap: wrap; align-items: end; justify-content: space-between; gap: 12px 24px; }
+h1 { font: 700 clamp(24px, 3.4vw, 34px)/1.05 var(--display); letter-spacing: -0.01em; margin: 0; text-wrap: balance; }
+h1 sup { font-size: 0.55em; vertical-align: 0.85em; margin-right: 1px; }
+.sub { color: var(--muted); margin: 6px 0 0; max-width: 72ch; }
+.tabs { display: flex; flex-wrap: wrap; gap: 6px; }
+.tabs button, .seg button { font: 500 13px var(--sans); color: var(--muted); background: transparent; border: 1px solid var(--line); cursor: pointer; }
+.tabs button { border-radius: 999px; padding: 6px 14px; }
+.tabs button[aria-selected="true"] { color: var(--ground); background: var(--amber); border-color: var(--amber); }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+.stage { position: relative; background: #000; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; touch-action: none; }
+#gl { display: block; width: 100%; aspect-ratio: 16 / 8.2; max-height: 72vh; cursor: grab; }
+#gl:active { cursor: grabbing; }
+.hud { position: absolute; left: 14px; top: 12px; font: 12px/1.6 var(--mono); color: var(--ink); font-variant-numeric: tabular-nums;
+  text-shadow: 0 1px 2px #000; pointer-events: none; }
+.hud .big { font: 600 22px var(--mono); }
+.hud span { color: var(--muted); }
+.hud .sc { color: var(--rose); font-weight: 500; }
+.key { position: absolute; right: 14px; bottom: 12px; display: flex; gap: 10px; align-items: center; font: 11px var(--mono); color: var(--muted);
+  text-shadow: 0 1px 2px #000; pointer-events: none; max-width: 60%; text-align: right; }
+.hint { position: absolute; left: 14px; bottom: 12px; font: 11px var(--mono); color: var(--muted); pointer-events: none; text-shadow: 0 1px 2px #000; }
+.split { position: absolute; inset: 0; pointer-events: none; display: grid; grid-template-columns: 1fr 1fr; }
+.split span { text-align: center; padding-top: 10px; font: 600 12px var(--mono); letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--ink); text-shadow: 0 1px 2px #000; }
+.split span:first-child { border-right: 1px solid rgba(226, 231, 236, 0.18); color: var(--cyan); text-align: right; padding-right: 14px; }
+.split span:last-child { color: var(--rose); text-align: left; padding-left: 14px; }
+.msg { position: absolute; inset: 0; display: grid; place-items: center; font: 14px var(--sans); color: var(--muted); padding: 20px; text-align: center; }
+.ctl { display: flex; align-items: center; gap: 12px 16px; flex-wrap: wrap; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; }
+.ctl .play { font: 600 13px var(--sans); color: var(--ground); background: var(--amber); border: 0; border-radius: 6px; padding: 7px 16px; cursor: pointer; min-width: 74px; }
+#slider { flex: 1 1 260px; accent-color: var(--amber); min-width: 0; }
+.opts { display: flex; flex-wrap: wrap; gap: 10px 22px; align-items: center; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; }
+.opt { display: flex; align-items: center; gap: 8px; font: 12px var(--mono); color: var(--muted); }
+.seg { display: inline-flex; }
+.seg button { font: 500 12px var(--mono); padding: 3px 10px; border-radius: 0; margin-left: -1px; }
+.seg button:first-child { border-radius: 6px 0 0 6px; margin-left: 0; }
+.seg button:last-child { border-radius: 0 6px 6px 0; }
+.seg button[aria-pressed="true"] { background: var(--line); color: var(--ink); }
+.seg button:disabled { opacity: 0.4; cursor: not-allowed; }
+.opt input[type=range] { width: 130px; accent-color: var(--cyan); }
+.opt select { font: 12px var(--mono); color: var(--ink); background: var(--ground); border: 1px solid var(--line); border-radius: 5px; padding: 2px 4px; }
+.gifrow .rec { font: 600 13px var(--sans); color: var(--ink); background: transparent; border: 1px solid var(--rose); border-radius: 6px; padding: 6px 14px; cursor: pointer; }
+.gifrow .rec[aria-pressed="true"] { background: var(--rose); color: var(--ground); }
+.giftext { font: 12px var(--mono); color: var(--muted); }
+.gifout { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px; display: grid; gap: 6px; }
+.gifout img { max-width: 100%; border-radius: 4px; }
+.gifout p { margin: 0; font: 12px var(--mono); color: var(--muted); }
+.opt output { color: var(--ink); min-width: 4.5ch; font-variant-numeric: tabular-nums; white-space: nowrap; }
+#fps { width: 170px; }
+.charts { display: grid; grid-template-columns: 1fr; gap: 14px; }
+@media (min-width: 760px) { .charts { grid-template-columns: 1fr 1fr; } }
+.chart { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px 6px; min-width: 0; }
+.chart h3 { font: 600 13px var(--sans); margin: 0 0 2px; }
+.chart h3 span { font: 12px var(--mono); color: var(--muted); font-weight: 400; margin-left: 6px; }
+.chart svg { width: 100%; height: auto; display: block; }
+.chart .k { font: 11px var(--mono); color: var(--muted); display: flex; gap: 14px; }
+.chart .k i { display: inline-block; width: 14px; height: 2px; vertical-align: middle; margin-right: 5px; }
+.foot { color: var(--muted); font-size: 12px; max-width: 110ch; margin: 0; }
+</style>
+
+<div class="wrap">
+  <header>
+    <div>
+      <h1>__HEADING__</h1>
+      <p class="sub">__SUBTITLE__</p>
+    </div>
+    <nav class="tabs" id="tabs" role="tablist"></nav>
+  </header>
+
+  <div class="stage">
+    <canvas id="gl"></canvas>
+    <div class="hud" id="hud"></div>
+    <div class="hint">drag to orbit · scroll or pinch to zoom · double-click to reset</div>
+    <div class="key"><canvas id="wheel" width="38" height="38"></canvas><span id="keytext"></span></div>
+    <div class="split" id="split"><span>neutrons · ρ<sub>n</sub>, ξ<sub>n</sub></span><span>protons · ρ<sub>p</sub>, ξ<sub>p</sub></span></div>
+    <div class="msg" id="msg">Loading frames…</div>
+  </div>
+
+  <div class="ctl">
+    <button type="button" class="play" id="play">Play</button>
+    <input type="range" id="slider" min="0" max="0" value="0" aria-label="Time">
+    <label class="opt" for="fps">speed <input type="range" id="fps" min="0" max="1000" step="1" value="586"><output id="fpsOut"></output></label>
+    <label class="opt"><input type="checkbox" id="spin"> rotate</label>
+  </div>
+
+  <div class="ctl gifrow">
+    <button type="button" class="rec" id="rec">Record GIF</button>
+    <label class="opt" for="gifW">width <select id="gifW"><option value="480">480 px</option><option value="720" selected>720 px</option><option value="960">960 px</option></select></label>
+    <label class="opt" for="gifN">frames <select id="gifN"><option value="60">60</option><option value="120" selected>120</option><option value="240">240</option></select></label>
+    <label class="opt" for="gifRange">range <select id="gifRange"><option value="all" selected>whole run</option><option value="here">from current frame</option></select></label>
+    <span class="opt">panels
+      <label><input type="checkbox" id="pQ20" checked> Q20</label>
+      <label><input type="checkbox" id="pPair" checked> pairing</label>
+      <label><input type="checkbox" id="pDE"> energy error</label>
+      <label><input type="checkbox" id="pNeck"> <span id="pNeckLab">neck</span></label>
+      <label><input type="checkbox" id="pLev" checked> levels</label>
+    </span>
+    <span class="giftext" id="gifMsg">records with the current view, camera and speed setting; "rotate" turns the camera during the GIF</span>
+  </div>
+  <div class="gifout" id="gifOut" hidden><img id="gifImg" alt="Recorded GIF of the current view"><p>Right-click the image and choose "Save image as" to keep it.</p></div>
+
+  <div class="opts">
+    <div class="opt">view
+      <span class="seg" id="mode"><button type="button" data-v="0" aria-pressed="true">pairing glow</button><button type="button" data-v="1" aria-pressed="false">coloured surfaces</button><button type="button" data-v="2" aria-pressed="false">core only</button></span>
+    </div>
+    <div class="opt">pairing of
+      <span class="seg" id="species"><button type="button" data-v="0" aria-pressed="false">neutrons</button><button type="button" data-v="1" aria-pressed="false">protons</button><button type="button" data-v="2" aria-pressed="true">split n | p</button></span>
+    </div>
+    <div class="opt">phase colours
+      <span class="seg" id="cmap"><button type="button" data-v="0" aria-pressed="false">rainbow</button><button type="button" data-v="1" aria-pressed="true">twilight</button></span>
+    </div>
+    <div class="opt">surface of
+      <span class="seg" id="rhosel"><button type="button" data-v="0" aria-pressed="true">n+p</button><button type="button" data-v="1" aria-pressed="false">n</button><button type="button" data-v="2" aria-pressed="false">p</button></span>
+    </div>
+    <label class="opt" for="core">core ρ <input type="range" id="core" min="0.02" max="0.16" step="0.005" value="0.11"><output id="coreOut">0.110</output> fm⁻³</label>
+    <label class="opt" for="cloudIso">cloud ρ <input type="range" id="cloudIso" min="0.002" max="0.08" step="0.002" value="0.02"><output id="cloudIsoOut">0.020</output> fm⁻³</label>
+    <label class="opt" for="cloud">cloud opacity <input type="range" id="cloud" min="0.05" max="0.9" step="0.05" value="0.35"><output id="cloudOut">0.35</output></label>
+    <label class="opt" for="glow">glow <input type="range" id="glow" min="0.1" max="4" step="0.05" value="2"><output id="glowOut">2.00</output></label>
+    <label class="opt" for="gamma">glow contrast <input type="range" id="gamma" min="0.5" max="4" step="0.1" value="2"><output id="gammaOut">2.0</output></label>
+    <label class="opt" for="glowTh">glow above <input type="range" id="glowTh" min="0" max="0.9" step="0.02" value="0"><output id="glowThOut">0.00</output> of max |ξ|</label>
+  </div>
+
+  <section class="charts" id="charts"></section>
+
+  <p class="foot">Pairing glow: the core (opaque, slate) and the cloud (translucent) are density surfaces; the light is the pair density ξ, which lives where orbitals are fractionally occupied (it peaks near ρ ≈ 0.07 fm⁻³, in the nuclear surface). It appears above the "glow above" fraction of its maximum, coloured by its phase (hue or twilight; the phase of Δ is the same), with brightness ∝ |ξ|^γ ("glow contrast" γ, default 2: half the maximum pairing density glows at a quarter of the peak), on one scale for the whole run, so frames and regions with more pairing glow more; the core hides what is inside it, so the glow reads as a pairing skin around the core. The condensate phase turns in time at about 2λ/ħ, so the colours cycle. Coloured surfaces: the same two surfaces painted with ξ (colour strength = |ξ|, slate = unpaired). In the separate n or p surfaces the thresholds apply to that species alone. Split n | p: neutrons on the left, protons on the right, one camera; each pane draws the density of its own species with the core and cloud thresholds scaled by N/A and Z/A, so both show the same relative density level.</p>
+</div>
+
+<script>
+const DATA = /*__DATA__*/null;
+const $ = id => document.getElementById(id);
+const canvas = $('gl');
+const gl = canvas.getContext('webgl2', { antialias: false, premultipliedAlpha: false, preserveDrawingBuffer: true });
+
+function hsv(h, s, v) {
+  const i = Math.floor(h * 6), f = h * 6 - i, p = v * (1 - s), q = v * (1 - f * s), t = v * (1 - (1 - f) * s);
+  return [[v,t,p],[q,v,p],[p,v,t],[p,q,v],[t,p,v],[v,p,q]][((i % 6) + 6) % 6];
+}
+const TW = [[0.886,0.850,0.888],[0.580,0.660,0.790],[0.370,0.420,0.740],[0.330,0.200,0.560],[0.190,0.080,0.230],[0.470,0.140,0.300],[0.690,0.300,0.290],[0.800,0.580,0.520],[0.886,0.850,0.888]];
+function cyc(h, cmap) {
+  if (cmap === 0) return hsv(h, 0.78, 1);
+  const x = (((h % 1) + 1) % 1) * 8, i = Math.floor(x), f0 = x - i, f = f0 * f0 * (3 - 2 * f0);
+  return TW[i].map((v, k) => v + (TW[Math.min(i + 1, 8)][k] - v) * f);
+}
+function drawWheel(cmap) {
+  const cv = $('wheel'), g = cv.getContext('2d'), n = cv.width, im = g.createImageData(n, n), r0 = n / 2;
+  for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) {
+    const dx = x + 0.5 - r0, dy = y + 0.5 - r0, r = Math.hypot(dx, dy) / r0, o = (y * n + x) * 4;
+    if (r > 1) continue;
+    const c = cyc((Math.atan2(-dy, dx) + Math.PI) / (2 * Math.PI), cmap), m = Math.pow(r, 0.6), b = [0.32, 0.35, 0.40];
+    for (let k = 0; k < 3; k++) im.data[o + k] = 255 * (b[k] + (c[k] - b[k]) * m);
+    im.data[o + 3] = 255;
+  }
+  g.putImageData(im, 0, 0);
+}
+
+const VS = `#version 300 es
+in vec2 aPos; out vec2 vUv;
+void main() { vUv = aPos; gl_Position = vec4(aPos, 0.0, 1.0); }`;
+
+const FS = `#version 300 es
+precision highp float;
+precision highp sampler3D;
+uniform sampler3D uA, uB;
+uniform vec3 uHalf, uEye, uFwd, uRight, uUp;
+uniform float uTanF, uAspect, uIsoIn, uIsoOut, uCloud, uShell, uGlow, uGlowTh, uGamma;
+uniform int uMode, uSpecies, uRho, uCmap;
+in vec2 vUv; out vec4 o;
+
+vec3 tc(vec3 p) { return vec3(p.x / (2.0 * uHalf.x) + 0.5, p.z / (2.0 * uHalf.z) + 0.5, p.y / (2.0 * uHalf.y) + 0.5); }
+float rho(vec3 p) { vec4 a = texture(uA, tc(p)); return uRho == 0 ? a.r + a.g : (uRho == 1 ? a.r : a.g); }
+vec2 dlt(vec3 p) { vec2 d = uSpecies == 0 ? texture(uA, tc(p)).ba : texture(uB, tc(p)).rg; return d * 2.0 - 1.0; }
+vec3 hsv(float h, float s, float v) { vec3 k = clamp(abs(mod(h * 6.0 + vec3(0.0, 4.0, 2.0), 6.0) - 3.0) - 1.0, 0.0, 1.0); return v * mix(vec3(1.0), k, s); }
+// twilight-like cyclic map (light at phase +-pi, blue lobe, dark at phase 0, red lobe)
+const vec3 TW[9] = vec3[9](vec3(0.886, 0.850, 0.888), vec3(0.580, 0.660, 0.790), vec3(0.370, 0.420, 0.740),
+  vec3(0.330, 0.200, 0.560), vec3(0.190, 0.080, 0.230), vec3(0.470, 0.140, 0.300), vec3(0.690, 0.300, 0.290),
+  vec3(0.800, 0.580, 0.520), vec3(0.886, 0.850, 0.888));
+vec3 cyc(float h) {
+  if (uCmap == 0) return hsv(h, 0.78, 1.0);
+  float x = fract(h) * 8.0; int i = int(floor(x)); float f = smoothstep(0.0, 1.0, x - float(i));
+  return mix(TW[i], TW[min(i + 1, 8)], f);
+}
+vec3 pairColour(vec2 d) {
+  float m = clamp(length(d), 0.0, 1.0), h = atan(d.y, d.x) / 6.2831853 + 0.5;
+  return mix(vec3(0.32, 0.35, 0.40), cyc(h), pow(m, 0.6));
+}
+vec3 normalAt(vec3 p) {
+  float e = 0.5;
+  vec3 g = vec3(rho(p + vec3(e, 0, 0)) - rho(p - vec3(e, 0, 0)), rho(p + vec3(0, e, 0)) - rho(p - vec3(0, e, 0)),
+                rho(p + vec3(0, 0, e)) - rho(p - vec3(0, 0, e)));
+  return -normalize(g + 1e-6);
+}
+vec3 shadeBase(vec3 p, vec3 rd, vec3 c) {
+  vec3 n = normalAt(p), L = normalize(-rd + 0.7 * uUp + 0.45 * uRight);
+  float diff = max(dot(n, L), 0.0), spec = pow(max(dot(n, normalize(L - rd)), 0.0), 48.0), rim = pow(1.0 - max(dot(n, -rd), 0.0), 3.0);
+  return c * (0.22 + 0.78 * diff) + 0.22 * spec + 0.18 * rim * c;
+}
+vec3 shade(vec3 p, vec3 rd) {
+  vec3 n = normalAt(p);
+  vec3 L = normalize(-rd + 0.7 * uUp + 0.45 * uRight);
+  float diff = max(dot(n, L), 0.0), spec = pow(max(dot(n, normalize(L - rd)), 0.0), 48.0);
+  float rim = pow(1.0 - max(dot(n, -rd), 0.0), 3.0);
+  vec3 c = pairColour(dlt(p));
+  return c * (0.22 + 0.78 * diff) + 0.30 * spec + 0.22 * rim * c;
+}
+void main() {
+  vec3 rd = normalize(uFwd + vUv.x * uAspect * uTanF * uRight + vUv.y * uTanF * uUp);
+  vec3 bg = mix(vec3(0.016, 0.02, 0.028), vec3(0.05, 0.06, 0.075), 0.5 + 0.5 * vUv.y);
+  vec3 inv = 1.0 / rd, t0 = (-uHalf - uEye) * inv, t1 = (uHalf - uEye) * inv;
+  vec3 tmin = min(t0, t1), tmax = max(t0, t1);
+  float tn = max(max(tmin.x, tmin.y), max(tmin.z, 0.0)), tf = min(min(tmax.x, tmax.y), tmax.z);
+  if (tn >= tf) { o = vec4(bg, 1.0); return; }
+  const float STEP = 0.25;
+  vec3 acc = vec3(0.0), gacc = vec3(0.0); float A = 0.0;
+  // mode 0: pairing glow (neutral core and cloud, xi as emission); 1: core + cloud coloured by xi; 2: core only, coloured
+  float t = tn, r0 = rho(uEye + rd * t), prevI = r0 - uIsoIn, prevO = r0 - uIsoOut;
+  for (int i = 0; i < 800; i++) {
+    t += STEP;
+    if (t > tf || A > 0.985) break;
+    vec3 p = uEye + rd * t;
+    float r = rho(p), vi = r - uIsoIn, vo = r - uIsoOut;
+    if (uMode != 2 && (prevO < 0.0) != (vo < 0.0)) {           // entering or leaving the cloud
+      float lo = t - STEP, hi = t, s0 = prevO;
+      for (int k = 0; k < 5; k++) { float mid = 0.5 * (lo + hi); if ((rho(uEye + rd * mid) - uIsoOut < 0.0) == (s0 < 0.0)) lo = mid; else hi = mid; }
+      vec3 q = uEye + rd * hi, n = normalAt(q);
+      float fres = pow(1.0 - abs(dot(n, rd)), 2.0);
+      vec3 c = uMode == 0 ? shadeBase(q, rd, vec3(0.62, 0.72, 0.86)) : shade(q, rd) * 0.85 + 0.15 * vec3(0.75, 0.82, 0.9) * fres;
+      float a = (uMode == 0 ? 0.55 : 1.0) * uCloud * (0.25 + 0.75 * fres) * (prevO < 0.0 ? 1.0 : 0.55);
+      acc += (1.0 - A) * a * c; A += (1.0 - A) * a;
+    }
+    if (uMode == 1 && vo > 0.0 && vi < 0.0) {                  // fog between the cloud and the core
+      float a = 1.0 - exp(-uCloud * 0.08 * STEP);
+      acc += (1.0 - A) * a * pairColour(dlt(p)) * 0.55; A += (1.0 - A) * a;
+    }
+    if (uMode == 0) {                                          // the pair density as light, above the knee
+      vec2 x = dlt(p); float m = length(x);
+      float w = smoothstep(uGlowTh, uGlowTh + 0.3 * (1.0 - uGlowTh) + 1e-3, m);
+      if (w > 0.0) {
+        vec3 c = cyc(atan(x.y, x.x) / 6.2831853 + 0.5);
+        c /= max(max(c.r, c.g), max(c.b, 1e-3));               // emission at full brightness for every phase
+        float e = w * pow(m, uGamma);                         // brightness rises steeply with |xi|
+        gacc += (1.0 - A) * c * (uGlow * 0.4 * e * STEP);
+        A += (1.0 - A) * (1.0 - exp(-uGlow * 0.04 * e * STEP));
+      }
+    }
+    if (prevI < 0.0 && vi >= 0.0) {                            // the core: opaque
+      float lo = t - STEP, hi = t;
+      for (int k = 0; k < 6; k++) { float mid = 0.5 * (lo + hi); if (rho(uEye + rd * mid) - uIsoIn < 0.0) lo = mid; else hi = mid; }
+      vec3 q = uEye + rd * hi;
+      acc += (1.0 - A) * (uMode == 0 ? shadeBase(q, rd, vec3(0.30, 0.33, 0.39)) : shade(q, rd));
+      A = 1.0; break;
+    }
+    prevI = vi; prevO = vo;
+  }
+  vec3 col = acc + (1.0 - A) * bg + gacc / (1.0 + 0.6 * gacc);  // roll-off on the glow only, so strong pairing stays brighter
+  o = vec4(col, 1.0);
+}`;
+
+const FPS_MIN = 0.25, FPS_MAX = 240;
+const fpsOf = v => FPS_MIN * Math.pow(FPS_MAX / FPS_MIN, v / 1000);
+const sliderOf = r => Math.round(1000 * Math.log(r / FPS_MIN) / Math.log(FPS_MAX / FPS_MIN));
+const fmtFps = r => r < 1 ? r.toFixed(2) : r < 10 ? r.toFixed(1) : r.toFixed(0);
+let prog, U = {}, texA, texB, ds = null, voxels = null, frame = 0, dirty = true, playing = false, lastTs = 0, carry = 0, fps = 14;
+const view = { yaw: 0.55, pitch: 0.32, dist: 1, mode: 0, species: 2, rho: 0, isoIn: 0.11, isoOut: 0.02, cloud: 0.35, glow: 2, glowTh: 0, gamma: 2, cmap: 1 };
+drawWheel(view.cmap);
+const cache = {};
+
+function compile(type, src) {
+  const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+function initGL() {
+  prog = gl.createProgram();
+  gl.attachShader(prog, compile(gl.VERTEX_SHADER, VS)); gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FS));
+  gl.bindAttribLocation(prog, 0, 'aPos'); gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+  gl.useProgram(prog);
+  ['uA', 'uB', 'uHalf', 'uEye', 'uFwd', 'uRight', 'uUp', 'uTanF', 'uAspect', 'uIsoIn', 'uIsoOut', 'uCloud', 'uShell', 'uGlow', 'uGlowTh', 'uGamma', 'uMode', 'uSpecies', 'uRho', 'uCmap']
+    .forEach(n => U[n] = gl.getUniformLocation(prog, n));
+  const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+  const mk = unit => { const t = gl.createTexture(); gl.activeTexture(gl.TEXTURE0 + unit); gl.bindTexture(gl.TEXTURE_3D, t);
+    for (const [p, v] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE],
+      [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_3D, p, v);
+    return t; };
+  texA = mk(0); texB = mk(1);
+  gl.uniform1i(U.uA, 0); gl.uniform1i(U.uB, 1);
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+}
+
+async function inflate(b64) {
+  const bin = atob(b64), bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+function upload() {
+  const n = ds.nx * ds.ny * ds.nz, base = frame * n * 6, a = new Uint8Array(n * 4), b = new Uint8Array(n * 2);
+  for (let j = 0; j < n; j++) {
+    const s = base + j * 6;
+    a[j * 4] = voxels[s]; a[j * 4 + 1] = voxels[s + 1]; a[j * 4 + 2] = voxels[s + 2]; a[j * 4 + 3] = voxels[s + 3];
+    b[j * 2] = voxels[s + 4]; b[j * 2 + 1] = voxels[s + 5];
+  }
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_3D, texA);
+  gl.texImage3D(gl.TEXTURE_3D, 0, gl.RGBA8, ds.nz, ds.ny, ds.nx, 0, gl.RGBA, gl.UNSIGNED_BYTE, a);
+  gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_3D, texB);
+  gl.texImage3D(gl.TEXTURE_3D, 0, gl.RG8, ds.nz, ds.ny, ds.nx, 0, gl.RG, gl.UNSIGNED_BYTE, b);
+}
+
+function render() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+  const w = Math.round(canvas.clientWidth * dpr), h = Math.round(canvas.clientHeight * dpr);
+  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+  const half = [ds.nz * ds.dx / 2, ds.nx * ds.dx / 2, ds.ny * ds.dx / 2];
+  const split = view.species === 2;
+  const R = Math.hypot(...half) * 2.2 * view.dist * (split ? 1.35 : 1), cp = Math.cos(view.pitch);
+  const eye = [R * cp * Math.sin(view.yaw), R * Math.sin(view.pitch), R * cp * Math.cos(view.yaw)];
+  const nrm = v => { const l = Math.hypot(...v); return v.map(x => x / l); };
+  const fwd = nrm(eye.map(x => -x)), right = nrm([-fwd[2], 0, fwd[0]]);     // fwd x world-up
+  const up = [right[1] * fwd[2] - right[2] * fwd[1], right[2] * fwd[0] - right[0] * fwd[2], right[0] * fwd[1] - right[1] * fwd[0]];
+  gl.uniform3fv(U.uHalf, half); gl.uniform3fv(U.uEye, eye); gl.uniform3fv(U.uFwd, fwd);
+  gl.uniform3fv(U.uRight, right); gl.uniform3fv(U.uUp, up);
+  gl.uniform1f(U.uTanF, Math.tan(17.5 * Math.PI / 180));
+  const setIso = f => { gl.uniform1f(U.uIsoIn, f * view.isoIn / ds.rho_top); gl.uniform1f(U.uIsoOut, f * view.isoOut / ds.rho_top); };
+  setIso(1);
+  gl.uniform1f(U.uCloud, view.cloud); gl.uniform1f(U.uShell, 0.22); gl.uniform1f(U.uGlow, view.glow); gl.uniform1f(U.uGlowTh, view.glowTh); gl.uniform1f(U.uGamma, view.gamma);
+  gl.uniform1i(U.uMode, view.mode); gl.uniform1i(U.uRho, view.rho); gl.uniform1i(U.uCmap, view.cmap);
+  const fn = ds.frac_n ?? 0.6;
+  const hw = Math.floor(w / 2);
+  const panes = split ? [[0, hw, 0], [hw, w - hw, 1]] : [[0, w, view.species]];   // [x, width, species]: one camera for all
+  for (const [x0, pw, sp] of panes) {
+    gl.viewport(x0, 0, pw, h);
+    gl.uniform1f(U.uAspect, pw / h); gl.uniform1i(U.uSpecies, sp);
+    if (split) {                       // each pane: the density of its own species, thresholds scaled by its share
+      gl.uniform1i(U.uRho, sp + 1); setIso(sp === 0 ? fn : 1 - fn);
+    }
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  }
+}
+
+function hud() {
+  const o = ds.obs, i = frame, t = ds.times[i], ts = ds.t_scission;
+  let h = `<div class="big">t = ${t.toFixed(0)} fm/c</div>`
+    + `<div><span>Q20</span> ${o.Q20[i].toFixed(o.Q20[i] < 100 ? 1 : 0)} b`
+    + (o.neck ? ` <span>· neck ρ</span> ${o.neck[i].toFixed(3)} fm⁻³` : '')
+    + (o.sep ? ` <span>· separation</span> ${o.sep[i].toFixed(1)} fm` : '') + '</div>'
+    + `<div><span>E<sub>pair</sub> n/p</span> ${o.En[i].toFixed(2)} / ${o.Ep[i].toFixed(2)} MeV`
+    + ` <span>· E − E(0)</span> ${o.dE[i].toExponential(1)} MeV</div>`;
+  if (o.AL) {
+    const L = [o.AL[i], o.ZL[i]], R = [o.AR[i], o.ZR[i]], [hv, lt] = L[0] >= R[0] ? [L, R] : [R, L];
+    h += `<div><span>sides</span> A ${hv[0].toFixed(1)} (Z ${hv[1].toFixed(1)}) + A ${lt[0].toFixed(1)} (Z ${lt[1].toFixed(1)})</div>`;
+  }
+  if (ts != null) h += t >= ts ? `<div class="sc">scission at ${ts.toFixed(0)} fm/c</div>` : `<div><span>scission at ${ts.toFixed(0)} fm/c</span></div>`;
+  $('hud').innerHTML = h;
+  $('slider').value = i;
+  const cm = view.cmap ? 'twilight' : 'hue';
+  $('keytext').textContent = view.species === 2
+    ? `pair density ξ, n | p: ${cm} = phase, brightness = |ξ| (max ${ds.amax[0].toFixed(4)} | ${ds.amax[1].toFixed(4)} fm⁻³; `
+      + `max |Δ| ${ds.dmax[0].toFixed(2)} | ${ds.dmax[1].toFixed(2)} MeV)`
+    : `${view.species ? 'proton' : 'neutron'} pair density ξ: ${cm} = phase, `
+      + `brightness = |ξ| (max ${ds.amax[view.species].toFixed(4)} fm⁻³; max |Δ| ${ds.dmax[view.species].toFixed(2)} MeV)`;
+  $('split').hidden = view.species !== 2;
+  document.querySelectorAll('#rhosel button').forEach(b => { b.disabled = view.species === 2; });
+  $('rhosel').title = view.species === 2 ? 'split view: each pane shows its own species, thresholds scaled by N/A and Z/A' : '';
+  cursors();
+}
+
+const charts = [];
+function chart(title, unit, xs, lines, opts = {}) {
+  const W = 520, H = 170, L0 = 46, R0 = 10, T0 = 10, B0 = 24;
+  const div = document.createElement('div'); div.className = 'chart';
+  div.innerHTML = `<h3>${title}<span>${unit}</span></h3>`;
+  const x0 = xs[0], x1 = Math.max(xs[xs.length - 1], x0 + 1), all = lines.flatMap(l => l.y);
+  let y0 = opts.zero === false ? Math.min(...all) : Math.min(0, ...all), y1 = Math.max(...all, opts.hline ?? -Infinity);
+  const pad = (y1 - y0) * 0.08 || 1; y1 += pad; if (opts.zero === false) y0 -= pad;
+  const sx = x => L0 + (x - x0) / (x1 - x0) * (W - L0 - R0), sy = y => T0 + (1 - (y - y0) / (y1 - y0)) * (H - T0 - B0);
+  const ticks = (lo, hi, n) => { const s0 = (hi - lo) / n, m = Math.pow(10, Math.floor(Math.log10(s0))), st = [1, 2, 2.5, 5, 10].map(k => k * m).find(s => (hi - lo) / s <= n);
+    const out = []; for (let v = Math.ceil(lo / st) * st; v <= hi + 1e-9; v += st) out.push(+v.toFixed(8)); return out; };
+  const tx = 'fill="#8b97a4" font-size="11" font-family="IBM Plex Mono, monospace"';
+  let s = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${title}">`;
+  ticks(y0, y1, 4).forEach(v => { s += `<line x1="${L0}" x2="${W - R0}" y1="${sy(v)}" y2="${sy(v)}" stroke="#262e38"/><text x="${L0 - 6}" y="${sy(v) + 4}" ${tx} text-anchor="end">${+v.toPrecision(3)}</text>`; });
+  ticks(x0, x1, 6).forEach(v => { s += `<text x="${sx(v)}" y="${H - 6}" ${tx} text-anchor="middle">${v}</text>`; });
+  if (opts.hline != null) s += `<line x1="${L0}" x2="${W - R0}" y1="${sy(opts.hline)}" y2="${sy(opts.hline)}" stroke="#ef7f8f" stroke-dasharray="3 3"/><text x="${W - R0}" y="${sy(opts.hline) - 4}" fill="#ef7f8f" font-size="11" font-family="IBM Plex Mono, monospace" text-anchor="end">scission threshold</text>`;
+  lines.forEach(l => { s += `<path d="${xs.map((x, i) => `${i ? 'L' : 'M'}${sx(x).toFixed(1)},${sy(l.y[i]).toFixed(1)}`).join('')}" fill="none" stroke="${l.c}" stroke-width="1.8"/>`; });
+  s += `<line class="cur" y1="${T0}" y2="${H - B0}" stroke="#f0b64e" stroke-width="1.4"/>`;
+  lines.forEach(l => { s += `<circle class="dot" r="4" fill="${l.c}" stroke="#0b0e12" stroke-width="1.5"/>`; });
+  div.insertAdjacentHTML('beforeend', s + '</svg>');
+  if (lines.length > 1) div.insertAdjacentHTML('beforeend', `<div class="k">${lines.map(l => `<span><i style="background:${l.c}"></i>${l.name}</span>`).join('')}</div>`);
+  $('charts').appendChild(div); charts.push({ div, sx, sy, lines });
+}
+// canonical levels of the current frame: occupation v2 against <h>, neutrons and protons
+let lvl = null;
+async function levelsChart() {
+  const n = ds.levels.n, F = ds.times.length, b = cache['lv_' + ds.id] || (cache['lv_' + ds.id] = await inflate(ds.levels.data));
+  lvl = { n, occ: b.subarray(0, F * n), iso: b.subarray(F * n, 2 * F * n), e: new Int16Array(b.buffer, b.byteOffset + 2 * F * n, F * n) };
+  const W = 520, H = 170, L0 = 46, R0 = 10, T0 = 10, B0 = 24, e0 = -30, e1 = 10;
+  lvl.sx = v => L0 + v * (W - L0 - R0); lvl.sy = e => T0 + (1 - (e - e0) / (e1 - e0)) * (H - T0 - B0); lvl.e0 = e0; lvl.e1 = e1;
+  const tx = 'fill="#8b97a4" font-size="11" font-family="IBM Plex Mono, monospace"';
+  let s = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Canonical levels">`;
+  [-30, -20, -10, 0, 10].forEach(v => { s += `<line x1="${L0}" x2="${W - R0}" y1="${lvl.sy(v)}" y2="${lvl.sy(v)}" stroke="#262e38"/><text x="${L0 - 6}" y="${lvl.sy(v) + 4}" ${tx} text-anchor="end">${v}</text>`; });
+  [0, 0.25, 0.5, 0.75, 1].forEach(v => { s += `<text x="${lvl.sx(v)}" y="${H - 6}" ${tx} text-anchor="middle">${v}</text>`; });
+  s += `<g class="lv">${'<circle r="2.6"/>'.repeat(n)}</g><text class="none" x="${(W + L0) / 2}" y="${H / 2}" ${tx} text-anchor="middle">no levels recorded at this time</text></svg>`;
+  const div = document.createElement('div'); div.className = 'chart';
+  div.innerHTML = `<h3>Canonical levels<span>⟨h⟩ (MeV) vs occupation v², this frame</span></h3>` + s
+    + `<div class="k"><span><i style="background:#6cc6e0"></i>neutrons</span><span><i style="background:#ef7f8f"></i>protons</span><span>partly occupied = paired</span></div>`;
+  $('charts').appendChild(div); lvl.dots = [...div.querySelectorAll('.lv circle')]; lvl.none = div.querySelector('text.none');
+  drawLevels();
+}
+function drawLevels() {
+  if (!lvl || !ds.levels) return;
+  const base = frame * lvl.n;
+  let shown = 0;
+  for (let k = 0; k < lvl.n; k++) {
+    const q = lvl.occ[base + k], e = lvl.e[base + k] / 10, d = lvl.dots[k];
+    if (q === 255 || e < lvl.e0 || e > lvl.e1) { d.setAttribute('visibility', 'hidden'); continue; }
+    d.setAttribute('visibility', 'visible'); d.setAttribute('cx', lvl.sx(q / 254)); d.setAttribute('cy', lvl.sy(e));
+    d.setAttribute('fill', lvl.iso[base + k] ? '#ef7f8f' : '#6cc6e0'); d.setAttribute('fill-opacity', '0.8'); shown++;
+  }
+  lvl.none.setAttribute('visibility', shown ? 'hidden' : 'visible');
+}
+function cursors() {
+  drawLevels();
+  charts.forEach(c => {
+    const x = c.sx(ds.times[frame]);
+    const cur = c.div.querySelector('.cur'); cur.setAttribute('x1', x); cur.setAttribute('x2', x);
+    c.div.querySelectorAll('.dot').forEach((d, j) => { d.setAttribute('cx', x); d.setAttribute('cy', c.sy(c.lines[j].y[frame])); });
+  });
+}
+
+async function select(id) {
+  playing = false; $('play').textContent = 'Play';
+  document.querySelectorAll('#tabs button').forEach(b => b.setAttribute('aria-selected', b.dataset.id === id));
+  ds = DATA.find(d => d.id === id);
+  $('msg').hidden = false; $('msg').textContent = 'Inflating frames…';
+  voxels = cache[id] || (cache[id] = await inflate(ds.data));
+  $('msg').hidden = true;
+  frame = ds.times.length - 1;
+  $('slider').max = ds.times.length - 1;
+  $('charts').innerHTML = ''; charts.length = 0; lvl = null;
+  const o = ds.obs;
+  if (o.neck) chart('Neck density', 'peak fm⁻³ in the neck plane vs t (fm/c)', ds.times, [{ y: o.neck, c: '#e2e7ec' }], { hline: 0.04 });
+  else if (o.sep) chart('Separation', 'fm between the density halves vs t (fm/c)', ds.times, [{ y: o.sep, c: '#e2e7ec' }], { zero: false });
+  chart('Elongation Q20', 'b vs t (fm/c)', ds.times, [{ y: o.Q20, c: '#f0b64e' }], { zero: false });
+  chart('Pairing energy', 'MeV vs t (fm/c)', ds.times, [{ y: o.En, c: '#6cc6e0', name: 'neutrons' }, { y: o.Ep, c: '#ef7f8f', name: 'protons' }]);
+  if (ds.levels) await levelsChart();
+  $('pNeckLab').textContent = o.neck ? 'neck' : 'separation';
+  $('pLev').disabled = !ds.levels; $('pLev').parentElement.title = ds.levels ? '' : 'this run recorded no canonical levels';
+  upload(); hud(); fpsLabel(); dirty = true;
+}
+
+function setFrame(f) { frame = Math.max(0, Math.min(ds.times.length - 1, f)); upload(); hud(); dirty = true; }
+
+function loop(ts) {
+  if (ds && voxels) {
+    const dtMs = lastTs ? Math.min(ts - lastTs, 250) : 0; lastTs = ts;
+    if (playing) {
+      carry += dtMs / 1000 * fps;
+      const n = Math.floor(carry);
+      if (n > 0) {
+        carry -= n;
+        if (frame >= ds.times.length - 1) { playing = false; $('play').textContent = 'Play'; }
+        else setFrame(Math.min(frame + n, ds.times.length - 1));
+      }
+    }
+    if ($('spin').checked) { view.yaw += 0.0035; dirty = true; }
+    if (dirty) { render(); dirty = false; }
+  }
+  requestAnimationFrame(loop);
+}
+
+// interaction
+const ptrs = new Map(); let pinch0 = 0, dist0 = 1;
+canvas.addEventListener('pointerdown', e => { canvas.setPointerCapture(e.pointerId); ptrs.set(e.pointerId, [e.clientX, e.clientY]);
+  if (ptrs.size === 2) { const [a, b] = [...ptrs.values()]; pinch0 = Math.hypot(a[0] - b[0], a[1] - b[1]); dist0 = view.dist; } });
+canvas.addEventListener('pointermove', e => {
+  if (!ptrs.has(e.pointerId)) return;
+  const [px, py] = ptrs.get(e.pointerId); ptrs.set(e.pointerId, [e.clientX, e.clientY]);
+  if (ptrs.size === 1) {
+    view.yaw -= (e.clientX - px) * 0.008;
+    view.pitch = Math.max(-1.45, Math.min(1.45, view.pitch + (e.clientY - py) * 0.008));
+  } else if (ptrs.size === 2) {
+    const [a, b] = [...ptrs.values()]; view.dist = Math.max(0.3, Math.min(3, dist0 * pinch0 / Math.max(1, Math.hypot(a[0] - b[0], a[1] - b[1]))));
+  }
+  dirty = true;
+});
+const end = e => ptrs.delete(e.pointerId);
+canvas.addEventListener('pointerup', end); canvas.addEventListener('pointercancel', end);
+canvas.addEventListener('wheel', e => { e.preventDefault(); view.dist = Math.max(0.3, Math.min(3, view.dist * Math.exp(e.deltaY * 0.001))); dirty = true; }, { passive: false });
+canvas.addEventListener('dblclick', () => { Object.assign(view, { yaw: 0.55, pitch: 0.32, dist: 1 }); dirty = true; });
+window.addEventListener('resize', () => dirty = true);
+
+function fpsLabel() {
+  const dt = ds && ds.times.length > 1 ? (ds.times[ds.times.length - 1] - ds.times[0]) / (ds.times.length - 1) : 2;
+  const r = fps * dt;
+  $('fpsOut').textContent = `${fmtFps(fps)} fps · ${r < 10 ? r.toFixed(1) : r.toFixed(0)} fm/c per s`;
+}
+$('fps').addEventListener('input', e => { fps = fpsOf(+e.target.value); fpsLabel(); });
+fpsLabel();
+$('play').addEventListener('click', () => {
+  playing = !playing; carry = 0; $('play').textContent = playing ? 'Pause' : 'Play';
+  if (playing && frame >= ds.times.length - 1) setFrame(0);
+});
+$('slider').addEventListener('input', e => { playing = false; $('play').textContent = 'Play'; setFrame(+e.target.value); });
+const seg = (id, key) => document.querySelectorAll(`#${id} button`).forEach(b => b.addEventListener('click', () => {
+  view[key] = +b.dataset.v; document.querySelectorAll(`#${id} button`).forEach(x => x.setAttribute('aria-pressed', x === b));
+  if (ds) hud(); dirty = true;
+}));
+seg('mode', 'mode'); seg('species', 'species'); seg('rhosel', 'rho'); seg('cmap', 'cmap');
+document.querySelectorAll('#cmap button').forEach(b => b.addEventListener('click', () => drawWheel(view.cmap)));
+const slide = (id, key, nd) => $(id).addEventListener('input', e => { view[key] = +e.target.value; $(id + 'Out').textContent = view[key].toFixed(nd); dirty = true; });
+slide('core', 'isoIn', 3); slide('cloudIso', 'isoOut', 3); slide('cloud', 'cloud', 2); slide('glowTh', 'glowTh', 2); slide('gamma', 'gamma', 1);
+slide('glow', 'glow', 2);
+$('spin').checked = !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+if (!gl) {
+  $('msg').textContent = 'This view needs WebGL 2, which this browser does not provide. Try a current Chrome, Firefox or Safari.';
+} else if (typeof DecompressionStream === 'undefined') {
+  $('msg').textContent = 'This view needs DecompressionStream (Chrome 80+, Firefox 113+, Safari 16.4+).';
+} else {
+  try {
+    initGL();
+    DATA.forEach(d => { const b = document.createElement('button'); b.type = 'button'; b.role = 'tab'; b.dataset.id = d.id;
+      b.textContent = `${d.label} · to ${d.times[d.times.length - 1].toFixed(0)} fm/c`; b.addEventListener('click', () => select(d.id)); $('tabs').appendChild(b); });
+    select(DATA[0].id).then(() => requestAnimationFrame(loop));
+  } catch (err) { $('msg').textContent = 'Could not start the renderer: ' + err.message; }
+}
+
+// ── GIF recording: median-cut palette from three frames, LZW encoder, saved through `downloads` ──
+function medianCut(pix, nColors) {
+  let boxes = [pix];
+  while (boxes.length < nColors) {
+    let bi = -1, bestRange = -1, bestCh = 0;
+    boxes.forEach((b, i) => {
+      if (b.length < 2) return;
+      for (let c = 0; c < 3; c++) {
+        let lo = 255, hi = 0;
+        for (let k = c; k < b.length; k += 3) { const v = b[k]; if (v < lo) lo = v; if (v > hi) hi = v; }
+        if (hi - lo > bestRange) { bestRange = hi - lo; bi = i; bestCh = c; }
+      }
+    });
+    if (bi < 0 || bestRange <= 0) break;
+    const b = boxes[bi], n = b.length / 3, idx = new Uint32Array(n);
+    for (let k = 0; k < n; k++) idx[k] = k;
+    idx.sort((p, q) => b[p * 3 + bestCh] - b[q * 3 + bestCh]);
+    const mid = n >> 1, A = new Uint8Array(mid * 3), B = new Uint8Array((n - mid) * 3);
+    for (let k = 0; k < n; k++) { const t = k < mid ? A : B, o = (k < mid ? k : k - mid) * 3, s0 = idx[k] * 3; t[o] = b[s0]; t[o + 1] = b[s0 + 1]; t[o + 2] = b[s0 + 2]; }
+    boxes.splice(bi, 1, A, B);
+  }
+  const pal = new Uint8Array(256 * 3);
+  boxes.forEach((b, i) => {
+    let r = 0, g = 0, bl = 0; const n = Math.max(1, b.length / 3);
+    for (let k = 0; k < b.length; k += 3) { r += b[k]; g += b[k + 1]; bl += b[k + 2]; }
+    pal[i * 3] = r / n; pal[i * 3 + 1] = g / n; pal[i * 3 + 2] = bl / n;
+  });
+  return pal;
+}
+function makeMapper(pal) {
+  const cache = new Int16Array(32768).fill(-1);
+  return (r, g, b) => {
+    const key = ((r >> 3) << 10) | ((g >> 3) << 5) | (b >> 3);
+    let c = cache[key];
+    if (c >= 0) return c;
+    let best = 0, bd = 1e9;
+    for (let i = 0; i < 256; i++) {
+      const dr = pal[i * 3] - r, dg = pal[i * 3 + 1] - g, db = pal[i * 3 + 2] - b, d = dr * dr + dg * dg + db * db;
+      if (d < bd) { bd = d; best = i; }
+    }
+    cache[key] = best; return best;
+  };
+}
+class ByteBuf {                     // growable byte array with push(...bytes)
+  constructor() { this.a = new Uint8Array(1 << 20); this.n = 0; }
+  push(...v) {
+    if (this.n + v.length > this.a.length) {
+      const b = new Uint8Array(Math.max(this.a.length * 2, this.n + v.length)); b.set(this.a); this.a = b;
+    }
+    for (const x of v) this.a[this.n++] = x;
+    return this.n;
+  }
+  bytes() { return this.a.subarray(0, this.n); }
+}
+function lzw(idx, out) {             // GIF LZW (min code size 8), packed into sub-blocks of <= 255 bytes
+  const minCode = 8, clear = 256, eoi = 257;
+  let codeSize = 9, next = 258, dict = new Map(), cur = 0, nbits = 0, block = [];
+  const flushByte = b => { block.push(b); if (block.length === 255) { out.push(255, ...block); block = []; } };
+  const emit = code => { cur |= code << nbits; nbits += codeSize; while (nbits >= 8) { flushByte(cur & 255); cur >>>= 8; nbits -= 8; } };
+  out.push(minCode);
+  emit(clear);
+  let prefix = idx[0];
+  for (let i = 1; i < idx.length; i++) {
+    const k = idx[i], key = prefix * 256 + k, hit = dict.get(key);
+    if (hit !== undefined) { prefix = hit; continue; }
+    emit(prefix);
+    if (next === 4096) { emit(clear); dict = new Map(); codeSize = 9; next = 258; }
+    else { if (next >= (1 << codeSize)) codeSize++; dict.set(key, next++); }
+    prefix = k;
+  }
+  emit(prefix); emit(eoi);
+  if (nbits > 0) flushByte(cur & 255);
+  if (block.length) out.push(block.length, ...block);
+  out.push(0);
+}
+let recording = false, recCancel = false;
+// ── chart panels for the GIF (drawn on the capture canvas) ──
+function fmtTick(v) {
+  const a = Math.abs(v);
+  return a === 0 ? '0' : a < 1e-2 || a >= 1e5 ? v.toExponential(1) : a >= 100 ? v.toFixed(0) : (+v.toPrecision(3)).toString();
+}
+function panelFrame(cx, x0, y0, w, h, title, unit) {
+  cx.fillStyle = '#141920'; cx.fillRect(x0, y0, w, h);
+  cx.strokeStyle = '#262e38'; cx.lineWidth = 1; cx.strokeRect(x0 + 0.5, y0 + 0.5, w - 1, h - 1);
+  const fs = Math.max(10, Math.round(h / 13));
+  cx.font = `600 ${fs}px "IBM Plex Sans", sans-serif`; cx.fillStyle = '#e2e7ec'; cx.textAlign = 'left';
+  cx.fillText(title, x0 + 8, y0 + fs + 4);
+  cx.font = `${Math.round(fs * 0.85)}px "IBM Plex Mono", monospace`; cx.fillStyle = '#8b97a4';
+  cx.fillText(unit, x0 + 8 + cx.measureText(title).width * (fs / (fs * 0.85)) + 10, y0 + fs + 4);
+  return { fs, L: x0 + Math.round(w * 0.16), R: x0 + w - 10, T: y0 + fs * 2 + 6, B: y0 + h - fs - 6 };
+}
+function drawLineChart(cx, x0, y0, w, h, title, unit, xs, lines, cur, opts = {}) {
+  const P = panelFrame(cx, x0, y0, w, h, title, unit), all = lines.flatMap(l => l.y).filter(Number.isFinite);
+  let lo = Math.min(...all, opts.hline ?? Infinity), hi = Math.max(...all, opts.hline ?? -Infinity);
+  if (opts.zero) lo = Math.min(0, lo);
+  if (hi - lo < 1e-12) { hi += 1e-6 + Math.abs(hi) * 0.05; lo -= 1e-6 + Math.abs(lo) * 0.05; }
+  const pad = (hi - lo) * 0.08; lo -= opts.zero && lo === 0 ? 0 : pad; hi += pad;
+  const x0d = xs[0], x1d = Math.max(xs[xs.length - 1], x0d + 1);
+  const sx = x => P.L + (x - x0d) / (x1d - x0d) * (P.R - P.L), sy = y => P.B - (y - lo) / (hi - lo) * (P.B - P.T);
+  cx.font = `${Math.round(P.fs * 0.85)}px "IBM Plex Mono", monospace`; cx.fillStyle = '#8b97a4';
+  cx.strokeStyle = '#262e38'; cx.lineWidth = 1;
+  [lo + pad, (lo + hi) / 2, hi - pad].forEach(v => {
+    cx.beginPath(); cx.moveTo(P.L, sy(v)); cx.lineTo(P.R, sy(v)); cx.stroke();
+    cx.textAlign = 'right'; cx.fillText(fmtTick(v), P.L - 4, sy(v) + 4);
+  });
+  cx.textAlign = 'left'; cx.fillText(`${x0d.toFixed(0)}`, P.L, P.B + P.fs);
+  cx.textAlign = 'right'; cx.fillText(`${x1d.toFixed(0)} fm/c`, P.R, P.B + P.fs);
+  if (opts.hline != null) {
+    cx.strokeStyle = '#ef7f8f'; cx.setLineDash([4, 3]); cx.beginPath(); cx.moveTo(P.L, sy(opts.hline)); cx.lineTo(P.R, sy(opts.hline)); cx.stroke(); cx.setLineDash([]);
+  }
+  lines.forEach(l => {
+    cx.strokeStyle = l.c; cx.lineWidth = 1.6; cx.beginPath();
+    xs.forEach((x, i) => { const X = sx(x), Y = sy(l.y[i]); i ? cx.lineTo(X, Y) : cx.moveTo(X, Y); }); cx.stroke();
+  });
+  const X = sx(xs[cur]);
+  cx.strokeStyle = '#f0b64e'; cx.lineWidth = 1.4; cx.beginPath(); cx.moveTo(X, P.T); cx.lineTo(X, P.B); cx.stroke();
+  lines.forEach(l => { cx.fillStyle = l.c; cx.beginPath(); cx.arc(X, sy(l.y[cur]), 3.2, 0, 2 * Math.PI); cx.fill(); });
+  if (lines.length > 1) {
+    let kx = P.R; cx.textAlign = 'right';
+    [...lines].reverse().forEach(l => { cx.fillStyle = l.c; cx.fillText(l.name, kx, P.T - 4); kx -= cx.measureText(l.name).width + 12; });
+  }
+  cx.textAlign = 'left';
+}
+function drawLevelsPanel(cx, x0, y0, w, h, cur) {
+  const P = panelFrame(cx, x0, y0, w, h, 'Canonical levels', '⟨h⟩ (MeV) vs v²'), e0 = -30, e1 = 10;
+  const sx = v => P.L + v * (P.R - P.L), sy = e => P.B - (e - e0) / (e1 - e0) * (P.B - P.T);
+  cx.font = `${Math.round(P.fs * 0.85)}px "IBM Plex Mono", monospace`; cx.fillStyle = '#8b97a4'; cx.strokeStyle = '#262e38';
+  [-30, -10, 10].forEach(v => { cx.beginPath(); cx.moveTo(P.L, sy(v)); cx.lineTo(P.R, sy(v)); cx.stroke(); cx.textAlign = 'right'; cx.fillText(v, P.L - 4, sy(v) + 4); });
+  cx.textAlign = 'left'; cx.fillText('0', P.L, P.B + P.fs); cx.textAlign = 'right'; cx.fillText('1', P.R, P.B + P.fs);
+  if (!lvl) return;
+  const base = cur * lvl.n;
+  let shown = 0;
+  for (let k = 0; k < lvl.n; k++) {
+    const q = lvl.occ[base + k], e = lvl.e[base + k] / 10;
+    if (q === 255 || e < e0 || e > e1) continue;
+    cx.fillStyle = lvl.iso[base + k] ? 'rgba(239,127,143,0.85)' : 'rgba(108,198,224,0.85)';
+    cx.beginPath(); cx.arc(sx(q / 254), sy(e), 2.4, 0, 2 * Math.PI); cx.fill(); shown++;
+  }
+  if (!shown) { cx.textAlign = 'center'; cx.fillStyle = '#8b97a4'; cx.fillText('no levels recorded at this time', (P.L + P.R) / 2, (P.T + P.B) / 2); cx.textAlign = 'left'; }
+}
+function gifPanels() {
+  const o = ds.obs, p = [];
+  if ($('pQ20').checked) p.push({ kind: 'line', title: 'Elongation Q20', unit: 'b', lines: [{ y: o.Q20, c: '#f0b64e' }] });
+  if ($('pPair').checked) p.push({ kind: 'line', title: 'Pairing energy', unit: 'MeV', lines: [{ y: o.En, c: '#6cc6e0', name: 'n' }, { y: o.Ep, c: '#ef7f8f', name: 'p' }], opts: { zero: true } });
+  if ($('pDE').checked) p.push({ kind: 'line', title: 'Energy error', unit: 'E(t) − E(0), MeV', lines: [{ y: o.dE, c: '#e2e7ec' }] });
+  if ($('pNeck').checked && o.neck) p.push({ kind: 'line', title: 'Neck density', unit: 'fm⁻³', lines: [{ y: o.neck, c: '#e2e7ec' }], opts: { hline: 0.04, zero: true } });
+  else if ($('pNeck').checked && o.sep) p.push({ kind: 'line', title: 'Separation', unit: 'fm', lines: [{ y: o.sep, c: '#e2e7ec' }] });
+  if ($('pLev').checked && ds.levels) p.push({ kind: 'levels' });
+  return p;
+}
+function panelLayout(W, n) {
+  const cols = Math.min(n, 3), rows = Math.ceil(n / Math.max(cols, 1)), cw = cols ? Math.floor(W / cols) : W;
+  return { cols, rows, cw, ph: n ? Math.max(120, Math.round(cw * (cols === 1 ? 0.32 : 0.55))) : 0 };
+}
+function captureFrame(cx, W, H, panels = [], lay = null) {
+  render();
+  const Htot = H + (lay ? lay.rows * lay.ph : 0);
+  cx.fillStyle = '#0b0e12'; cx.fillRect(0, 0, W, Htot);
+  cx.imageSmoothingEnabled = true; cx.imageSmoothingQuality = 'high';
+  cx.drawImage(canvas, 0, 0, W, H);
+  panels.forEach((p, i) => {
+    const x0 = (i % lay.cols) * lay.cw, y0 = H + Math.floor(i / lay.cols) * lay.ph;
+    if (p.kind === 'levels') drawLevelsPanel(cx, x0, y0, lay.cw, lay.ph, frame);
+    else drawLineChart(cx, x0, y0, lay.cw, lay.ph, p.title, p.unit, ds.times, p.lines, frame, p.opts || {});
+  });
+  const fs = Math.max(11, Math.round(W / 45));
+  cx.font = `600 ${fs}px "IBM Plex Mono", monospace`; cx.fillStyle = '#e2e7ec'; cx.shadowColor = '#000'; cx.shadowBlur = 3;
+  cx.fillText(`t = ${ds.times[frame].toFixed(0)} fm/c`, fs * 0.8, fs * 1.6);
+  cx.font = `500 ${Math.round(fs * 0.8)}px "IBM Plex Mono", monospace`; cx.fillStyle = '#8b97a4';
+  cx.fillText(ds.label, fs * 0.8, fs * 2.8);
+  if (view.species === 2) {
+    cx.fillStyle = '#6cc6e0'; cx.textAlign = 'right'; cx.fillText('neutrons', W / 2 - fs * 0.6, H - fs * 0.8);
+    cx.fillStyle = '#ef7f8f'; cx.textAlign = 'left'; cx.fillText('protons', W / 2 + fs * 0.6, H - fs * 0.8);
+    cx.textAlign = 'left';
+  }
+  cx.shadowBlur = 0;
+  return cx.getImageData(0, 0, W, Htot).data;
+}
+async function recordGif() {
+  if (recording) { recCancel = true; return; }
+  if (!ds || !voxels) return;
+  recording = true; recCancel = false; playing = false; $('play').textContent = 'Play';
+  $('rec').setAttribute('aria-pressed', 'true'); $('rec').textContent = 'Stop recording';
+  const W = +$('gifW').value, H = Math.round(W * canvas.height / canvas.width) & ~1;
+  const panels = gifPanels(), lay = panelLayout(W, panels.length), Htot = H + lay.rows * lay.ph;
+  const last = ds.times.length - 1, first = $('gifRange').value === 'here' && frame < last ? frame : 0;
+  const nWant = Math.min(+$('gifN').value, last - first + 1);
+  const seq = Array.from({ length: nWant }, (_, i) => Math.round(first + i * (last - first) / Math.max(1, nWant - 1)));
+  const delayCs = Math.max(2, Math.round(100 / Math.max(fps, 0.5)));
+  const spin = $('spin').checked, yaw0 = view.yaw;
+  const cap = document.createElement('canvas'); cap.width = W; cap.height = Htot;
+  const cx = cap.getContext('2d', { willReadFrequently: true });
+  const keep = frame, msg = t => { $('gifMsg').textContent = t; };
+  try {
+    msg('building the palette…');
+    const samples = [];
+    for (const f of [seq[0], seq[seq.length >> 1], seq[seq.length - 1]]) {
+      setFrame(f); const px = captureFrame(cx, W, H, panels, lay);
+      for (let k = 0; k < px.length; k += 4 * 7) samples.push(px[k], px[k + 1], px[k + 2]);
+    }
+    const pal = medianCut(Uint8Array.from(samples), 256), map = makeMapper(pal);
+    const out = new ByteBuf();
+    const u16 = v => out.push(v & 255, (v >> 8) & 255);
+    out.push(...[0x47, 0x49, 0x46, 0x38, 0x39, 0x61]); u16(W); u16(Htot); out.push(0xF7, 0, 0);
+    for (let i = 0; i < 768; i++) out.push(pal[i]);
+    out.push(0x21, 0xFF, 0x0B, ...'NETSCAPE2.0'.split('').map(c => c.charCodeAt(0)), 3, 1, 0, 0, 0);
+    const idx = new Uint8Array(W * Htot);
+    for (let n = 0; n < seq.length; n++) {
+      if (recCancel) throw new Error('cancelled');
+      if (spin) view.yaw = yaw0 + 2 * Math.PI * n / seq.length;
+      setFrame(seq[n]);
+      const px = captureFrame(cx, W, H, panels, lay);
+      for (let p = 0, q = 0; p < idx.length; p++, q += 4) idx[p] = map(px[q], px[q + 1], px[q + 2]);
+      out.push(0x21, 0xF9, 4, 0); u16(delayCs); out.push(0, 0);
+      out.push(0x2C); u16(0); u16(0); u16(W); u16(Htot); out.push(0);
+      lzw(idx, out);
+      msg(`encoding frame ${n + 1} / ${seq.length}`);
+      await new Promise(r => setTimeout(r, 0));
+    }
+    out.push(0x3B);
+    const blob = new Blob([out.bytes()], { type: 'image/gif' });
+    const name = `${ds.id}_t${ds.times[seq[0]].toFixed(0)}-${ds.times[seq[seq.length - 1]].toFixed(0)}.gif`;
+    msg(`${(blob.size / 1e6).toFixed(1)} MB GIF ready`);
+    $('gifImg').src = URL.createObjectURL(blob); $('gifOut').hidden = false;
+    const dl = window.claude && window.claude.use ? await window.claude.use('downloads') : null;
+    if (dl) {
+      try { await dl.save({ filename: name, data: blob }); msg(`saved ${name}`); }
+      catch (e) { msg(e && e.code === 'declined' ? 'save declined; the GIF is shown below' : `could not save (${e && e.code || 'error'}); the GIF is shown below`); }
+    } else msg('saving is not available in this view; the GIF is shown below');
+  } catch (e) {
+    msg(e.message === 'cancelled' ? 'recording stopped' : `recording failed: ${e.message}`);
+  } finally {
+    recording = false; view.yaw = yaw0; setFrame(keep);
+    $('rec').setAttribute('aria-pressed', 'false'); $('rec').textContent = 'Record GIF';
+  }
+}
+$('rec').addEventListener('click', recordGif);
+</script>

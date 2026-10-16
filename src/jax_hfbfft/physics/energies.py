@@ -135,6 +135,7 @@ def compute_integrated_energy(
     sp_kinetic: Optional[jax.Array] = None,
     sp_energy: Optional[jax.Array] = None,
     ecorrp: float = 0.0,   # Pairing rearrangement energy (from DDDI)
+    e_ln: Optional[jax.Array] = None,   # Lipkin-Nogami energy per isospin (Pairing.e_ln)
 ) -> "Energies":
     """
     Compute integrated energy from the Skyrme energy density functional.
@@ -335,8 +336,10 @@ def compute_integrated_energy(
     # =========================================================================
     # Center-of-mass correction (simple estimate)
     # =========================================================================
+    # zpe == 3 uses this estimate during the iterations; run_hfb replaces it
+    # with the microscopic <P^2>/2mA on the final state (cm_correction.py).
     e_zpe = jnp.where(
-        (force.zpe == 1) & (mass_number > 1),
+        ((force.zpe == 1) | (force.zpe == 3)) & (mass_number > 1),
         17.3 / jnp.maximum(1.0, mass_number)**0.2,
         0.0
     )
@@ -347,10 +350,11 @@ def compute_integrated_energy(
     epair_total = jnp.sum(epair_arr)
     # Current (j^2) energy: the Galilean partner of the rho*tau terms
     ehf_curr = ehfCj0 + ehfCj1
-
+    # Lipkin-Nogami correction, -4 lambda_2 Tr rho(1-rho); zero when LN is off
+    eln_total = jnp.sum(e_ln) if e_ln is not None else 0.0
 
     ehfint = (ehft + ehf0 + ehf1 + ehf2 + ehf3 + ehfls + ehf_odd + ehf_curr
-              + ehfc - epair_total - e_zpe)
+              + ehfc - epair_total - e_zpe + eln_total)
 
     # =========================================================================
     # Koopman sum: tke and ehf
@@ -365,7 +369,7 @@ def compute_integrated_energy(
         tke = jnp.sum(wocc * wstates * sp_kinetic)
         ehf = (jnp.sum(wocc * wstates * (sp_kinetic + sp_energy)) / 2.0
                + e3corr + ecorrp + ecorc
-               - epair_total - e_zpe)
+               - epair_total - e_zpe + eln_total)
     else:
         # Fallback: tke from tau integral, ehf unknown.
         # Caller must update these fields separately if wocc/sp_kinetic unavailable.

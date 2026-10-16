@@ -82,6 +82,17 @@ class Force:
     pair_cutoff: Optional[jax.Array] = None  # Energy cutoff for pairing
     state_cutoff: Optional[jax.Array] = None  # State cutoff
     softcut_range: float = 0.1  # Soft cutoff width parameter
+    # BCS occupations are clipped to [uv_floor, 1 - uv_floor] and uv to
+    # sqrt(uv_floor) (FORTRAN smallp). Statics for TDHFB want 0: the floored uv
+    # is inconsistent with v2 for nearly empty states.
+    uv_floor: float = 1.0e-6
+    # Momentum cutoff of the TDHFB pair channel (physics/tdhfb.py): pairing acts on
+    # the orbital components below |k| = pair_kcut (fm^-1), smoothed over
+    # pair_kwidth. Regularises zero-range pairing, whose gap otherwise grows into
+    # grid-scale states once the orbitals are free. 0 = bare contact pairing.
+    # The canonical static solver ignores it; relax with physics.tdhfb.relax.
+    pair_kcut: float = field(default=0.0, metadata=dict(static=True))
+    pair_kwidth: float = field(default=0.1, metadata=dict(static=True))
     tbcs: bool = False  # Use BCS approximation
     
     # Physical constants
@@ -305,6 +316,9 @@ class Force:
         tbcs: Optional[bool] = None,
         pair_cutoff: Optional[Tuple[float, float]] = None,
         state_cutoff: Optional[Tuple[float, float]] = None,
+        uv_floor: Optional[float] = None,
+        pair_kcut: Optional[float] = None,
+        pair_kwidth: Optional[float] = None,
     ) -> "Force":
         """
         Create a new Force with modified pairing parameters.
@@ -317,6 +331,8 @@ class Force:
             tbcs: Use BCS approximation
             pair_cutoff: Energy cutoff (neutron, proton) in MeV
             state_cutoff: State cutoff (neutron, proton) in MeV
+            uv_floor: Floor on v2(1 - v2) in the BCS solution (default 1e-6)
+            pair_kcut, pair_kwidth: Momentum cutoff of the TDHFB pair channel (fm^-1)
 
         Returns:
             New Force with updated pairing parameters
@@ -338,7 +354,13 @@ class Force:
             updates['pair_cutoff'] = jnp.array(pair_cutoff)
         if state_cutoff is not None:
             updates['state_cutoff'] = jnp.array(state_cutoff)
-        
+        if uv_floor is not None:
+            updates['uv_floor'] = uv_floor
+        if pair_kcut is not None:
+            updates['pair_kcut'] = float(pair_kcut)
+        if pair_kwidth is not None:
+            updates['pair_kwidth'] = float(pair_kwidth)
+
         return dataclasses.replace(self, **updates)
 
     def with_pairing_type(self, kind: str, v0: float = 362.0) -> "Force":

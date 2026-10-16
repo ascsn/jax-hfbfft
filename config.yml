@@ -153,6 +153,11 @@ iteration:
   # Legacy run config (_config.yml) sets tvaryx_0: true
   tvaryx_0: true
 
+  # Lipkin-Nogami particle-number correction (UNEDF functionals were fitted with it).
+  # ln_passes = Illinois iterations for lambda_2; LN costs ~5x plain HFB per iteration.
+  use_ln: false
+  # ln_passes: 12
+
 # ----------------------------------------------------------------------------
 # PHYSICS OPTIONS
 # ----------------------------------------------------------------------------

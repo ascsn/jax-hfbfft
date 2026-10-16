@@ -107,11 +107,26 @@ class TestGlobalScheme:
         assert h[-1]['Q20'] != h[0]['Q20']
 
     def test_exact_predictor_close(self, kicked):
-        a = T.make_step(kicked.state, kicked.grid, kicked.force, kicked.cs, pred_n_comp=1)(kicked.state, 0.05)
-        b = T.make_step(kicked.state, kicked.grid, kicked.force, kicked.cs, pred_n_comp=None)(kicked.state, 0.05)
+        a = T.make_step(kicked.state, kicked.grid, kicked.force, kicked.cs, n_comp=4, pred_n_comp=1)(kicked.state, 0.05)
+        b = T.make_step(kicked.state, kicked.grid, kicked.force, kicked.cs, n_comp=4, pred_n_comp=None)(kicked.state, 0.05)
         ra = T.fields(a, kicked.grid, kicked.force, kicked.cs)[0].rho
         rb = T.fields(b, kicked.grid, kicked.force, kicked.cs)[0].rho
         assert float(jnp.linalg.norm(ra - rb) / jnp.linalg.norm(rb)) < 1e-8
+
+    @pytest.mark.parametrize("midpoint, order", [(False, 1), (True, 2)])
+    def test_energy_error_order(self, kicked, midpoint, order):
+        """strang + Euler complement rotations: energy error O(dt); with midpoint rotations O(dt^2)."""
+        S0, g, f, cs = kicked.state, kicked.grid, kicked.force, kicked.cs
+        E0 = T.energy(S0, g, f, cs)[0]
+        err = []
+        for dt in (0.2, 0.1):
+            step = T.make_step(S0, g, f, cs, n_comp=1, strang=True, midpoint=midpoint)
+            S = S0
+            for _ in range(int(round(2.0 / dt))):
+                S = step(S, dt)
+            err.append(abs(T.energy(S, g, f, cs)[0] - E0))
+        p = np.log2(err[0] / err[1])          # measured 0.96 (Euler) and 2.31 (midpoint)
+        assert (abs(p - 1) < 0.3) if order == 1 else (p > 1.8)
 
     def test_local_continuity_at_floor(self, kicked):
         c = kicked.continuity()
@@ -147,3 +162,38 @@ class TestCollision:
         assert abs(rec['N'] - 2 * float(np.sum(np.asarray(st.wocc)[np.asarray(st.isospin) == 0]))) < 1e-8
         assert T.purity(td.state) < 1e-10
         assert td.info['e_kin'] + td.info['e_coul'] == pytest.approx(20.0)
+
+
+class TestRelax:
+
+    def test_relax_lowers_energy_and_residual(self, static):
+        td = TDHFB.from_static(static)
+        E0 = T.energy(td.state, td.grid, td.force, td.cs)[0]
+        occ0, r0 = T.stationarity(td.state, td.grid, td.force, td.cs)
+        S, _ = T.relax(td.state, td.grid, td.force, td.cs, n_iter=30)
+        E1 = T.energy(S, td.grid, td.force, td.cs)[0]
+        occ1, r1 = T.stationarity(S, td.grid, td.force, td.cs)
+        assert E1 < E0
+        assert np.max(r1[np.minimum(occ1, 1 - occ1) > 1e-3]) < np.max(r0[np.minimum(occ0, 1 - occ0) > 1e-3])
+        assert T.purity(S) < 1e-10
+        assert sum(T.particle_numbers(S)) == pytest.approx(sum(T.particle_numbers(td.state)), abs=1e-6)
+
+
+class TestPairCutoff:
+
+    def test_far_cutoff_is_bare(self, kicked):
+        f = kicked.force.with_pairing(pair_kcut=50.0)
+        a = T.energy(kicked.state, kicked.grid, kicked.force, kicked.cs)
+        b = T.energy(kicked.state, kicked.grid, f, kicked.cs)
+        assert abs(a[0] - b[0]) < 1e-10 and np.allclose(a[1], b[1], atol=1e-10)
+
+    def test_cutoff_conserves(self, static):
+        td = TDHFB.from_static(static, force=static.solver_force.with_pairing(pair_kcut=1.5, pair_kwidth=0.1))
+        Ebare = T.energy(td.state, td.grid, static.solver_force, td.cs)[1][0]
+        td.kick_quadrupole(0.01)
+        h = td.run(4)
+        assert h[0]['Epair_n'] < Ebare                 # the filter removes pairing from high-k components
+        assert abs(h[-1]['N'] - h[0]['N']) < 1e-9
+        assert abs(h[-1]['E'] - h[0]['E']) < 1e-3
+        S, _ = T.relax(td.state, td.grid, td.force, td.cs, n_iter=20)
+        assert T.energy(S, td.grid, td.force, td.cs)[0] < h[-1]['E']

@@ -7,6 +7,8 @@
 #   - b4p (spin-orbit) in MeV·fm^5
 #   - power (α) is dimensionless
 #   - h2m is ℏ²/2m in MeV·fm²
+#   - zpe selects the centre-of-mass correction: 0 = h2m*(1-1/A), 1 = 17.3/A^0.2,
+#     2 = none, 3 = microscopic <P^2>/2mA on the final state (SkyAx zpe=1)
 
 SLy4:
   description: "Standard Lyon Skyrme parameterization"
@@ -156,16 +158,16 @@ UNEDF1:
   description: "UNEDF1 universal functional"
   reference: "Kortelainen et al., Phys. Rev. C 85 (2012) 024304"
   ex: 1
-  zpe: 0
+  zpe: 2  # no c.m. correction (HFBTHO UNE1: "c.m. correction: F")
   h2m: [20.73553, 20.73553]
   t0: -2078.32802326
   t1: 239.40081204
   t2: 1575.11954190
   t3: 14263.64624708
-  t4: 0.0
+  t4: 76.7361441232  # 2*b4; b4, b4p, sigma from HFBTHO UNE1 printout (2026-09-23)
   x0: 0.05375692
   x1: -5.07723238
   x2: -1.36650561
   x3: -0.16249117
-  b4p: 38.36808808
-  power: 0.27167199
+  b4p: 71.3165222296
+  power: 0.2700180115

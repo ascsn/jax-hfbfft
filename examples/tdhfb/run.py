@@ -29,6 +29,7 @@ import jax_hfbfft  # noqa: F401  (enables 64-bit JAX before jax is imported)
 import numpy as np
 
 from jax_hfbfft import TDHFB
+from frames import FrameRecorder
 
 
 def main():
@@ -36,29 +37,45 @@ def main():
     p.add_argument('--static', required=True, help='static .npz from static.py')
     p.add_argument('--scheme', choices=['global', 'ebata'], default='global')
     p.add_argument('--kick', type=float, default=0.005, help='quadrupole kick exp(i eta Q20), eta in fm^-2')
-    p.add_argument('--dt', type=float, default=0.05)
+    p.add_argument('--mode', choices=['quad', 'monopole'], default='quad', help='kick operator: Q20 or r^2')
+    p.add_argument('--dt', type=float, default=0.1)
     p.add_argument('--T', type=float, default=60.0, help='total time (fm/c)')
     p.add_argument('--every', type=float, default=1.0, help='record interval (fm/c)')
     p.add_argument('--check-at', type=float, nargs='*', default=[0.0], help='continuity checks (fm/c)')
     p.add_argument('--eps', type=float, default=1e-7, help='regulator of rho~^-1')
-    p.add_argument('--n-comp', type=int, default=4)
+    p.add_argument('--n-comp', type=int, default=1)
+    p.add_argument('--strang', action=argparse.BooleanOptionalAction, default=True,
+                   help='symmetric pair/mean-field splitting (with --midpoint: second order)')
+    p.add_argument('--midpoint', action=argparse.BooleanOptionalAction, default=True,
+                   help='exponential-midpoint complement rotations (--no-midpoint: forward Euler)')
     p.add_argument('--pred-n-comp', type=int, default=1, help='predictor sub-rotations (0 = n-comp, exact)')
     p.add_argument('--drop-below', type=float, default=0.0, help='remove orbitals below this occupation at t=0')
     p.add_argument('--save-every', type=float, default=50.0)
     p.add_argument('--ckpt', default=None)
     p.add_argument('--resume', action='store_true')
     p.add_argument('--out', default=None)
+    p.add_argument('--nz', type=int, default=None, help='embed the static in a box this long in z (odd)')
+    p.add_argument('--absorb-width', type=float, default=0.0,
+                   help='absorbing boundary layer at the box faces (fm); 0 = reflecting box')
+    p.add_argument('--absorb-strength', type=float, default=10.0, help='absorbing potential at the faces (MeV)')
+    p.add_argument('--max-defect', type=float, default=1e-6, help='Kramers-pairing tolerance of the static (U238: 1e-2)')
+    p.add_argument('--frames3d-every', type=float, default=0.0,
+                   help='full 3D density/pair-field frames every this many fm/c (frames.py, for viz/build_3d.py)')
+    p.add_argument('--levels', action=argparse.BooleanOptionalAction, default=True,
+                   help='record the canonical occupations and single-particle energies')
     a = p.parse_args()
     out = a.out or os.path.join('out', os.path.basename(a.static).replace('.npz', f'_{a.scheme}_k{a.kick:g}.npz'))
     os.makedirs(os.path.dirname(out) or '.', exist_ok=True)
 
-    td = TDHFB.from_static(a.static, scheme=a.scheme, dt=a.dt, eps=a.eps, n_comp=a.n_comp,
+    td = TDHFB.from_static(a.static, nz=a.nz, max_defect=a.max_defect, scheme=a.scheme, dt=a.dt, eps=a.eps, n_comp=a.n_comp, strang=a.strang, midpoint=a.midpoint, absorb_width=a.absorb_width, absorb_strength=a.absorb_strength,
                            pred_n_comp=a.pred_n_comp or None)
     if a.drop_below > 0:
         n, lost = td.drop_empty(a.drop_below)
         print(f"  removed {n} orbitals below occupation {a.drop_below:g} ({lost:.2e} particles)")
-    td.kick_quadrupole(a.kick)
+    if a.kick:
+        (td.kick_monopole if a.mode == 'monopole' else td.kick_quadrupole)(a.kick)
     checks = []
+    frames = FrameRecorder(out, a.frames3d_every, a.levels)
     if a.resume and a.ckpt and os.path.exists(a.ckpt):
         td.load(a.ckpt)
         if os.path.exists(out):
@@ -66,8 +83,9 @@ def main():
             keys = json.loads(str(o['keys']))
             td.history = [dict(zip(keys, row)) for row in o['history'] if row[0] <= td.time + 1e-9]
             checks = [c for c in json.loads(str(o['checks'])) if c['time'] <= td.time + 1e-9]
+        frames.resume(td.time)
         print(f"  resumed from {a.ckpt} at t = {td.time:.2f} fm/c")
-    print(f"  {td.scheme} scheme, {td.state.nstates} orbitals, kick {a.kick}, dt {a.dt}")
+    print(f"  {td.scheme} scheme, {td.state.nstates} orbitals, {a.mode} kick {a.kick}, dt {a.dt}")
 
     def save():
         h = td.history_arrays()
@@ -75,6 +93,7 @@ def main():
         np.savez(out + '.tmp.npz', history=np.column_stack([h[k] for k in keys]), keys=json.dumps(keys),
                  checks=json.dumps(checks), args=json.dumps(vars(a)))
         os.replace(out + '.tmp.npz', out)
+        frames.save(td.grid)
         if a.ckpt:
             td.save(a.ckpt)
 
@@ -83,11 +102,11 @@ def main():
     pending = sorted(t for t in a.check_at if t >= td.time - 1e-9 and not any(abs(c['time'] - t) < 1e-9 for c in checks))
     next_save = td.time + a.save_every
     t0 = time.time()
-    for k, rec in enumerate(td.iterate(n_steps, record_every=every)):
+    for k, rec in enumerate(td.iterate(n_steps, record_every=every, extra=lambda td_, flds: frames(td_, flds) or {})):
         t, E0 = rec['time'], td.history[0]['E']
         if k % 10 == 0:
             print(f"  t = {t:7.2f}  E-E0 {rec['E'] - E0:+.3e}  N {rec['N']:.10f}  Z {rec['Z']:.10f}"
-                  f"  Epair_n {rec['Epair_n']:.4f}  Q20 {rec['Q20']:.3f}  ({time.time() - t0:.0f} s)", flush=True)
+                  f"  Epair_n {rec['Epair_n']:.4f}  Q20 {rec['Q20']:.3f}  r2 {rec['r2']:.6f}  ({time.time() - t0:.0f} s)", flush=True)
         if pending and t >= pending[0] - 1e-9 and td.scheme == 'global':
             pending = [x for x in pending if x > t + 1e-9]
             c = dict(time=t, **td.continuity())

@@ -478,6 +478,10 @@ def run_calculation(config_path: Optional[str], verbose: bool = False):
             calc.iteranneal = iteration_config['iteranneal']
         if 'pairenhance' in iteration_config:
             calc.pairenhance = iteration_config['pairenhance']
+        if 'use_ln' in iteration_config:
+            calc.use_ln = bool(iteration_config['use_ln'])
+        if 'ln_passes' in iteration_config:
+            calc.ln_passes = int(iteration_config['ln_passes'])
         
         print(f"Starting HFB iteration (max: {max_iterations}, convergence: {convergence:.1e})...")
         print()

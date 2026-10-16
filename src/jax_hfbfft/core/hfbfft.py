@@ -408,6 +408,11 @@ class HFBFFT:
         # Pairing annealing
         self.iteranneal: int = 0
         self.pairenhance: float = 0.0
+        # Lipkin-Nogami correction (SolverConfig.use_ln / ln_passes)
+        self.use_ln: bool = False
+        self.ln_passes: int = 12
+        # HFB preconditioner floor (SolverConfig.precond_floor); ~1e-8 for TDHFB statics
+        self.precond_floor: float = 0.1
 
         # Callbacks for monitoring
         self._callbacks: list = []
@@ -798,6 +803,9 @@ class HFBFFT:
             tvaryx_0=self.tvaryx_0,
             iteranneal=self.iteranneal,
             pairenhance=self.pairenhance,
+            use_ln=self.use_ln,
+            ln_passes=self.ln_passes,
+            precond_floor=self.precond_floor,
         )
         
         # Prepare initial state if wavefunctions exist

@@ -21,6 +21,7 @@ Example:
 """
 
 import dataclasses
+import os
 from typing import Iterator, List, Optional
 
 import jax.numpy as jnp
@@ -63,6 +64,7 @@ def load_static(path: str, nz: Optional[int] = None):
     if nz is not None and nz > nz0:
         p0 = (nz - nz0) // 2
         d['psi'] = np.pad(d['psi'], [(0, 0)] * 4 + [(p0, nz - nz0 - p0)])
+        d['nz'] = nz
     grid = Grid.create(nx=nx, ny=ny, nz=d['psi'].shape[-1], dx=dx, dy=dx, dz=dx)
     return d, grid, apply_cm_correction(_force_of(d), int(round(float(np.sum(d['wocc'])))))
 
@@ -73,7 +75,8 @@ def _force_of(d) -> Force:
     return Force.from_name(str(d.get('functional', 'SLy4'))).with_pairing(
         ipair=int(d.get('ipair', 6)), v0neut=v0, v0prot=float(d.get('v0p', v0)),
         rho0pr=float(d.get('rho0pr', 0.32)), tbcs=False, pair_cutoff=(0.0, 0.0),
-        state_cutoff=(0.0, 0.0))
+        state_cutoff=(0.0, 0.0), pair_kcut=float(d.get('pair_kcut', 0.0)),
+        pair_kwidth=float(d.get('pair_kwidth', 0.1)))
 
 
 def _static_arrays(static):
@@ -82,10 +85,15 @@ def _static_arrays(static):
     return tuple(get(k) for k in ('psi', 'wocc', 'wguv', 'isospin', 'wstates', 'pairwg'))
 
 
-def _initial_state(static, grid, scheme, uv_floor):
+def _initial_state(static, grid, scheme, uv_floor, max_defect=1e-6, kramers_tol=1e-7):
+    if scheme == 'global' and isinstance(static, dict) and 'kap' in static:     # relaxed (relax.py)
+        return T.GState(psi=jnp.asarray(static['psi']), rho=jnp.asarray(static['rho']),
+                        kap=jnp.asarray(static['kap']), isospin=jnp.asarray(static['isospin']))
     psi, wocc, wguv, iso, wst, pwg = _static_arrays(static)
-    build = T.from_static if scheme == 'global' else T.ebata_state
-    return build(psi, wocc, wguv, iso, grid, wstates=wst, pairwg=pwg, uv_floor=uv_floor)
+    if scheme == 'global':
+        return T.from_static(psi, wocc, wguv, iso, grid, wstates=wst, pairwg=pwg, uv_floor=uv_floor,
+                             max_defect=max_defect, kramers_tol=kramers_tol)
+    return T.ebata_state(psi, wocc, wguv, iso, grid, wstates=wst, pairwg=pwg, uv_floor=uv_floor)
 
 
 # ── TDHFB ────────────────────────────────────────────────────────────────────
@@ -94,13 +102,14 @@ class TDHFB:
     """
     Real-time TDHFB evolution with recorded observables.
 
-    Records are dicts with time, E, Epair_n, Epair_p, N, Z, Q20 and, for the
+    Records are dicts with time, E, Epair_n, Epair_p, N, Z, Q20, r2 (<r^2>) and, for the
     global scheme, purity (|rho~ - rho~^2 - kap~ kap~^+|, conserved exactly).
     """
 
-    def __init__(self, state, grid: Grid, force: Force, dt: float = 0.05, eps: float = 1e-7,
-                 n_comp: int = 4, pred_n_comp: Optional[int] = 1, taylor_order: int = 6,
-                 use_coulomb: bool = True):
+    def __init__(self, state, grid: Grid, force: Force, dt: float = 0.1, eps: float = 1e-7,
+                 n_comp: int = 1, pred_n_comp: Optional[int] = 1, taylor_order: int = 6,
+                 use_coulomb: bool = True, strang: bool = True, midpoint: bool = True,
+                 absorb_width: float = 0.0, absorb_strength: float = 10.0):
         self.state = state
         self.grid = grid
         self.force = force
@@ -109,6 +118,8 @@ class TDHFB:
         self.eps, self.n_comp, self.pred_n_comp = eps, n_comp, pred_n_comp
         self.taylor_order = taylor_order
         self.use_coulomb = use_coulomb
+        self.strang, self.midpoint = strang, midpoint
+        self.absorb_width, self.absorb_strength = absorb_width, absorb_strength   # absorbing boundaries (fm, MeV)
         self.history: List[dict] = []
         self._step = None
         self._ref_step = None
@@ -126,6 +137,7 @@ class TDHFB:
     @classmethod
     def from_static(cls, static, grid: Optional[Grid] = None, force: Optional[Force] = None,
                     scheme: str = 'global', uv_floor: Optional[float] = 0.0, purify: bool = True,
+                    max_defect: float = 1e-6, kramers_tol: float = 1e-7, nz: Optional[int] = None,
                     **kwargs) -> "TDHFB":
         """
         Start from a converged static solution.
@@ -138,11 +150,16 @@ class TDHFB:
             uv_floor: 0 rebuilds kappa = sqrt(v2(1-v2)); None keeps the static's wguv.
             purify: McWeeny-purify the global-scheme state (removes the static's
                 ~1e-6 impurity, which the complement force amplifies).
+            max_defect: tolerance on the static's time-reversal symmetry
+                (physics.tdhfb.kramers_basis).
+            kramers_tol: occupation tolerance for grouping Kramers partners.
+            nz: embed a static file in a box this long in z (zero padding),
+                e.g. to give fission fragments room to separate.
             **kwargs: Passed to TDHFB (dt, eps, n_comp, ...).
         """
         from jax_hfbfft.core.hfbfft import HFBFFT
         if isinstance(static, str):
-            static, g, f = load_static(static)
+            static, g, f = load_static(static, nz)
             grid, force = grid or g, force or f
         elif isinstance(static, HFBFFT):
             if static.solver_state is None:
@@ -151,7 +168,7 @@ class TDHFB:
             static = static.solver_state
         if grid is None or force is None:
             raise ValueError("grid and force are required when starting from a SolverState.")
-        td = cls(_initial_state(static, grid, scheme, uv_floor), grid, force, **kwargs)
+        td = cls(_initial_state(static, grid, scheme, uv_floor, max_defect, kramers_tol), grid, force, **kwargs)
         if purify and td.scheme == 'global':
             td.state = T.purify(td.state)
         return td
@@ -199,6 +216,11 @@ class TDHFB:
         X, Y, Z = self.grid.get_meshgrid()
         return self.kick(2 * Z**2 - X**2 - Y**2, eta)
 
+    def kick_monopole(self, eta: float) -> "TDHFB":
+        """Isoscalar monopole (breathing) kick, Q = r^2."""
+        X, Y, Z = self.grid.get_meshgrid()
+        return self.kick(X**2 + Y**2 + Z**2, eta)
+
     def drop_empty(self, below: float):
         """Remove orbitals with occupation below `below` (global scheme). Returns (count, particles)."""
         self.state, n, lost = T.drop_empty(self.state, below)
@@ -211,9 +233,11 @@ class TDHFB:
     def _get_step(self):
         if self._step is None:
             if self.scheme == 'global':
+                W = (T.absorbing_potential(self.grid, self.absorb_width, self.absorb_strength)
+                     if self.absorb_width > 0 else None)
                 self._step = T.make_step(self.state, self.grid, self.force, self.cs, self.eps,
                                          self.n_comp, self.pred_n_comp, self.taylor_order,
-                                         self.use_coulomb)
+                                         self.use_coulomb, self.strang, self.midpoint, absorb=W)
             else:
                 self._step = T.make_ebata_step(self.state, self.grid, self.force, self.cs,
                                                self.taylor_order, use_coulomb=self.use_coulomb)
@@ -231,7 +255,8 @@ class TDHFB:
         rho = flds[0].rho[0] + flds[0].rho[1]
         N, Zp = T.particle_numbers(self.state)
         rec = dict(time=self.time, E=E, Epair_n=float(ep[0]), Epair_p=float(ep[1]), N=N, Z=Zp,
-                   Q20=float(self.grid.wxyz * jnp.sum(rho * (2 * Z**2 - X**2 - Y**2))))
+                   Q20=float(self.grid.wxyz * jnp.sum(rho * (2 * Z**2 - X**2 - Y**2))),
+                   r2=float(self.grid.wxyz * jnp.sum(rho * (X**2 + Y**2 + Z**2))) / (N + Zp))
         if self.scheme == 'global':
             rec['purity'] = T.purity(self.state)
         return rec
@@ -271,7 +296,8 @@ class TDHFB:
             raise ValueError("continuity() is implemented for the global scheme")
         if self._ref_step is None:
             self._ref_step = T.make_step(self.state, self.grid, self.force, self.cs, self.eps,
-                                         self.n_comp, None, self.taylor_order, self.use_coulomb)
+                                         self.n_comp, None, self.taylor_order, self.use_coulomb,
+                                         self.strang, self.midpoint)
         return T.continuity_defect(self.state, self._ref_step, self.grid, self.force, self.cs)
 
     # ── Checkpoints ─────────────────────────────────────────────────────────
@@ -279,7 +305,9 @@ class TDHFB:
     def save(self, path: str, **extra) -> None:
         """Write the state (and any extra arrays) to an .npz."""
         st = {f.name: np.asarray(getattr(self.state, f.name)) for f in dataclasses.fields(self.state)}
-        np.savez(path, scheme=self.scheme, **st, **extra)
+        tmp = path + '.tmp.npz'                 # atomic: a job killed mid-write keeps the previous checkpoint
+        np.savez(tmp, scheme=self.scheme, **st, **extra)
+        os.replace(tmp, path)
 
     def load(self, path: str) -> "TDHFB":
         """Replace the state by one written with save() (same grid and force)."""

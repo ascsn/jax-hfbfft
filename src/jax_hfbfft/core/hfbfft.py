@@ -8,6 +8,7 @@ Hartree-Fock-Bogoliubov method with Fast Fourier Transform techniques.
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from dataclasses import dataclass, field
 from typing import Optional, Dict, Any, Tuple, Callable
 import dataclasses
@@ -218,8 +219,16 @@ class HFBFFTResults:
     ehfls: float = 0.0  # spin-orbit term
     
     # Pairing properties
-    pairing_gap_n: float = 0.0
+    pairing_gap_n: float = 0.0       # <uv Delta>/<uv>
     pairing_gap_p: float = 0.0
+    pairing_gap_v2_n: float = 0.0    # <v^2 Delta>/<v^2>
+    pairing_gap_v2_p: float = 0.0
+    pairing_energy_n: float = 0.0
+    pairing_energy_p: float = 0.0
+    lambda2_n: float = 0.0           # Lipkin-Nogami lambda_2 (0 if LN off)
+    lambda2_p: float = 0.0
+    ln_energy: float = 0.0           # Lipkin-Nogami energy, included in total_energy
+    zpe: int = 0                     # c.m. treatment (see _forces.yml header)
     fermi_energy_n: float = 0.0
     fermi_energy_p: float = 0.0
     
@@ -701,9 +710,8 @@ class HFBFFT:
         self.state.psi = psi
     
     def _load_from_file(self, filename: str):
-        """Load wavefunctions from a restart file."""
-        # Placeholder for restart functionality
-        raise NotImplementedError("Restart from file not yet implemented")
+        """Load wavefunctions from a restart file (see load_checkpoint)."""
+        self.load_checkpoint(filename)
     
     def run(
         self,
@@ -758,6 +766,8 @@ class HFBFFT:
             seed=seed,
             save_dir=save_dir,
             save_interval=save_interval,
+            checkpoint_interval=checkpoint_interval,
+            checkpoint_file=checkpoint_file,
         )
     
     def _run_modern(
@@ -770,6 +780,8 @@ class HFBFFT:
         seed: int = 42,
         save_dir: Optional[str] = None,
         save_interval: int = 5,
+        checkpoint_interval: int = 0,
+        checkpoint_file: Optional[str] = None,
     ) -> HFBFFTResults:
         """Run the calculation using the modern OOP implementation."""
         from jax_hfbfft.physics.solver import (
@@ -1206,6 +1218,9 @@ class HFBFFT:
                     print(f"Callback error: {e}")
             if write_checkpoint is not None and state.iteration % save_interval == 0:
                 write_checkpoint(state)
+            if (checkpoint_file is not None and checkpoint_interval > 0
+                    and state.iteration > 0 and state.iteration % checkpoint_interval == 0):
+                self._save_solver_state(checkpoint_file, state)
 
         # Run the HFB solver (use 'force' with CM correction applied)
         final_state = run_hfb(
@@ -1216,7 +1231,10 @@ class HFBFFT:
             npsi_n=int(self._npsi[0]),
             config=config,
             initial_state=initial_state,  # Added
-            callback=iteration_callback if (self._callbacks or write_checkpoint is not None) else None,
+            callback=(iteration_callback
+                      if (self._callbacks or write_checkpoint is not None
+                          or (checkpoint_file is not None and checkpoint_interval > 0))
+                      else None),
             preloop_callback=preloop_cb,
             use_coulomb=self.include_coulomb,
             constraint=self.constraint,
@@ -1231,6 +1249,8 @@ class HFBFFT:
 
         # Store the solver state
         self._solver_state = final_state
+        if checkpoint_file is not None:
+            self._save_solver_state(checkpoint_file, final_state)
         
         # Calculate radii and deformations
         from jax_hfbfft.physics.energies import compute_radii
@@ -1262,6 +1282,14 @@ class HFBFFT:
             ehfls=float(final_state.energies.ehfls),
             pairing_gap_n=float(final_state.pairing.avdelt[0]),
             pairing_gap_p=float(final_state.pairing.avdelt[1]),
+            pairing_gap_v2_n=float(final_state.pairing.avdeltv2[0]),
+            pairing_gap_v2_p=float(final_state.pairing.avdeltv2[1]),
+            pairing_energy_n=float(final_state.pairing.epair[0]),
+            pairing_energy_p=float(final_state.pairing.epair[1]),
+            lambda2_n=float(final_state.pairing.lambda2[0]),
+            lambda2_p=float(final_state.pairing.lambda2[1]),
+            ln_energy=float(jnp.sum(final_state.pairing.e_ln)),
+            zpe=int(self.force.zpe),
             fermi_energy_n=float(final_state.pairing.eferm[0]),
             fermi_energy_p=float(final_state.pairing.eferm[1]),
             # Radii and deformation
@@ -1303,6 +1331,11 @@ class HFBFFT:
         self.state.psi = final_state.psi
         self.state.sp_energy = final_state.sp_energy
         self.state.wocc = final_state.wocc
+        # Everything a second run() needs to resume from this state
+        self.state.wguv = final_state.wguv
+        self.state.wstates = final_state.wstates
+        self.state.pairwg = final_state.pairwg
+        self.state.isospin = final_state.isospin
         
         print("-" * 60)
         print(f"Calculation {'converged' if self._converged else 'completed'}")
@@ -1574,15 +1607,69 @@ class HFBFFT:
         """
         self._callbacks.append(callback)
     
+    def _checkpoint_meta(self) -> dict:
+        f = self.force
+        return dict(Z=self.nucleus.protons, N=self.nucleus.neutrons,
+                    npsi_n=int(self._npsi[0]), npsi_p=int(self._npsi[1]),
+                    dy=float(self.grid.dy), dz=float(self.grid.dz),
+                    ipair=int(f.ipair), v0=float(f.v0neut), v0p=float(f.v0prot),
+                    rho0pr=float(f.rho0pr))
+
+    def _save_solver_state(self, filename: str, state) -> None:
+        from jax_hfbfft.core.tdhfb import save_static
+        save_static(filename, state, self.grid, functional=self.force.name,
+                    **self._checkpoint_meta())
+
     def save_checkpoint(self, filename: str):
-        """Save current state to a checkpoint file."""
-        # Placeholder for checkpointing
-        pass
-    
+        """
+        Save the current orbitals and occupations to an .npz file.
+
+        The file is core.tdhfb's static format, so it restarts a static run
+        (load_checkpoint, or initialize_wavefunctions("restart", filename=...))
+        and also seeds TDHFB.from_static(filename).
+        """
+        st = getattr(self, '_solver_state', None)
+        if st is None:
+            if self.state.psi is None or not bool(jnp.any(self.state.psi != 0)):
+                raise RuntimeError("nothing to save: call run() or initialize_wavefunctions() first")
+            from types import SimpleNamespace
+            n = self.state.psi.shape[0]
+            st = SimpleNamespace(
+                psi=self.state.psi, wocc=self.state.wocc, wguv=self.state.wguv,
+                pairwg=self.state.pairwg, wstates=self.state.wstates,
+                isospin=self.state.isospin,
+                sp_energy=(self.state.sp_energy if self.state.sp_energy is not None
+                           else jnp.zeros(n)),
+                energies=SimpleNamespace(ehfint=float('nan')), efluct=float('nan'))
+        self._save_solver_state(filename, st)
+
     def load_checkpoint(self, filename: str):
-        """Load state from a checkpoint file."""
-        # Placeholder for checkpointing
-        pass
+        """
+        Load orbitals and occupations from a save_checkpoint (or save_static)
+        file; the next run() resumes from them.  The grid, nucleus and basis
+        size must match this calculation.
+        """
+        d = np.load(filename)
+        g = self.grid
+        shape = (int(d['nx']), int(d['ny']), int(d['nz']))
+        if shape != (g.nx, g.ny, g.nz):
+            raise ValueError(f"{filename}: grid {shape} != this calculation's {(g.nx, g.ny, g.nz)}")
+        spacing = (float(d['dx']), float(d.get('dy', d['dx'])), float(d.get('dz', d['dx'])))
+        if not np.allclose(spacing, (g.dx, g.dy, g.dz), atol=1e-9):
+            raise ValueError(f"{filename}: spacing {spacing} != {(g.dx, g.dy, g.dz)}")
+        if 'Z' in d and (int(d['Z']), int(d['N'])) != (self.nucleus.protons, self.nucleus.neutrons):
+            raise ValueError(f"{filename}: Z, N = {int(d['Z'])}, {int(d['N'])} != "
+                             f"{self.nucleus.protons}, {self.nucleus.neutrons}")
+        iso = np.asarray(d['isospin'])
+        npsi = (int(np.sum(iso == 0)), int(np.sum(iso == 1)))
+        if npsi != (int(self._npsi[0]), int(self._npsi[1])):
+            raise ValueError(f"{filename}: basis {npsi} != this calculation's "
+                             f"{(int(self._npsi[0]), int(self._npsi[1]))}; pass npsi={npsi}")
+        self.state.psi = jnp.asarray(d['psi'])
+        for k in ('wocc', 'wguv', 'pairwg', 'wstates', 'sp_energy'):
+            setattr(self.state, k, jnp.asarray(d[k]))
+        self.state.isospin = jnp.asarray(iso)
+        self._solver_state = None
     
     def get_density(self, isospin: int = -1) -> jax.Array:
         """

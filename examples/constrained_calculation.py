@@ -30,8 +30,8 @@ def main():
         print(f"\nβ₂ = {beta2:.2f}")
 
         # Create constraint for this deformation. The damping radius must reach
-        # well past the surface of a heavy, elongated nucleus (the 6 fm default
-        # is for light nuclei); 16 fm fits inside the 38.4 fm box below.
+        # well past the surface of a heavy, elongated nucleus (the default scales
+        # with A and beta2); 16 fm is set explicitly and fits the 38.4 fm box below.
         if beta2 == 0.0:
             constraint = Constraint.spherical()
         else:

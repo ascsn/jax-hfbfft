@@ -10,8 +10,9 @@ This module implements the iterative HFB solver including:
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from dataclasses import dataclass, field
-from typing import Tuple, Optional, Callable
+from typing import Tuple, Optional, Callable, List
 import time
 import dataclasses
 from functools import partial
@@ -1073,6 +1074,35 @@ def apply_cm_correction(force: Force, mass_number: int) -> Force:
     return dataclasses.replace(force, h2m=force.h2m * ((mass_number - 1.0) / mass_number))
 
 
+def statics_only_terms(static, force: Optional[Force] = None) -> List[str]:
+    """
+    Warnings for a static solution about to seed TDHF/TDHFB: terms of the static
+    functional that the time-dependent propagation does not contain.
+
+    static: a SolverState, or a dict loaded from a static .npz (save_static
+    records 'lambda2' and 'zpe').  force: the propagation force, if known.
+    """
+    get = (static.get if isinstance(static, dict)
+           else lambda k, d=None: getattr(static, k, d))
+    msgs = []
+    pairing = get('pairing')
+    lam2 = np.asarray(pairing.lambda2 if pairing is not None else get('lambda2', np.zeros(2)))
+    if np.any(lam2 > 0.0):
+        msgs.append(
+            f"the static was solved with Lipkin-Nogami (lambda_2 n/p = "
+            f"{float(lam2.flat[0]):.3f}/{float(lam2.flat[-1]):.3f} MeV), which the propagation "
+            "does not contain: the state is not stationary there and will oscillate. "
+            "Re-solve the static with use_ln=False.")
+    sforce = get('force')
+    zpe = force.zpe if force is not None else (sforce.zpe if sforce is not None else get('zpe', 0))
+    if int(np.asarray(zpe)) == 3:
+        msgs.append(
+            "zpe = 3: the propagated energy carries the constant 17.3/A^0.2 c.m. estimate, "
+            "not the static's microscopic <P^2>/2mA, so total energies are offset from the "
+            "static's by a constant (the dynamics are unaffected).")
+    return msgs
+
+
 def run_hfb(
     grid: Grid,
     force,
@@ -1751,21 +1781,14 @@ def run_constrained_scan(
     if config is None:
         config = SolverConfig()
     A = nucleus_z + nucleus_n
-    half_box = grid.nx * grid.dx / 2.0 - 3.0
     if damprad is None:
-        # A prolate shape at beta2 has a long semi-axis of about R0 (1 + 0.75 beta2);
-        # allow ~2 fm of surface beyond it (6.7 fm at beta2 = 0, ~12 fm at 0.6 for 16O).
+        from jax_hfbfft.physics.constraints import default_damprad
         R = 1.2 * A ** (1.0 / 3.0)
         beta_max = 0.0
         if len(targets):
             conv = A * R**2 * 3.0 / np.sqrt(5.0 * np.pi)
             beta_max = max(abs(float(t)) for t in targets) / conv
-        want = 2.2 * R * (1.0 + 0.75 * beta_max) + 2.0 * min(beta_max / 0.6, 1.0)
-        damprad = min(want, half_box)
-        if verbose and want > half_box:
-            print(f"  WARNING: deformation up to beta2 = {beta_max:.2f} needs a "
-                  f"damping radius of {want:.1f} fm but the box allows "
-                  f"{half_box:.1f} fm; enlarge the grid", flush=True)
+        damprad = default_damprad(A, grid, beta_max, verbose=verbose)
 
     base_inner_cfg = dataclasses.replace(
         config, max_iterations=inner_iters, freeze_constraint=True, verbose=False,

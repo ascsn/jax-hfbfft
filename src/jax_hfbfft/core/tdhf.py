@@ -27,6 +27,7 @@ import numpy as np
 from jax_hfbfft.core.force import Force
 from jax_hfbfft.core.grid import Grid
 from jax_hfbfft.physics import dynamics as D
+from jax_hfbfft.physics.solver import statics_only_terms
 
 
 class TDHF:
@@ -70,6 +71,9 @@ class TDHF:
             static = static.solver_state
         if grid is None:
             raise ValueError("grid is required when starting from a SolverState.")
+        import warnings
+        for msg in statics_only_terms(static, force):
+            warnings.warn("TDHF.from_static: " + msg, stacklevel=2)
         config = config or D.TDConfig()
         prepare_kwargs.setdefault("use_coulomb", config.use_coulomb)
         prepare_kwargs.setdefault("density_chunk", config.density_chunk)

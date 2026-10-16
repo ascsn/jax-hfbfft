@@ -82,6 +82,43 @@ class ConstraintState:
         )
 
 
+def default_damprad(mass_number: float, grid: Grid, beta_max: float = 0.0,
+                    verbose: bool = True) -> float:
+    """
+    Radius of the multipole damping mask when the constraint does not set one.
+
+    A prolate shape at beta2 has a long semi-axis of about R0 (1 + 0.75 beta2);
+    the mask reaches ~2.2 R0 along it plus up to 2 fm for large deformations
+    (6.7 fm for 16O at beta2 = 0, 16.4 fm for 238U), and stays 3 fm inside the
+    shortest box side.  The old fixed 6 fm cut the operators inside heavy nuclei.
+    """
+    R = 1.2 * float(mass_number) ** (1.0 / 3.0)
+    want = 2.2 * R * (1.0 + 0.75 * beta_max) + 2.0 * min(beta_max / 0.6, 1.0)
+    half_box = min(grid.nx * grid.dx, grid.ny * grid.dy, grid.nz * grid.dz) / 2.0 - 3.0
+    if verbose and want > half_box:
+        print(f"  WARNING: deformation up to beta2 = {beta_max:.2f} needs a damping "
+              f"radius of {want:.1f} fm but the box allows {half_box:.1f} fm; "
+              f"enlarge the grid", flush=True)
+    return min(want, half_box)
+
+
+def _goal_beta(constraint: Constraint, mass_number: float) -> float:
+    """beta2 implied by the Q20 / Q22 goals (raw operators, see below)."""
+    goals = dict(constraint.get_multipole_list())
+    q20 = goals.get((2, 0), 0.0)
+    q22 = goals.get((2, 2), 0.0)                 # raw x^2 - y^2 = Q22 / sqrt(3/2)
+    R = 1.2 * float(mass_number) ** (1.0 / 3.0)
+    conv = mass_number * R**2 * 3.0 / jnp.sqrt(5.0 * jnp.pi)
+    return float(jnp.sqrt(q20**2 + 3.0 * q22**2) / conv)
+
+
+def resolved_damprad(constraint: Constraint, grid: Grid, mass_number: float) -> float:
+    """constraint.damprad, or default_damprad for its goals when it is None."""
+    if constraint.damprad is not None:
+        return float(constraint.damprad)
+    return default_damprad(mass_number, grid, _goal_beta(constraint, mass_number))
+
+
 def _build_constraint_fields(
     grid: Grid,
     constraint: Constraint,
@@ -99,7 +136,8 @@ def _build_constraint_fields(
     z_mesh = grid.z[None, None, :]
 
     r = jnp.sqrt(x_mesh**2 + y_mesh**2 + z_mesh**2)
-    masking = 1.0 / (1.0 + jnp.exp((r - constraint.damprad) / constraint.dampgamma))
+    damprad = resolved_damprad(constraint, grid, mass_number)
+    masking = 1.0 / (1.0 + jnp.exp((r - damprad) / constraint.dampgamma))
 
     constr_fields: List[jax.Array] = []
     goals: List[float] = []

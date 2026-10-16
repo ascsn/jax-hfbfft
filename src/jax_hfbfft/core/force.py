@@ -82,9 +82,9 @@ class Force:
     pair_cutoff: Optional[jax.Array] = None  # Energy cutoff for pairing
     state_cutoff: Optional[jax.Array] = None  # State cutoff
     softcut_range: float = 0.1  # Soft cutoff width parameter
-    # BCS occupations are clipped to [uv_floor, 1 - uv_floor] and uv to
-    # sqrt(uv_floor) (FORTRAN smallp). Statics for TDHFB want 0: the floored uv
-    # is inconsistent with v2 for nearly empty states.
+    # u*v is floored at sqrt(uv_floor) (FORTRAN smallp = 1e-6) and v2 at
+    # min(uv_floor, 1e-10) (FORTRAN smal). Statics for TDHFB want 0: the floored
+    # uv is inconsistent with v2 for nearly empty states.
     uv_floor: float = 1.0e-6
     # Momentum cutoff of the TDHFB pair channel (physics/tdhfb.py): pairing acts on
     # the orbital components below |k| = pair_kcut (fm^-1), smoothed over

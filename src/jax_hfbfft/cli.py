@@ -12,6 +12,11 @@ from pathlib import Path
 from typing import Optional
 
 
+# How each zpe value treats the centre-of-mass energy (see _forces.yml)
+_ZPE_LABEL = {0: "zpe 0: in h2m, factor 1-1/A", 1: "zpe 1: 17.3/A^0.2 estimate",
+              2: "zpe 2: none", 3: "zpe 3: microscopic <P^2>/2mA"}
+
+
 def main():
     """Main entry point for the hfbfft CLI."""
     parser = argparse.ArgumentParser(
@@ -353,6 +358,8 @@ def run_calculation(config_path: Optional[str], verbose: bool = False):
         # Add pairing density if specified
         if 'rho0_pairing' in force_config:
             force_kwargs['rho0pr'] = force_config['rho0_pairing']
+        if 'uv_floor' in force_config:
+            force_kwargs['uv_floor'] = float(force_config['uv_floor'])
         
         force = Force.from_name(
             force_config.get('name', 'SLy4'),
@@ -478,6 +485,8 @@ def run_calculation(config_path: Optional[str], verbose: bool = False):
             calc.iteranneal = iteration_config['iteranneal']
         if 'pairenhance' in iteration_config:
             calc.pairenhance = iteration_config['pairenhance']
+        if 'precond_floor' in iteration_config:
+            calc.precond_floor = float(iteration_config['precond_floor'])
         if 'use_ln' in iteration_config:
             calc.use_ln = bool(iteration_config['use_ln'])
         if 'ln_passes' in iteration_config:
@@ -568,9 +577,16 @@ def _run_dynamics(calc, dyn: dict, run_dir: Optional[Path]):
     import numpy as np
     from jax_hfbfft import TDHF, TDConfig
 
+    method = str(dyn.get('method', 'auto')).lower()
+    if method == 'auto':
+        method = 'tdhfb' if calc.force.ipair != 0 else 'tdhf'
+    if method == 'tdhfb':
+        return _run_tdhfb(calc, dyn, run_dir)
+    if method != 'tdhf':
+        raise ValueError(f"Unknown dynamics.method {method!r}; use auto, tdhf or tdhfb.")
     if calc.force.ipair != 0:
         print("Skipping dynamics: TDHF needs a static state without pairing "
-              "(force.ipair: 0).")
+              "(force.ipair: 0); use dynamics.method: tdhfb for a paired state.")
         return
 
     config = TDConfig(
@@ -612,6 +628,73 @@ def _run_dynamics(calc, dyn: dict, run_dir: Optional[Path]):
         print(f"TDHF history saved to: {run_dir / 'tdhf_history.dat'}")
 
 
+def _run_tdhfb(calc, dyn: dict, run_dir: Optional[Path]):
+    """TDHFB propagation of a paired static (dynamics.method: tdhfb)."""
+    import numpy as np
+    from jax_hfbfft import TDHFB
+
+    g = calc.grid
+    if min(g.nx % 2, g.ny % 2, g.nz % 2) == 0:
+        print("WARNING: TDHFB wants odd grid sizes (no Nyquist mode); on an even grid "
+              "the dynamics loses energy at grid-scale momenta.")
+    opt = dyn.get('tdhfb') or {}
+    try:
+        td = TDHFB.from_static(
+            calc, scheme=opt.get('scheme', 'global'),
+            max_defect=float(opt.get('max_defect', 1e-6)),
+            kramers_tol=float(opt.get('kramers_tol', 1e-7)),
+            dt=float(dyn.get('dt', 0.1)), taylor_order=int(dyn.get('taylor_order', 6)),
+            use_coulomb=calc.include_coulomb,
+            absorb_width=float(opt.get('absorb_width', 0.0)),
+            absorb_strength=float(opt.get('absorb_strength', 10.0)))
+    except ValueError as e:
+        raise ValueError(f"TDHFB could not start from this static: {e}. TDHFB needs a "
+                         "converged, time-reversal-symmetric static (Kramers partners with "
+                         "equal occupations); converge it further, or loosen "
+                         "dynamics.tdhfb.max_defect / kramers_tol.") from e
+    n_relax = int(opt.get('relax_iters', 0))
+    if n_relax > 0:
+        print(f"Relaxing the static into the TDHFB functional ({n_relax} iterations)...")
+        td.relax(n_relax, verbose=max(n_relax // 10, 1))
+    elif td.scheme == 'global':
+        print("Note: tdhfb.relax_iters is 0; an unrelaxed static drifts at rest "
+              "(set ~2000 for production runs).")
+
+    kick = dyn.get('kick') or {}
+    kind = kick.get('type', 'none')
+    eta = float(kick.get('eta', 1.0e-3))
+    if kind == 'quadrupole':
+        td.kick_quadrupole(eta)
+    elif kind == 'monopole':
+        td.kick_monopole(eta)
+    elif kind != 'none':
+        raise ValueError(f"dynamics.kick.type {kind!r} is not available for TDHFB; "
+                         f"use none, quadrupole or monopole.")
+
+    steps, every = int(dyn.get('steps', 1000)), int(dyn.get('diag_interval', 10))
+    print(f"TDHFB ({td.scheme} scheme): {steps} steps of {td.dt} fm/c, kick: {kind}")
+    print(f"{'t (fm/c)':>10} {'E (MeV)':>14} {'E-E0':>11} {'Epair n':>9} {'Epair p':>9} "
+          f"{'N':>10} {'Z':>10} {'Q20 (fm^2)':>12}")
+    e0 = None
+    for rec in td.iterate(steps, record_every=every):
+        e0 = rec['E'] if e0 is None else e0
+        print(f"{rec['time']:10.2f} {rec['E']:14.6f} {rec['E'] - e0:+11.3e} {rec['Epair_n']:9.4f} "
+              f"{rec['Epair_p']:9.4f} {rec['N']:10.6f} {rec['Z']:10.6f} {rec['Q20']:12.4f}")
+    if opt.get('check_continuity', False) and td.scheme == 'global':
+        print(f"Local continuity: {td.continuity()}")
+
+    if run_dir is not None:
+        cols = [c for c in ('time', 'E', 'Epair_n', 'Epair_p', 'N', 'Z', 'Q20', 'r2', 'purity')
+                if c in td.history[0]]
+        np.savetxt(run_dir / "tdhfb_history.dat",
+                   np.array([[float(r[c]) for c in cols] for r in td.history]),
+                   header=" ".join(cols), fmt="%.10e")
+        print(f"TDHFB history saved to: {run_dir / 'tdhfb_history.dat'}")
+        if opt.get('save_state', False):
+            td.save(str(run_dir / "tdhfb_state.npz"))
+            print(f"TDHFB state saved to: {run_dir / 'tdhfb_state.npz'}")
+
+
 def _save_summary(calc, results, config, output_dir):
     """Save summary file with main results."""
     summary_file = output_dir / "summary.txt"
@@ -651,7 +734,9 @@ def _save_summary(calc, results, config, output_dir):
         f.write(f"  Coulomb:                 {results.coulomb_energy:12.3f}\n")
         f.write(f"  Pairing:                 {results.pairing_energy:12.3f}\n")
         f.write(f"  Rearrangement:           {results.rearrangement_energy:12.3f}\n")
-        f.write(f"  Center-of-mass:          {results.cm_correction:12.3f}\n\n")
+        if results.ln_energy != 0.0:
+            f.write(f"  Lipkin-Nogami:           {results.ln_energy:12.3f}\n")
+        f.write(f"  Center-of-mass:          {results.cm_correction:12.3f}   ({_ZPE_LABEL.get(results.zpe, '?')})\n\n")
         
         # Binding energy per nucleon
         f.write(f"Binding energy/A:          {results.total_energy/nucleus.mass_number:12.3f} MeV\n\n")
@@ -677,8 +762,14 @@ def _save_summary(calc, results, config, output_dir):
             f.write("=" * 80 + "\n")
             f.write(f"Neutron Fermi energy:      {results.fermi_energy_n:12.3f} MeV\n")
             f.write(f"Proton Fermi energy:       {results.fermi_energy_p:12.3f} MeV\n")
-            f.write(f"Neutron pairing gap:       {results.pairing_gap_n:12.3f} MeV\n")
-            f.write(f"Proton pairing gap:        {results.pairing_gap_p:12.3f} MeV\n\n")
+            f.write(f"Neutron pairing gap:       {results.pairing_gap_n:12.3f} MeV   (uv-weighted; v2-weighted {results.pairing_gap_v2_n:.3f})\n")
+            f.write(f"Proton pairing gap:        {results.pairing_gap_p:12.3f} MeV   (uv-weighted; v2-weighted {results.pairing_gap_v2_p:.3f})\n")
+            f.write(f"Neutron pairing energy:    {results.pairing_energy_n:12.3f} MeV\n")
+            f.write(f"Proton pairing energy:     {results.pairing_energy_p:12.3f} MeV\n")
+            if results.lambda2_n != 0.0 or results.lambda2_p != 0.0:
+                f.write(f"Lipkin-Nogami lambda_2:    {results.lambda2_n:12.3f} {results.lambda2_p:8.3f} MeV (n, p)\n")
+                f.write(f"Lipkin-Nogami energy:      {results.ln_energy:12.3f} MeV\n")
+            f.write("\n")
 
 
 def _save_convergence(results, output_dir):
@@ -706,7 +797,8 @@ def _save_energies(calc, results, output_dir):
         f.write(f"# Coulomb energy:    {results.coulomb_energy:12.6f}\n")
         f.write(f"# Pairing energy:    {results.pairing_energy:12.6f}\n")
         f.write(f"# Rearrangement:     {results.rearrangement_energy:12.6f}\n")
-        f.write(f"# CM correction:     {results.cm_correction:12.6f}\n")
+        f.write(f"# CM correction:     {results.cm_correction:12.6f}   ({_ZPE_LABEL.get(results.zpe, '?')})\n")
+        f.write(f"# Lipkin-Nogami:     {results.ln_energy:12.6f}\n")
         f.write(f"#\n")
         f.write(f"# Skyrme functional terms:\n")
         f.write(f"# ehf0 (t0):         {results.ehf0:12.6f}\n")
@@ -786,9 +878,15 @@ def _save_pairing(calc, results, output_dir):
         f.write("# Pairing properties\n")
         f.write(f"Neutron Fermi energy (MeV):  {results.fermi_energy_n:12.6f}\n")
         f.write(f"Proton Fermi energy (MeV):   {results.fermi_energy_p:12.6f}\n")
-        f.write(f"Neutron pairing gap (MeV):   {results.pairing_gap_n:12.6f}\n")
+        f.write(f"Neutron pairing gap (MeV):   {results.pairing_gap_n:12.6f}   # <uv Delta>/<uv>\n")
         f.write(f"Proton pairing gap (MeV):    {results.pairing_gap_p:12.6f}\n")
-        f.write(f"Neutron pairing energy (MeV): {results.pairing_energy:12.6f}\n")
+        f.write(f"Neutron gap v2-weighted (MeV): {results.pairing_gap_v2_n:12.6f}   # <v2 Delta>/<v2>\n")
+        f.write(f"Proton gap v2-weighted (MeV):  {results.pairing_gap_v2_p:12.6f}\n")
+        f.write(f"Neutron pairing energy (MeV): {results.pairing_energy_n:12.6f}\n")
+        f.write(f"Proton pairing energy (MeV):  {results.pairing_energy_p:12.6f}\n")
+        f.write(f"Total pairing energy (MeV):   {results.pairing_energy:12.6f}\n")
+        f.write(f"Lipkin-Nogami lambda_2 n/p (MeV): {results.lambda2_n:12.6f} {results.lambda2_p:12.6f}\n")
+        f.write(f"Lipkin-Nogami energy (MeV):   {results.ln_energy:12.6f}\n")
 
 
 def _save_densities(calc, output_dir):

@@ -369,7 +369,8 @@ class Constraint:
     d0constr: float = 1e-4         # Small parameter to avoid division by zero
     qepsconstr: float = 1.0        # Overall gain on the in-loop multiplier update
     dampgamma: float = 1.0         # Damping parameter for masking function
-    damprad: float = 6.0           # Damping radius for masking function
+    damprad: Optional[float] = None  # Damping radius (fm); None = scale with A and the
+                                     # goal deformation (physics.constraints.default_damprad)
     
     # Physical constants
     r0rms: float = 0.93            # RMS radius parameter (corresponds to R0=1.2 fm)
@@ -559,10 +560,10 @@ class Constraint:
             - For axially symmetric shapes about z, set gamma=0 and use the sign
               of beta2 (gamma=60 gives an oblate shape about the y axis)
             - For reflection-asymmetric shapes, include beta3 (octupole)
-            - The multipole operators are damped beyond `damprad` (default 6 fm,
-              a light-nucleus value). For heavy or strongly deformed nuclei pass
-              a damprad well past the nuclear surface, up to about half the box
-              length minus 3 fm (run_constrained_scan picks one automatically)
+            - The multipole operators are damped beyond `damprad`. By default it
+              scales with A and the goal deformation (about 2.2 R0 along the long
+              axis) and stays 3 fm inside the box; a warning is printed if the box
+              is too small for the requested shape
         """
         # Convert beta-gamma to multipoles
         multipoles = beta_gamma_to_multipoles(

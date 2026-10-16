@@ -31,6 +31,7 @@ SLy4:
 SLy5:
   description: "Lyon Skyrme parameterization with different spin-orbit"
   reference: "Chabanat et al., Nucl. Phys. A 635 (1998) 231"
+  # spin-orbit: t4 = W0 (b4 = W0/2), b4p = W0/2 (FORTRAN forces.data, SkyAx, HFBTHO agree); was t4 0, b4p W0 (2026-10-16); fitted with J^2 terms, which this code lacks
   ex: 1
   zpe: 0
   h2m: [20.73553, 20.73553]
@@ -38,35 +39,37 @@ SLy5:
   t1: 483.13
   t2: -549.40
   t3: 13763.0
-  t4: 0.0
+  t4: 126.0
   x0: 0.778
   x1: -0.328
   x2: -1.0
   x3: 1.267
-  b4p: 126.0
+  b4p: 63.0
   power: 0.16666666666666666
 
 SLy6:
   description: "Lyon Skyrme parameterization"
   reference: "Chabanat et al., Nucl. Phys. A 635 (1998) 231"
+  # spin-orbit: t4 = W0 (b4 = W0/2), b4p = W0/2 (FORTRAN forces.data, SkyAx, HFBTHO agree); was t4 0, b4p W0 (2026-10-16)
   ex: 1
-  zpe: 0
+  zpe: 3  # fitted with the full (two-body) c.m. correction (HFBTHO use_full_cm_cor)
   h2m: [20.73553, 20.73553]
   t0: -2479.50
   t1: 462.18
   t2: -448.61
   t3: 13673.0
-  t4: 0.0
+  t4: 122.0
   x0: 0.825
   x1: -0.465
   x2: -1.0
   x3: 1.355
-  b4p: 122.0
+  b4p: 61.0
   power: 0.16666666666666666
 
 SkM:
   description: "Original SkM parameterization"
   reference: "Krivine et al., Nucl. Phys. A 336 (1980) 155"
+  # spin-orbit: t4 = W0 (b4 = W0/2), b4p = W0/2 (FORTRAN forces.data, SkyAx, HFBTHO agree); was t4 0, b4p W0 (2026-10-16)
   ex: 1
   zpe: 0
   h2m: [20.73553, 20.73553]
@@ -74,17 +77,18 @@ SkM:
   t1: 385.0
   t2: -120.0
   t3: 15595.0
-  t4: 0.0
+  t4: 130.0
   x0: 0.09
   x1: 0.0
   x2: 0.0
   x3: 0.0
-  b4p: 130.0
+  b4p: 65.0
   power: 0.16666666666666666
 
 SkM*:
   description: "Modified SkM with improved fission barriers"
   reference: "Bartel et al., Nucl. Phys. A 386 (1982) 79"
+  # spin-orbit: t4 = W0 (b4 = W0/2), b4p = W0/2 (FORTRAN forces.data, SkyAx, HFBTHO agree); was t4 0, b4p W0 (2026-10-16)
   ex: 1
   zpe: 0
   h2m: [20.73553, 20.73553]
@@ -92,35 +96,37 @@ SkM*:
   t1: 410.0
   t2: -135.0
   t3: 15595.0
-  t4: 0.0
+  t4: 130.0
   x0: 0.09
   x1: 0.0
   x2: 0.0
   x3: 0.0
-  b4p: 130.0
+  b4p: 65.0
   power: 0.16666666666666666
 
 SkP:
   description: "Skyrme parameterization with pairing"
   reference: "Dobaczewski et al., Nucl. Phys. A 422 (1984) 103"
+  # spin-orbit: t4 = W0 (b4 = W0/2), b4p = W0/2 (FORTRAN forces.data, SkyAx, HFBTHO agree); was t4 0, b4p W0 (2026-10-16); t1-x3 to full FORTRAN precision; fitted with J^2 terms, which this code lacks
   ex: 1
   zpe: 0
   h2m: [20.73553, 20.73553]
   t0: -2931.70
-  t1: 320.62
-  t2: -337.41
-  t3: 18708.97
-  t4: 0.0
-  x0: 0.292
-  x1: 0.653
-  x2: -0.537
-  x3: 0.181
-  b4p: 100.0
+  t1: 320.618
+  t2: -337.409
+  t3: 18708.961
+  t4: 100.0
+  x0: 0.29215
+  x1: 0.65318
+  x2: -0.53732
+  x3: 0.18103
+  b4p: 50.0
   power: 0.16666666666666666
 
 SIII:
   description: "Classic Skyrme III parameterization"
   reference: "Beiner et al., Nucl. Phys. A 238 (1975) 29"
+  # spin-orbit: t4 = W0 (b4 = W0/2), b4p = W0/2 (FORTRAN forces.data, SkyAx, HFBTHO agree); was t4 0, b4p W0 (2026-10-16)
   ex: 1
   zpe: 0
   h2m: [20.73553, 20.73553]
@@ -128,31 +134,33 @@ SIII:
   t1: 395.0
   t2: -95.0
   t3: 14000.0
-  t4: 0.0
+  t4: 120.0
   x0: 0.45
   x1: 0.0
   x2: 0.0
   x3: 1.0
-  b4p: 120.0
+  b4p: 60.0
   power: 1.0
 
 UNEDF0:
-  description: "UNEDF universal functional"
+  description: "UNEDF0 universal functional"
   reference: "Kortelainen et al., Phys. Rev. C 82 (2010) 024313"
   ex: 1
-  zpe: 0
+  zpe: 0  # HFBTHO UNE0 "c.m. correction: T" = h2m(1-1/A)
   h2m: [20.73553, 20.73553]
-  t0: -1883.68781034
-  t1: 277.50021224
-  t2: 417.64326644
-  t3: 13901.94834463
-  t4: 0.0
-  x0: 0.00974375
-  x1: -1.77784395
-  x2: -1.67699035
-  x3: -0.38079041
-  b4p: 74.02664064
-  power: 0.32124845
+  # t, x, b4, b4p, sigma from the HFBTHO UNE0 printout (2026-10-16); the previous
+  # entry had wrong t2 (417.64), power (0.32125), t4 (0) and b4p (74.03)
+  t0: -1883.68781034247695
+  t1: 277.500212238931113
+  t2: 608.430905591534383
+  t3: 13901.9483446343256
+  t4: 250.322  # 2*b4, b4 = 125.161
+  x0: 0.00974374651612197606
+  x1: -1.77784394560870229
+  x2: -1.67699034528797575
+  x3: -0.380790414633100260
+  b4p: -91.2604
+  power: 0.321955989588264435
 
 UNEDF1:
   description: "UNEDF1 universal functional"

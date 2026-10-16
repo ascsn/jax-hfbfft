@@ -11,7 +11,11 @@
   - **Performance**: Just-In-Time (JIT) compilation via XLA for near-native performance.
   - **Portability**: Runs seamlessly on CPUs, GPUs, and TPUs without code changes.
   - **Differentiability**: Ready for future applications involving automatic differentiation.
+- **Skyrme functionals**: SLy4/5/6, SkM, SkM*, SkP, SIII, UNEDF0 and UNEDF1 (see [Functionals](#functionals)), with the centre-of-mass treatment each was fitted with, up to the microscopic ⟨P²⟩/2mA.
+- **Pairing**: volume and density-dependent delta pairing (VDI/DDDI) and the Lipkin-Nogami particle-number correction.
 - **Time-Dependent Hartree-Fock (TDHF)**: Real-time propagation of converged static states for collective modes, linear response and heavy-ion collisions (see `examples/tdhf`).
+- **Time-Dependent HFB (TDHFB)**: Real-time propagation of paired states (global in-span scheme) for collective modes, collisions and fission (see [TDHFB](#time-dependent-hfb) and `examples/tdhfb`).
+- **Checkpoints**: static runs save and restart from `.npz` files, which also seed TDHFB.
 - **Constrained Calculations**: Multipole constraints (Q10 to Q40) and deformation scans with an outer/inner augmented-Lagrangian solver.
 - **Flexible Configuration**: Easily configure nuclei, forces, and grid parameters using YAML files.
 - **Extensible Architecture**: Designed to be modular, allowing for easy integration of new functionals or physical observables.
@@ -21,7 +25,7 @@
 ```
 jax-hfbfft/
 ├── src/jax_hfbfft/       # Modern OOP implementation (use this)
-│   ├── core/             # Core classes (HFBFFT, TDHF, Force, Nucleus, Grid, Constraint)
+│   ├── core/             # Core classes (HFBFFT, TDHF, TDHFB, Force, Nucleus, Grid, Constraint)
 │   ├── physics/          # Physics modules (densities, meanfield, pairing, dynamics, etc.)
 │   ├── viz/              # Optional plotting (TDHF renders)
 │   ├── forces/           # Force presets
@@ -34,8 +38,8 @@ jax-hfbfft/
 ├── gui-frontend/         # Web GUI frontend (built during pip install)
 ├── gui-desktop/          # Electron desktop app
 ├── legacy/               # Archived legacy implementation
-├── tests/                # Test suite (75 tests)
-├── examples/             # Example scripts (TDHF examples in examples/tdhf)
+├── tests/                # Test suite (pytest)
+├── examples/             # Example scripts (examples/tdhf, examples/tdhfb)
 ├── run_hfb.py            # Classic config-file driver
 ├── config.yml            # Fully commented configuration template
 └── pyproject.toml        # Package configuration
@@ -47,13 +51,15 @@ jax-hfbfft/
 - `src/jax_hfbfft/physics/solver.py`: HFB iteration solver
 - `src/jax_hfbfft/physics/meanfield.py`: Skyrme mean-field potentials
 - `src/jax_hfbfft/physics/densities.py`: Nuclear density computations
-- `src/jax_hfbfft/physics/pairing.py`: BCS/HFB pairing
+- `src/jax_hfbfft/physics/pairing.py`: BCS/HFB pairing and Lipkin-Nogami
+- `src/jax_hfbfft/physics/cm_correction.py`: microscopic centre-of-mass correction
 - `src/jax_hfbfft/physics/coulomb.py`: Coulomb potential (FFT-based)
 - `src/jax_hfbfft/physics/energies.py`: Energy functional calculations
 - `src/jax_hfbfft/physics/constraints.py`: Multipole constraints (augmented Lagrangian)
 - `src/jax_hfbfft/physics/dynamics.py`: TDHF time propagation
 - `src/jax_hfbfft/physics/collisions.py`: Initial states for heavy-ion collisions
 - `src/jax_hfbfft/core/tdhf.py`: TDHF class - entry point for time-dependent runs
+- `src/jax_hfbfft/physics/tdhfb.py`, `src/jax_hfbfft/core/tdhfb.py`: TDHFB (global in-span scheme) and its class
 
 ## Installation
 
@@ -136,7 +142,7 @@ This provides the classic HFB code workflow:
 - Output written to directory with comprehensive result files
 - Easy benchmarking against other codes (HFBTHO, Sky3D, etc.)
 - **Multipole constraints** (Q20, Q22, Q30, Q32, Q40 and the centre of mass, Q10)
-- **Optional TDHF run** after the static solve (`dynamics:` section)
+- **Optional TDHF or TDHFB run** after the static solve (`dynamics:` section)
 
 The commented `config.yml` in the repository root documents every option.
 
@@ -232,7 +238,7 @@ constraint = Constraint.from_beta_gamma(
 
 `from_beta_gamma` converts to Q20, Q22, Q30 and Q40 targets for the solver's operators (Q20 = 2z² − x² − y², Q22 = x² − y², ...). β₂ < 0 gives an oblate shape about the z axis; β₂ > 0 with γ = 60° is also oblate, but about the y axis. A single constrained solve only fixes the lab-frame moments, so a deformed nucleus can satisfy them by rotating; pass `principal_axes=True` to lock the orientation, or use `run_constrained_scan` (below), which does this automatically.
 
-**Damping radius.** The multipole operators grow like r^λ, so they are damped beyond `damprad` (default 6 fm). That default only suits light nuclei; for heavy or strongly deformed nuclei it cuts into the nucleus itself and the constraint pulls on the wrong shape. Set `damprad` well past the nuclear surface, up to about half the box length minus 3 fm (the box must extend beyond it). `run_constrained_scan` (below) chooses it automatically.
+**Damping radius.** The multipole operators grow like r^λ, so they are damped beyond `damprad`. By default it is chosen from the nucleus and the requested deformation (about 2.2 R₀ along the long axis, e.g. 9 fm for spherical ⁴⁰Ca and 16 fm for ²³⁸U) and kept 3 fm inside the shortest box side; a warning is printed when the box is too small for the requested shape. The density must stay inside the mask for the moment to be controlled, so enlarge the grid rather than shrink `damprad`. Passing `damprad` overrides the default.
 
 Config file format:
 ```yaml
@@ -241,7 +247,7 @@ constraints:
     beta2: 0.25
     gamma: 0     # Prolate
     beta3: 0.05  # Optional octupole
-  damprad: 16.0  # Damping radius (fm); the 6 fm default is for light nuclei
+  damprad: 16.0  # Damping radius (fm); optional, the default scales with A and beta2
 ```
 
 Supported multipoles: Q10 (the centre of mass, `<z>`), Q20, Q22, Q30, Q32 and Q40, plus the optional principal-axes constraints. Multipoles can also be given as (λ, μ) tuples. See `examples/constrained_calculation.py`.
@@ -265,6 +271,47 @@ for r in results:
 
 Each target warm-starts from the previous one, so keep the steps small (here about β₂ = 0.05). The scan prints each point as `[hit]` or `[short]` and ends with a check that dE/dQ between neighbouring points matches λ (ratio ≈ 1); treat `[short]` points, or a ratio far from 1, as unconverged.
 
+## Functionals
+
+| Name | Reference | c.m. correction (`zpe`) | Notes |
+|---|---|---|---|
+| SLy4 | Chabanat et al., NPA 635, 231 (1998) | 0 | |
+| SLy5 | Chabanat et al. (1998) | 0 | Fitted with J² terms, which are not implemented |
+| SLy6 | Chabanat et al. (1998) | 3 | Fitted with the full (two-body) c.m. correction |
+| SkM | Krivine et al., NPA 336, 155 (1980) | 0 | |
+| SkM* | Bartel et al., NPA 386, 79 (1982) | 0 | |
+| SkP | Dobaczewski et al., NPA 422, 103 (1984) | 0 | Fitted with J² terms, which are not implemented |
+| SIII | Beiner et al., NPA 238, 29 (1975) | 0 | |
+| UNEDF0 | Kortelainen et al., PRC 82, 024313 (2010) | 0 | Parameters from HFBTHO's UNE0; fitted with Lipkin-Nogami |
+| UNEDF1 | Kortelainen et al., PRC 85, 024304 (2012) | 2 | Parameters from HFBTHO's UNE1; fitted with Lipkin-Nogami |
+
+`tests/test_forces.py` checks every entry against its published parameters (and the UNEDF coupling constants against HFBTHO). Before October 2026 the spin-orbit terms of all forces except SLy4 were stored incorrectly (and several UNEDF parameters were wrong), so results with those forces from earlier versions should be redone.
+
+The centre-of-mass treatment is set per force by `zpe`:
+
+| `zpe` | Correction |
+|---|---|
+| 0 | ħ²/2m scaled by (1 − 1/A) (one-body) |
+| 1 | constant 17.3/A^0.2 MeV |
+| 2 | none |
+| 3 | microscopic ⟨P²⟩/2mA on the final state (the 17.3/A^0.2 estimate during the iterations, as in SkyAx) |
+
+**Lipkin-Nogami.** Set `use_ln: true` under `iteration:` in `config.yml` (or `calc.use_ln = True`, or `SolverConfig(use_ln=True)`). The UNEDF functionals were fitted with it, and it costs about five times a plain HFB iteration. λ₂ and E_LN are printed with the results; E_LN is included in the total energy. Validated against HFBTHO+LN on the calcium chain.
+
+**Charge radius** is r²_ch = r²_p + 0.8409² − 0.1155·N/Z + 0.0332 fm² (proton, neutron and Darwin-Foldy terms; no spin-orbit term).
+
+## Checkpoints and restarts
+
+```python
+calc.run(max_iterations=3000, checkpoint_file="ca48.npz", checkpoint_interval=500)
+
+calc2 = HFBFFT(nucleus, force, grid)                     # same grid, nucleus and basis
+calc2.initialize_wavefunctions(method="restart", filename="ca48.npz")
+calc2.run(max_iterations=2000)                           # continues from the checkpoint
+```
+
+`save_checkpoint` / `load_checkpoint` do the same by hand. The file is the static format TDHFB reads, so `TDHFB.from_static("ca48.npz")` also works.
+
 ## Time-Dependent Hartree-Fock
 
 `TDHF` propagates a converged static state in real time. Pairing is not included, so the static calculation must use `ipair=0`.
@@ -284,6 +331,30 @@ for rec in td.iterate(1500):          # time, energy drift, moments, ...
 ```
 
 The relative energy drift `dE_rel` is the main accuracy check. `examples/tdhf` has heavy-ion collisions, collective modes and rendering (`pip install -e ".[viz]"`); the CLI runs TDHF after the static solve when `dynamics: enabled: true` is set in `config.yml`.
+
+## Time-Dependent HFB
+
+`TDHFB` propagates a paired static state. It uses the global in-span scheme: one block per isospin, with the generalized density and pairing tensor of the orbital space evolved as full matrices; particle number and the purity of the generalized density are conserved to round-off (²⁰O: N drifts ~5×10⁻⁹ over 60 fm/c, impurity below 10⁻¹²).
+
+```python
+from jax_hfbfft import TDHFB
+
+td = TDHFB.from_static(calc)          # an HFBFFT after run(), or a static .npz
+td.relax(2000)                        # move into the TDHFB functional's minimum first
+td.kick_quadrupole(0.005)
+for rec in td.iterate(1200, record_every=20):
+    print(rec['time'], rec['E'], rec['N'], rec['Epair_n'], rec['Q20'])
+print(td.continuity())                # local continuity defect vs its floor
+```
+
+From the CLI, `dynamics: method: tdhfb` (or `auto`, which picks TDHFB for a paired static) with the options in the `tdhfb:` block of `config.yml`.
+
+The static has to follow a recipe, explained in `examples/tdhfb/README.md`: an **odd** grid (no Nyquist mode), `state_cutoff: [0, 0]` (`from_static` refuses soft state weights), `uv_floor: 0`, a well-converged solve (Kramers partners with equal occupations), and a relax before propagating. An unrelaxed static drifts at rest. A static solved with Lipkin-Nogami or `zpe: 3` contains terms the propagation does not, and `from_static` warns.
+
+**Known limits.**
+- *Local continuity* holds at its numerical floor with zero-range (contact) pairing. With the momentum-cutoff pair channel needed for heavy nuclei (`pair_kcut`), the pair source is nonlocal, and dρ/dt is no longer balanced by the local current (²³⁸U at k_c = 3 fm⁻¹: about 10⁴ times the floor), while N and E remain conserved. A toy model traces the defect to pairing each orbital with its time-reversed partner. Treat local currents and fragment fluxes from cutoff runs with care.
+- Collisions beyond ~300 fm/c, after the pairing collapses, have not been validated; check them against dt/2.
+- Only quadrupole and monopole kicks are available (no isovector dipole or boost yet).
 
 ## Object-Oriented API
 
@@ -358,7 +429,9 @@ pytest tests/ -v
 ## Development Status
 
 `HFBFFT` is currently under active development. Planned features include:
-- Support for a wider range of Skyrme functionals.
+- Odd-A nuclei (equal-filling blocking).
+- Fayans functionals and tensor (J²) terms (UNEDF2, SLy5 and SkP as fitted).
+- Isovector dipole kicks and sum-rule checks for TDHFB response.
 - Advanced constraint options for multi-dimensional potential energy surfaces.
 
 ## Graphical User Interface

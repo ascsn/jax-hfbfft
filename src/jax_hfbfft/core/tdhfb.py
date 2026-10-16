@@ -31,7 +31,9 @@ from jax_hfbfft.core.force import Force
 from jax_hfbfft.core.grid import Grid
 from jax_hfbfft.physics import tdhfb as T
 from jax_hfbfft.physics.coulomb import CoulombSolver
-from jax_hfbfft.physics.solver import apply_cm_correction
+import warnings
+
+from jax_hfbfft.physics.solver import apply_cm_correction, statics_only_terms
 
 
 # ── Static files ─────────────────────────────────────────────────────────────
@@ -43,6 +45,11 @@ def save_static(path: str, state, grid: Grid, functional: str = "SLy4", **meta) 
     Pass the pairing parameters as meta (v0, v0p, ipair, rho0pr).
     """
     meta = {k: v for k, v in meta.items() if v is not None}
+    pairing, sforce = getattr(state, 'pairing', None), getattr(state, 'force', None)
+    if pairing is not None and getattr(pairing, 'lambda2', None) is not None:
+        meta.setdefault('lambda2', np.asarray(pairing.lambda2))   # Lipkin-Nogami, see statics_only_terms
+    if sforce is not None:
+        meta.setdefault('zpe', int(np.asarray(sforce.zpe)))
     np.savez_compressed(
         path, psi=np.asarray(state.psi), wocc=np.asarray(state.wocc), wguv=np.asarray(state.wguv),
         pairwg=np.asarray(state.pairwg), wstates=np.asarray(state.wstates),
@@ -168,6 +175,8 @@ class TDHFB:
             static = static.solver_state
         if grid is None or force is None:
             raise ValueError("grid and force are required when starting from a SolverState.")
+        for msg in statics_only_terms(static, force):
+            warnings.warn("TDHFB.from_static: " + msg, stacklevel=2)
         td = cls(_initial_state(static, grid, scheme, uv_floor, max_defect, kramers_tol), grid, force, **kwargs)
         if purify and td.scheme == 'global':
             td.state = T.purify(td.state)
@@ -220,6 +229,21 @@ class TDHFB:
         """Isoscalar monopole (breathing) kick, Q = r^2."""
         X, Y, Z = self.grid.get_meshgrid()
         return self.kick(X**2 + Y**2 + Z**2, eta)
+
+    def relax(self, n_iter: int, step: float = 1.0, mix: float = 0.5, verbose: int = 0) -> "TDHFB":
+        """
+        Relax the state into the minimum of the TDHFB functional (global scheme;
+        physics.tdhfb.relax).  A static from the canonical solver is not that
+        minimum, and at rest it then drifts toward it (20O: E_pair +5.9% over
+        60 fm/c unrelaxed, +0.02% relaxed).  Do this before kicking.
+        """
+        if self.scheme != 'global':
+            raise ValueError("relax() is implemented for the global scheme")
+        self.state, _ = T.relax(self.state, self.grid, self.force, self.cs, n_iter=n_iter,
+                                step=step, mix=mix, use_coulomb=self.use_coulomb, verbose=verbose)
+        self._step = self._ref_step = None
+        self.history = []
+        return self
 
     def drop_empty(self, below: float):
         """Remove orbitals with occupation below `below` (global scheme). Returns (count, particles)."""

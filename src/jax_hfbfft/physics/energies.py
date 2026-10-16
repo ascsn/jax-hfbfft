@@ -598,7 +598,13 @@ def compute_radii(densities: Densities, grid: Grid) -> "Radii":
     rms_p = jnp.sqrt(jnp.sum(rho_p * r2) * wxyz / (p_counts + 1e-10))
     rms_tot = jnp.sqrt(jnp.sum(rho_tot * r2) * wxyz / (tot_counts + 1e-10))
 
-    charge = jnp.sqrt(rms_p**2 + 0.64)
+    # Charge radius from the point-proton radius (no spin-orbit term):
+    #   r_ch^2 = r_p^2 + <r^2>_P + (N/Z) <r^2>_N + 3/4 (hbar/m_p c)^2
+    # proton 0.8409^2 fm^2 (CODATA 2018), neutron -0.1155 fm^2 (PDG),
+    # Darwin-Foldy 0.0332 fm^2.  The old sqrt(r_p^2 + 0.64) used r_P = 0.8 fm and
+    # no neutron term; the new value is 0.002 fm smaller for 40Ca, 0.007 fm for 208Pb.
+    n_over_z = n_counts / jnp.maximum(p_counts, 1e-10)
+    charge = jnp.sqrt(rms_p**2 + 0.8409**2 - 0.1155 * n_over_z + 0.0332)
 
     A = tot_counts
 

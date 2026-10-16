@@ -52,6 +52,10 @@ force:
   # States beyond eferm + state_cutoff get a soft weight < 1 applied to wstates
   # Legacy default: [15.0, 15.0]
   state_cutoff: [15.0, 15.0]  # [neutron, proton]
+
+  # Floor on u*v (sqrt(uv_floor)) and, capped at 1e-10, on v^2 (FORTRAN 1e-6).
+  # Statics that seed TDHFB want 0.
+  # uv_floor: 1.0e-6
   
   # Include center-of-mass correction (recommended: true)
   include_cm_correction: true
@@ -153,6 +157,11 @@ iteration:
   # Legacy run config (_config.yml) sets tvaryx_0: true
   tvaryx_0: true
 
+  # Floor on the occupation weights in the HFB preconditioner (FORTRAN 0.1).
+  # Statics that seed TDHFB want ~1e-8 so nearly empty orbitals converge
+  # (expect several times more iterations than with 0.1).
+  # precond_floor: 0.1
+
   # Lipkin-Nogami particle-number correction (UNEDF functionals were fitted with it).
   # ln_passes = Illinois iterations for lambda_2; LN costs ~5x plain HFB per iteration.
   use_ln: false
@@ -211,13 +220,28 @@ output:
 # Requires force.ipair: 0 (TDHF has no pairing).
 dynamics:
   enabled: false
-  dt: 0.2              # time step (fm/c)
+  method: auto         # auto (TDHFB if the static is paired, else TDHF), tdhf, tdhfb
+  dt: 0.2              # time step (fm/c); TDHFB: 0.1 in general, 0.2 on 1.0 fm grids
   steps: 1000          # number of time steps
   taylor_order: 6      # order of the Taylor-series propagator
   diag_interval: 10    # record observables every N steps
   kick:
     type: quadrupole   # none, quadrupole, monopole, isovector_dipole, boost
+                       # (TDHFB: none, quadrupole, monopole)
     eta: 1.0e-3        # kick strength (boost uses k: [kx, ky, kz] in fm^-1)
+  # TDHFB only. The static should be solved on an ODD grid, with
+  # pairing.state_cutoff: [0, 0] (from_static refuses soft state weights) and
+  # iteration.precond_floor: 1.0e-8 (converges nearly empty orbitals); see
+  # examples/tdhfb/README.md for the recipe and its known limits.
+  tdhfb:
+    scheme: global         # global (the method) or ebata (comparison arm)
+    relax_iters: 0         # relax into the TDHFB functional first (~2000 for production)
+    absorb_width: 0.0      # absorbing boundary width (fm), 0 = off
+    absorb_strength: 10.0  # absorbing potential at the faces (MeV)
+    max_defect: 1.0e-6     # time-reversal tolerance of the static (U238: 1e-2)
+    kramers_tol: 1.0e-7    # occupation tolerance for grouping Kramers partners
+    check_continuity: false
+    save_state: false      # write tdhfb_state.npz at the end
 
 # ----------------------------------------------------------------------------
 # ADVANCED OPTIONS (usually don't need to change)
@@ -345,7 +369,7 @@ advanced:
 #   # c0constr: 0.8       # Q-corrective step parameter
 #   # qepsconstr: 1.0     # Lagrange multiplier update rate
 #   # dampgamma: 1.0      # Damping for masking function
-#   # damprad: 6.0        # Damping radius (fm); 6 fm suits light nuclei only. For
-#   #                     # heavy/deformed ones set it well past the surface, up to
-#   #                     # ~half the box length minus 3 fm (e.g. 16 fm on 48^3 x 0.8)
+#   # damprad: 16.0       # Damping radius (fm). Default: scales with A and the goal
+#   #                     # deformation (~2.2 R0 along the long axis), capped 3 fm
+#   #                     # inside the shortest box side; set it only to override
 

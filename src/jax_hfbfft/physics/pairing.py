@@ -455,7 +455,11 @@ def solve_pairing_isospin(
     equasi_safe = jnp.maximum(equasi, 1.0e-20)
 
     v2 = 0.5 * (1.0 - edif / equasi_safe)
-    v2 = jnp.clip(v2, smallp, 1.0 - smallp)
+    # FORTRAN floors v2 at smal = 1e-10 (pairs.f90 bcs_occupation) and u*v at
+    # sqrt(smallp) = sqrt(1e-6) (pairdn); smallp is not a floor on v2.  vfloor
+    # keeps uv_floor = 0 (TDHFB statics) exactly unfloored.
+    vfloor = jnp.minimum(smallp, 1.0e-10)
+    v2 = jnp.clip(v2, vfloor, 1.0 - vfloor)
 
     # wguv = sqrt(v2*(1-v2)), no pairwg here (already in deltaf_eff)
     wguv = jnp.sqrt(jnp.maximum(v2 * (1.0 - v2), smallp))
@@ -487,7 +491,7 @@ def solve_pairing_isospin(
     # the orbitals only through v2, so the wave-function step is unchanged.
     def ln_solution(lam2):
         ef = find_fermi_energy_ln(particle_number, sp_energy, deltaf_eff, wstates_in, lam2)
-        vv = jnp.clip(ln_occupations(ef, sp_energy, deltaf_eff, lam2), smallp, 1.0 - smallp)
+        vv = jnp.clip(ln_occupations(ef, sp_energy, deltaf_eff, lam2), vfloor, 1.0 - vfloor)
         gg = jnp.sqrt(jnp.maximum(vv * (1.0 - vv), smallp))
         vol_ = 0.5 * gg * wstates
         suv = jnp.maximum(jnp.sum(vol_), 1.0e-20)

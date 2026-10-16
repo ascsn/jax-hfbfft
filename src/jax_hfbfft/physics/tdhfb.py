@@ -46,11 +46,10 @@ Recipe used for every validated result:
   * the static relaxed with `relax` (see below), then `purify` after any kick
     or collision setup;
   * eps = 1e-7, pred_n_comp = 1, and the second-order step (strang, midpoint,
-    n_comp = 1): dt = 0.1 fm/c, or 0.2 on 1.0 fm grids (U238 fission, 10 fm/c
-    against dt 0.025: density 6e-7, E_pair 2 keV, energy 9e-7 MeV, at 11.6
-    s/fm/c on an H200; the first-order step at dt 0.1 gave 1e-5, 35 keV,
-    1.8e-3 MeV at 16 s/fm/c). The 20O, Sn120 and LISE validations predate it
-    and used the first-order step at dt 0.05, n_comp 4.
+    n_comp = 1): dt = 0.1 fm/c, or 0.2 on 1.0 fm grids (U238 fission over
+    10 fm/c against dt 0.025: density 6e-7, E_pair 2 keV, energy 9e-7 MeV).
+    The 20O, Sn120 and LISE comparisons used the first-order step (strang and
+    midpoint off) at dt 0.05, n_comp 4.
 
 Statics. The canonical-basis static solver keeps only the diagonal gaps and
 floors the preconditioner weights, so its nearly empty orbitals never converge:
@@ -183,7 +182,7 @@ def _eigh(H, site: str):
     jnp.linalg.eigh with a host-LAPACK fallback. On the GPU the jitted eigh of
     the tied matrices of a collapsed-pairing state (rho~ with occupations 0/1,
     the identity-like overlap, the ~1e-18 complement Gram matrix) intermittently
-    returns NaN (Ca48, 2026-10-12); a result that is not finite, orthonormal and
+    returns NaN; a result that is not finite, orthonormal and
     reconstructing H to 1e-8 is recomputed by numpy (and reported).
     """
     lam, U = jnp.linalg.eigh(H)

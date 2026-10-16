@@ -24,12 +24,12 @@ def main():
         description="Hartree-Fock-Bogoliubov solver for nuclear structure",
         epilog="See documentation at https://github.com/ascsn/jax-hfbfft",
     )
-    
+
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
-    
+
     # Init command - generate sample config
     init_parser = subparsers.add_parser(
-        "init", 
+        "init",
         help="Generate a sample configuration file"
     )
     init_parser.add_argument(
@@ -43,10 +43,10 @@ def main():
         action="store_true",
         help="Overwrite existing file"
     )
-    
+
     # Run command
     run_parser = subparsers.add_parser(
-        "run", 
+        "run",
         help="Run an HFB calculation from config file"
     )
     run_parser.add_argument(
@@ -61,10 +61,10 @@ def main():
         action="store_true",
         help="Verbose output"
     )
-    
+
     # Info command
     info_parser = subparsers.add_parser(
-        "info", 
+        "info",
         help="Show package information"
     )
     info_parser.add_argument(
@@ -82,13 +82,13 @@ def main():
         action="store_true",
         help="Show all information"
     )
-    
+
     # Version command
     version_parser = subparsers.add_parser(
-        "version", 
+        "version",
         help="Show version"
     )
-    
+
     # GUI command
     gui_parser = subparsers.add_parser(
         "gui",
@@ -116,9 +116,9 @@ def main():
         action="store_true",
         help="Enable debug mode"
     )
-    
+
     args = parser.parse_args()
-    
+
     if args.command == "init":
         generate_config(args.output, args.force)
     elif args.command == "run":
@@ -151,36 +151,36 @@ def main():
 def generate_config(output_path: str, force_overwrite: bool = False):
     """Generate a sample configuration file."""
     output = Path(output_path)
-    
+
     if output.exists() and not force_overwrite:
         print(f"Error: File '{output_path}' already exists.")
         print(f"Use --force to overwrite, or specify a different filename with -o")
         sys.exit(1)
-    
+
     # Get the config.yml from repository root
     # The package is installed at: site-packages/jax_hfbfft/
     # We need to go up to find the repository root
     package_dir = Path(__file__).parent  # .../jax_hfbfft/
-    
+
     # Try multiple locations for the template
     template_locations = [
         package_dir.parent.parent.parent / "config.yml",  # Development install (repo root)
         package_dir.parent.parent / "config.yml",          # One level up
         package_dir / "data" / "config.yml",               # Packaged data (future)
     ]
-    
+
     template_path = None
     for loc in template_locations:
         if loc.exists():
             template_path = loc
             break
-    
+
     if template_path is None:
         print("Error: Could not find config.yml template.")
         print("This might happen if the package was not installed correctly.")
         print()
         print("Attempting to create a basic configuration...")
-        
+
         # Create a minimal functional config as fallback
         minimal_config = """# ============================================================================
 # jax-hfbfft Configuration File
@@ -262,9 +262,9 @@ output:
     else:
         # Copy the full documented template
         shutil.copy(template_path, output)
-        print(f"✓ Created configuration file: {output_path}")
+        print(f"Created configuration file: {output_path}")
         print(f"  (Copied from: {template_path.parent.name}/config.yml)")
-    
+
     print()
     print("Next steps:")
     print(f"  1. Edit {output_path} to set your nucleus and parameters")
@@ -285,7 +285,7 @@ def run_calculation(config_path: Optional[str], verbose: bool = False):
     # Import here to ensure JAX configuration happens first
     # (jax_config auto-configures on import)
     import jax_hfbfft.jax_config
-    
+
     # Determine config file
     if config_path is None:
         if Path("config.yml").exists():
@@ -295,31 +295,31 @@ def run_calculation(config_path: Optional[str], verbose: bool = False):
             print()
             print("Generate a config file with: hfbfft init")
             sys.exit(1)
-    
+
     config_file = Path(config_path)
     if not config_file.exists():
         print(f"Error: Configuration file not found: {config_path}")
         sys.exit(1)
-    
+
     # Import the run_hfb logic
     try:
         import yaml
         from datetime import datetime
         import numpy as np
-        
+
         # Import after JAX is configured
         from jax_hfbfft import HFBFFT, Nucleus, Force, Grid, Constraint
-        
+
         print("=" * 70)
         print("HFB-FFT Nuclear Structure Calculator")
         print("=" * 70)
         print()
-        
+
         # Load configuration
         print(f"Loading configuration: {config_path}")
         with open(config_path, 'r') as f:
             config = yaml.safe_load(f)
-        
+
         # Create nucleus
         nucleus_config = config['nucleus']
         nucleus = Nucleus(
@@ -327,7 +327,7 @@ def run_calculation(config_path: Optional[str], verbose: bool = False):
             neutrons=nucleus_config['neutrons'],
             name=nucleus_config.get('name', f"Z{nucleus_config['protons']}N{nucleus_config['neutrons']}")
         )
-        
+
         # Create force
         force_config = config.get('force', {})
         force_kwargs = {
@@ -336,7 +336,7 @@ def run_calculation(config_path: Optional[str], verbose: bool = False):
             'v0neut': force_config.get('v0_neutron', -1.0),  # Config uses v0_neutron, Force uses v0neut
             'v0prot': force_config.get('v0_proton', -1.0),   # Config uses v0_proton, Force uses v0prot
         }
-        
+
         # Add pairing cutoff if specified
         if 'pairing_cutoff' in force_config:
             import jax.numpy as jnp
@@ -354,18 +354,18 @@ def run_calculation(config_path: Optional[str], verbose: bool = False):
                 force_kwargs['state_cutoff'] = jnp.array(sc)
             else:
                 force_kwargs['state_cutoff'] = jnp.array([sc, sc])
-        
+
         # Add pairing density if specified
         if 'rho0_pairing' in force_config:
             force_kwargs['rho0pr'] = force_config['rho0_pairing']
         if 'uv_floor' in force_config:
             force_kwargs['uv_floor'] = float(force_config['uv_floor'])
-        
+
         force = Force.from_name(
             force_config.get('name', 'SLy4'),
             **force_kwargs
         )
-        
+
         # Create grid
         grid_config = config.get('grid', {})
         grid = Grid.create(
@@ -376,7 +376,7 @@ def run_calculation(config_path: Optional[str], verbose: bool = False):
             dy=grid_config.get('dy') or 0.8,
             dz=grid_config.get('dz') or 0.8,
         )
-        
+
         # Create constraint (if specified)
         constraint = None
         if 'constraints' in config and config['constraints']:
@@ -416,7 +416,7 @@ def run_calculation(config_path: Optional[str], verbose: bool = False):
                     principal_axes=constraints_config.get('principal_axes', False),
                     **constraint_kwargs
                 )
-        
+
         # Print configuration
         print(f"Nucleus:  {nucleus.name} (Z={nucleus.protons}, N={nucleus.neutrons}, A={nucleus.mass_number})")
         print(f"Force:    {force.name}")
@@ -424,17 +424,17 @@ def run_calculation(config_path: Optional[str], verbose: bool = False):
         if constraint:
             print(f"Constraint: {constraint}")
         print()
-        
+
         # Get basis configuration
         basis_config = config.get('basis', {})
         npsi_neutron = basis_config.get('npsi_neutron')
         npsi_proton = basis_config.get('npsi_proton')
-        
+
         # Build npsi tuple if either is specified
         npsi = None
         if npsi_neutron is not None and npsi_proton is not None:
             npsi = (npsi_neutron, npsi_proton)
-        
+
         # Create calculator
         calc = HFBFFT(
             nucleus=nucleus,
@@ -443,14 +443,14 @@ def run_calculation(config_path: Optional[str], verbose: bool = False):
             constraint=constraint,
             npsi=npsi,
         )
-        
+
         # Initialize wavefunctions
         init_config = config.get('initialization', {})
         init_method = init_config.get('method', 'harmonic_oscillator')
-        
+
         if verbose:
             print(f"Initializing wavefunctions using {init_method} method...")
-        
+
         if init_method == 'harmonic_oscillator':
             ho_params = {}
             if 'ho_length_x' in init_config:
@@ -462,13 +462,13 @@ def run_calculation(config_path: Optional[str], verbose: bool = False):
             calc.initialize_wavefunctions(method=init_method, **ho_params)
         else:
             calc.initialize_wavefunctions(method=init_method)
-        
+
         # Get iteration configuration
         iteration_config = config.get('iteration', {})
         max_iterations = iteration_config.get('max_iterations', 500)
         convergence = iteration_config.get('convergence_threshold', 1.0e-6)
         print_interval = iteration_config.get('print_interval', 10)
-        
+
         # Set iteration parameters if provided
         if 'x0dmp' in iteration_config:
             calc.x0dmp = iteration_config['x0dmp']
@@ -491,16 +491,16 @@ def run_calculation(config_path: Optional[str], verbose: bool = False):
             calc.use_ln = bool(iteration_config['use_ln'])
         if 'ln_passes' in iteration_config:
             calc.ln_passes = int(iteration_config['ln_passes'])
-        
+
         print(f"Starting HFB iteration (max: {max_iterations}, convergence: {convergence:.1e})...")
         print()
-        
+
         results = calc.run(
             max_iterations=max_iterations,
             convergence_threshold=convergence,
             print_interval=print_interval,
         )
-        
+
         # Print results
         print()
         print("=" * 70)
@@ -511,47 +511,47 @@ def run_calculation(config_path: Optional[str], verbose: bool = False):
         print(f"Binding Energy:   {-results.total_energy:.3f} MeV")
         print(f"E/A:              {results.total_energy/nucleus.mass_number:.3f} MeV")
         print()
-        
+
         # Save results if output directory specified
         output_config = config.get('output', {})
         output_dir_name = output_config.get('output_dir') or output_config.get('directory')
-        
+
         if output_dir_name:
             output_dir = Path(output_dir_name)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             run_dir = output_dir / f"{nucleus.name}_{timestamp}"
             run_dir.mkdir(parents=True, exist_ok=True)
-            
+
             # Save configuration file used for this run
             config_path = run_dir / "config.yml"
             with open(config_path, 'w') as f:
                 yaml.dump(config, f, default_flow_style=False, sort_keys=False)
-            
+
             # Save summary
             _save_summary(calc, results, config, run_dir)
-            
+
             # Save detailed results based on config flags
             if output_config.get('save_convergence', True):
                 _save_convergence(results, run_dir)
-            
+
             if output_config.get('save_energies', True):
                 _save_energies(calc, results, run_dir)
-            
+
             if output_config.get('save_moments', True):
                 _save_moments(results, run_dir)
-            
+
             if output_config.get('save_radii', True):
                 _save_radii(results, run_dir)
-            
+
             if output_config.get('save_single_particle', True):
                 _save_single_particle(calc, run_dir)
-            
+
             if output_config.get('save_pairing', True) and force.ipair > 0:
                 _save_pairing(calc, results, run_dir)
-            
+
             if output_config.get('save_densities', True):
                 _save_densities(calc, run_dir)
-            
+
             print()
             print(f"Results saved to: {run_dir}")
             print()
@@ -698,24 +698,24 @@ def _run_tdhfb(calc, dyn: dict, run_dir: Optional[Path]):
 def _save_summary(calc, results, config, output_dir):
     """Save summary file with main results."""
     summary_file = output_dir / "summary.txt"
-    
+
     nucleus = calc.nucleus
     force = calc.force
-    
+
     with open(summary_file, 'w') as f:
         f.write("=" * 80 + "\n")
         f.write(" " * 25 + "jax-hfbfft HFB Calculation\n")
         f.write("=" * 80 + "\n\n")
-        
+
         # Configuration
         f.write(f"Nucleus:  {nucleus.name} (Z={nucleus.protons}, N={nucleus.neutrons}, A={nucleus.mass_number})\n")
         f.write(f"Force:    {force.name}\n")
-        
+
         ipair_names = {0: "No pairing", 5: "VDI", 6: "DDDI"}
         ipair_name = ipair_names.get(force.ipair, f"ipair={force.ipair}")
         f.write(f"Pairing:  {ipair_name}\n")
         f.write(f"Grid:     {calc.grid.nx}×{calc.grid.ny}×{calc.grid.nz} points\n\n")
-        
+
         # Convergence
         f.write("=" * 80 + "\n")
         f.write("CONVERGENCE\n")
@@ -723,7 +723,7 @@ def _save_summary(calc, results, config, output_dir):
         f.write(f"Converged:         {results.converged}\n")
         f.write(f"Iterations:        {results.iterations}\n")
         f.write(f"Final fluctuation: {results.final_fluctuation:.3e} MeV\n\n")
-        
+
         # Energies
         f.write("=" * 80 + "\n")
         f.write("ENERGIES (MeV)\n")
@@ -737,10 +737,10 @@ def _save_summary(calc, results, config, output_dir):
         if results.ln_energy != 0.0:
             f.write(f"  Lipkin-Nogami:           {results.ln_energy:12.3f}\n")
         f.write(f"  Center-of-mass:          {results.cm_correction:12.3f}   ({_ZPE_LABEL.get(results.zpe, '?')})\n\n")
-        
+
         # Binding energy per nucleon
         f.write(f"Binding energy/A:          {results.total_energy/nucleus.mass_number:12.3f} MeV\n\n")
-        
+
         # Radii
         f.write("=" * 80 + "\n")
         f.write("RADII AND DEFORMATION\n")
@@ -749,12 +749,12 @@ def _save_summary(calc, results, config, output_dir):
         f.write(f"RMS radius (proton):       {results.rms_radius_p:12.3f} fm\n")
         f.write(f"RMS radius (total):        {results.rms_radius_total:12.3f} fm\n")
         f.write(f"Charge radius:             {results.charge_radius:12.3f} fm\n\n")
-        
+
         f.write(f"Quadrupole Q20:            {results.q20:12.3f} fm²\n")
         f.write(f"Quadrupole Q22:            {results.q22:12.3f} fm²\n")
         f.write(f"Deformation β₂:            {results.beta2:12.4f}\n")
         f.write(f"Deformation γ:             {results.gamma:12.1f} deg\n\n")
-        
+
         # Pairing
         if force.ipair != 0:
             f.write("=" * 80 + "\n")
@@ -776,9 +776,9 @@ def _save_convergence(results, output_dir):
     """Save convergence history."""
     if results.convergence_history is None:
         return
-    
+
     conv_file = output_dir / "convergence.res"
-    
+
     with open(conv_file, 'w') as f:
         f.write("# Iteration    Fluctuation(MeV)\n")
         for i, fluct in enumerate(results.convergence_history):
@@ -788,7 +788,7 @@ def _save_convergence(results, output_dir):
 def _save_energies(calc, results, output_dir):
     """Save detailed energy breakdown."""
     energy_file = output_dir / "energies.res"
-    
+
     with open(energy_file, 'w') as f:
         f.write("# Detailed energy breakdown (all in MeV)\n")
         f.write(f"# Total energy:      {results.total_energy:12.6f}\n")
@@ -811,7 +811,7 @@ def _save_energies(calc, results, output_dir):
 def _save_moments(results, output_dir):
     """Save multipole moments."""
     moments_file = output_dir / "moments.res"
-    
+
     with open(moments_file, 'w') as f:
         f.write("# Multipole moments\n")
         f.write(f"Q20 (fm²):     {results.q20:12.6f}\n")
@@ -823,7 +823,7 @@ def _save_moments(results, output_dir):
 def _save_radii(results, output_dir):
     """Save radii and deformation parameters."""
     radii_file = output_dir / "radii.res"
-    
+
     with open(radii_file, 'w') as f:
         f.write("# Radii (fm) and deformation parameters\n")
         f.write(f"RMS radius (neutron):  {results.rms_radius_n:12.6f}\n")
@@ -837,31 +837,31 @@ def _save_radii(results, output_dir):
 def _save_single_particle(calc, output_dir):
     """Save single-particle spectrum."""
     sp_file = output_dir / "single_particle.res"
-    
+
     state = calc._solver_state
     import jax.numpy as jnp
-    
+
     # Separate neutrons and protons
     neutron_mask = state.isospin == 0
     proton_mask = state.isospin == 1
-    
+
     with open(sp_file, 'w') as f:
         f.write("# Single-particle spectrum\n")
         f.write("#\n")
         f.write("# Neutrons:\n")
         f.write("# Index    Energy(MeV)    Occupation\n")
-        
+
         neutron_indices = jnp.where(neutron_mask)[0]
         for idx in neutron_indices:
             i = int(idx)
             energy = float(state.sp_energy[i])
             occupation = float(state.wocc[i])
             f.write(f"{i:5d}    {energy:12.6f}    {occupation:8.6f}\n")
-        
+
         f.write("#\n")
         f.write("# Protons:\n")
         f.write("# Index    Energy(MeV)    Occupation\n")
-        
+
         proton_indices = jnp.where(proton_mask)[0]
         for idx in proton_indices:
             i = int(idx)
@@ -873,7 +873,7 @@ def _save_single_particle(calc, output_dir):
 def _save_pairing(calc, results, output_dir):
     """Save pairing properties."""
     pairing_file = output_dir / "pairing.res"
-    
+
     with open(pairing_file, 'w') as f:
         f.write("# Pairing properties\n")
         f.write(f"Neutron Fermi energy (MeV):  {results.fermi_energy_n:12.6f}\n")
@@ -892,10 +892,10 @@ def _save_pairing(calc, results, output_dir):
 def _save_densities(calc, output_dir):
     """Save density distributions."""
     densities_file = output_dir / "densities.npz"
-    
+
     state = calc._solver_state
     import numpy as np
-    
+
     # Save densities and grid information
     np.savez(
         densities_file,
@@ -914,7 +914,7 @@ def _save_densities(calc, output_dir):
 def show_info(args):
     """Show information about the package."""
     show_all = args.all if hasattr(args, 'all') else False
-    
+
     if args.forces or show_all:
         import yaml
         print("Available Skyrme Forces:")
@@ -926,7 +926,7 @@ def show_info(args):
         for force in forces:
             print(f"  • {force}")
         print()
-    
+
     if args.devices or show_all:
         print("JAX Device Information:")
         print("-" * 40)
@@ -940,7 +940,7 @@ def show_info(args):
         except Exception as e:
             print(f"Error getting JAX info: {e}")
         print()
-    
+
     if not (args.forces or args.devices or show_all):
         # Show basic info by default
         show_version()
@@ -956,7 +956,7 @@ def show_version():
     try:
         from jax_hfbfft import __version__
         print(f"hfbfft version {__version__}")
-    except:
+    except ImportError:
         print("hfbfft (version unknown)")
 
 
@@ -972,7 +972,7 @@ def start_gui(host: str, port: int, open_browser: bool, debug: bool):
         print()
         print(f"Missing: {e}")
         sys.exit(1)
-    
+
     print()
     print("=" * 60)
     print("  HFBFFT Web GUI")
@@ -980,7 +980,7 @@ def start_gui(host: str, port: int, open_browser: bool, debug: bool):
     print()
     print("Starting GUI server...")
     print()
-    
+
     start_server(
         host=host,
         port=port,

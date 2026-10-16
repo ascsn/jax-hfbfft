@@ -16,8 +16,8 @@ surface, and the pair density xi_q = Delta_q / (v0_q (1 - rho/rho0pr)) as a
 glow coloured by its phase, with orbit, time and threshold controls. Every run
 is cropped to the region its frames ever touch, quantized to 8 bits per channel
 and gzipped (the page inflates it with DecompressionStream); a run with more
-than --max-frames frames is thinned evenly. Pages above ~16 MB will not
-publish as artifacts: lower --max-frames or split runs over pages.
+than --max-frames frames is thinned evenly. Large pages load slowly; keep them
+to a few tens of MB by lowering --max-frames or splitting runs over pages.
 """
 
 import argparse

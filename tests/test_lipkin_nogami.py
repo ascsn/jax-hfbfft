@@ -1,10 +1,10 @@
 """
 Tests for the Lipkin-Nogami correction (physics/pairing.py).
 
-The properties checked are the ones the 2026-09 bugs broke: lambda_2 must be
-self-consistent (lambda_2 = F(lambda_2) on its own LN occupations, including
-open shells where F rises and the root lies above F(0)), particle number must
-be conserved, and collapsed pairing must give lambda_2 = 0 exactly.
+lambda_2 must be self-consistent (lambda_2 = F(lambda_2) on its own LN
+occupations, including open shells where F rises and the root lies above
+F(0)), particle number must be conserved, and collapsed pairing must give
+lambda_2 = 0 exactly.
 """
 
 import jax.numpy as jnp

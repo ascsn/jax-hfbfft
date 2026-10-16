@@ -1,12 +1,11 @@
 """
 Regression tests for the force parameter file (data/_forces.yml).
 
-Every entry is checked against values from an independent source, so a
+Every entry is checked against values from an independent source (the
+published parameters, or HFBTHO's coupling constants for UNEDF), so a
 transcription error in the YAML fails here instead of silently changing the
-physics.  Both kinds of error have happened: until 2026-10 UNEDF0 and UNEDF1
-had wrong t2 / t4 / b4p / power, and SLy5, SLy6, SkM, SkM*, SkP and SIII stored
-the spin-orbit strength as (t4 = 0, b4p = W0) instead of (t4 = W0, b4p = W0/2),
-which gave C^nablaJ_0 = -W0/2 instead of -3 W0/4.
+physics.  The spin-orbit check guards the t4/b4p convention: a standard force
+with strength W0 has C^nablaJ_0 = -3 W0/4 and C^nablaJ_1 = -W0/4.
 """
 
 import pytest

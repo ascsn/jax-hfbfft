@@ -73,8 +73,8 @@ def main():
     p.add_argument('--nz', type=int, default=None, help='embed in a box this long in z (odd)')
     p.add_argument('--kick-q20', type=float, default=0.0, help='push along the elongation, exp(i eta Q20)')
     p.add_argument('--dt', type=float, default=0.2,
-                   help='U238, 37x37x101, second-order step: dt 0.2 is 6e-7 from dt 0.025 in the density, 2 keV in '
-                        'E_pair after 10 fm/c, at 10.6 s/fm/c (Taylor 4) on an H200')
+                   help='time step (fm/c); for U238 on a 1 fm grid dt 0.2 agrees with dt 0.025 to 6e-7 in the '
+                        'density and 2 keV in E_pair after 10 fm/c')
     p.add_argument('--n-comp', type=int, default=1)
     p.add_argument('--taylor', type=int, default=4)
     p.add_argument('--strang', action=argparse.BooleanOptionalAction, default=True,

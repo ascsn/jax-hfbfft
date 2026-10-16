@@ -101,13 +101,13 @@ ServerMessage = Union[
 # Event types for frontend
 class WebSocketEvent:
     """WebSocket event type constants."""
-    
+
     # Client events
     SUBSCRIBE = "subscribe"
     UNSUBSCRIBE = "unsubscribe"
     GET_WARMUP_STATUS = "get_warmup_status"
     PING = "ping"
-    
+
     # Server events
     PROGRESS = "progress"
     STATUS = "status"

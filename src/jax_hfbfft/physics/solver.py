@@ -3,7 +3,7 @@ HFB solver module.
 
 This module implements the iterative HFB solver including:
 - Gradient descent steps
-- Diagonalization steps  
+- Diagonalization steps
 - Density mixing
 - Convergence checking
 """
@@ -41,48 +41,48 @@ from jax_hfbfft.physics.constraints import (
 class SolverState:
     """
     State of the HFB solver.
-    
+
     Contains all arrays that are updated during iteration.
     """
     # Wavefunctions
     psi: jax.Array         # Shape: (nstates, 2, nx, ny, nz)
     lagrange: jax.Array    # Shape: (nstates, 2, nx, ny, nz) — off-diagonal H term
-    
+
     # Single-particle properties
     sp_energy: jax.Array   # Single-particle energies (nstates,)
     sp_kinetic: jax.Array  # Kinetic energies (nstates,)
     deltaf: jax.Array      # Pairing gaps (nstates,)
-    
+
     # Quantum numbers
     sp_n: jax.Array        # Radial quantum number (nstates,)
     sp_l: jax.Array        # Orbital angular momentum (nstates,)
     sp_j: jax.Array        # Total angular momentum (nstates,)
-    
+
     # Occupation factors
     wocc: jax.Array        # BCS occupation v^2 (nstates,)
     wguv: jax.Array        # BCS uv factor (nstates,)
     wstates: jax.Array     # State weights (nstates,)
     pairwg: jax.Array      # Pairing cutoff weights (nstates,)
-    
+
     # State metadata
     isospin: jax.Array     # 0=neutron, 1=proton (nstates,)
     sp_parity: jax.Array   # Parity (-1)^l (nstates,)
-    
+
     # Densities and potentials
     densities: Densities
     meanfield: Meanfield
-    
+
     # Coulomb
     coulomb_solver: CoulombSolver
     wcoul: jax.Array       # Coulomb potential
-    
+
     # Energies
     energies: Energies
     pairing: Pairing
 
     # Constraints
     constraint_state: ConstraintState
-    
+
     # Convergence
     iteration: int
     converged: bool
@@ -91,29 +91,29 @@ class SolverState:
     # The Hamiltonian the state was relaxed in (set by run_hfb on return). Time
     # evolution must use this same force to start from a stationary state.
     force: Optional[Force] = None
-    
+
     @property
     def nstates(self) -> int:
         return self.psi.shape[0]
-    
+
     @property
     def nneut(self) -> jax.Array:
         return jnp.sum(self.isospin == 0)
-    
+
     @property
     def nprot(self) -> jax.Array:
         return jnp.sum(self.isospin == 1)
-    
+
     def get_spectroscopic_labels(self) -> list:
         """
         Generate spectroscopic labels from quantum numbers.
-        
+
         Returns:
             List of spectroscopic labels (e.g., '1s1/2', '1p3/2')
         """
         # Import locally to avoid circular dependency
         from jax_hfbfft.core.hfbfft import make_spectroscopic_label
-        
+
         labels = []
         for i in range(self.nstates):
             n = int(self.sp_n[i])
@@ -330,26 +330,26 @@ def create_initial_state(
 ) -> SolverState:
     """
     Create initial HFB state.
-    
+
     Args:
         grid: Spatial grid
         npsi_n, npsi_p: Number of states per isospin
         target_n, target_p: Target particle numbers
         constraint_state: Constraint configuration
         seed: Random seed for reproducibility (default: 42)
-        
+
     Returns:
         Initial solver state
     """
     dtypes = get_dtypes()
     nstates = npsi_n + npsi_p
     A = target_n + target_p
-    
+
     # Initialize wavefunctions
     psi, isospin, sp_n, sp_l, sp_j, sp_parity, wocc, wguv = initialize_wavefunctions(
         grid, target_n, target_p, npsi_n, npsi_p, seed=seed
     )
-    
+
     # FORTRAN statichf Step 3: sp_energy zeroed before initial grstep
     # grstep will compute the real values; don't prefill with HO estimates.
     sp_energy  = jnp.zeros(nstates, dtype=dtypes.float)
@@ -365,7 +365,7 @@ def create_initial_state(
     meanfield      = Meanfield.zeros(grid.nx, grid.ny, grid.nz)
     coulomb_solver = CoulombSolver.create(grid)
     wcoul          = jnp.zeros((grid.nx, grid.ny, grid.nz), dtype=dtypes.float)
-    
+
     lagrange = jnp.zeros_like(psi)
 
     if constraint_state is None:
@@ -569,15 +569,11 @@ def _gradient_step_jit(
     # ── 6. Recompute H|psi_new> — matches legacy grstep Step 4 ──────────────────
     # Legacy grstep_helper (static.py lines 194-208): after the gradient update,
     # recomputes H on the NEW psi and stores it in levels.hmfpsi.  diagstep reads
-    # levels.hmfpsi, so it uses H|psi_new>, NOT H|psi_old>.  The earlier
-    # hmfpsi_before approach was wrong: it fed <psi_new|H|psi_old> into the H matrix
-    # instead of the correct <psi_new|H|psi_new>.
+    # levels.hmfpsi, so the H matrix is <psi_new|H|psi_new>, not <psi_new|H|psi_old>.
     def apply_h_on_new(p, iq):
         # Return plain H_MF * p (second return), matching legacy levels.hmfpsi
         # which is the 2nd return value of hpsi01 regardless of tbcs/HFB weights.
-        # For BCS (w_rho=1, w_uv=0) the old code was accidentally correct since
-        # hpsi == hpsi_mf.  For HFB (w_rho=wstates*wocc) hpsi ≠ hpsi_mf, causing
-        # the 35 MeV sp_diff in the proton block.
+        # The weighted hpsi equals hpsi_mf only for BCS (w_rho=1, w_uv=0).
         _, hpsi_mf, _ = apply_hfb_hamiltonian(p, meanfield, iq, 1.0, 0.0, grid)
         return hpsi_mf
     hmfpsi_after = jax.vmap(apply_h_on_new)(psi_new, isospin)
@@ -592,39 +588,39 @@ def orthonormalize_states(psi: jax.Array, npsi_n: int, wxyz: float) -> jax.Array
     """
     psi_n = psi[:npsi_n]
     psi_p = psi[npsi_n:]
-    
+
     def loewdin_block(block):
         if block.shape[0] == 0:
             return block
-            
+
         nst = block.shape[0]
-        
+
         # Flatten spatial and spin dimensions to shape (2*nx*ny*nz, nst)
         psi_2d = jnp.reshape(
             jnp.transpose(block, axes=(2, 3, 4, 1, 0)),
             shape=(-1, nst),
             order='F'
         )
-        
+
         # Calculate the overlap matrix S = psi_dagger * psi
         rhomatr_lin = jnp.dot(jnp.conjugate(psi_2d.T), psi_2d) * wxyz
-        
+
         # Eigendecomposition: S * v = w * v
         w, v = jnp.linalg.eigh(rhomatr_lin, symmetrize_input=False)
-        
+
         # Regularize small eigenvalues to prevent division by zero instability
         machine_epsilon = jnp.finfo(jnp.float64).eps
         eigenvalue_threshold = jnp.maximum(1e-12, machine_epsilon * jnp.max(w) * nst)
         w_safe = jnp.maximum(w, eigenvalue_threshold)
-        
+
         # Construct the transformation matrix U = V * W^(-1/2) * V_dagger
         w_inv_sqrt = 1.0 / jnp.sqrt(w_safe)
         v_scaled = v * w_inv_sqrt[None, :]
         unitary_rho = jnp.dot(v, jnp.conjugate(v_scaled.T))
-        
+
         # Apply the symmetric transformation
         transformed_psi = jnp.dot(psi_2d, unitary_rho)
-        
+
         # Reshape back to the original 5D block shape: (nst, 2, nx, ny, nz)
         ortho_block = jnp.transpose(
             jnp.reshape(
@@ -634,12 +630,12 @@ def orthonormalize_states(psi: jax.Array, npsi_n: int, wxyz: float) -> jax.Array
             ),
             axes=(4, 3, 0, 1, 2)
         )
-        
+
         return ortho_block
 
     psi_n_ortho = loewdin_block(psi_n)
     psi_p_ortho = loewdin_block(psi_p)
-    
+
     return jnp.concatenate([psi_n_ortho, psi_p_ortho], axis=0)
 
 def apply_preconditioner(
@@ -696,26 +692,26 @@ def orthonormalize_block_cpu(psi_block: jax.Array, wxyz: float) -> jax.Array:
     Uses scan for the outer loop.
     """
     n = psi_block.shape[0]
-    
+
     def gs_step(carry, i):
         psi_ortho = carry
         vec = psi_block[i]
-        
+
         # Subtract projections on all previous orthonormalized vectors
         def subtract_proj(j, v):
             overlap = jnp.sum(jnp.conjugate(psi_ortho[j]) * v) * wxyz
             return jnp.where(j < i, v - overlap * psi_ortho[j], v)
-        
+
         vec = jax.lax.fori_loop(0, n, subtract_proj, vec)
-        
+
         # Normalize
         norm = jnp.sqrt(jnp.sum(jnp.abs(vec)**2) * wxyz)
         norm = jnp.maximum(norm, 1e-30)
         vec = vec / norm
-        
+
         psi_ortho = psi_ortho.at[i].set(vec)
         return psi_ortho, None
-    
+
     psi_ortho, _ = jax.lax.scan(gs_step, jnp.zeros_like(psi_block), jnp.arange(n))
     return psi_ortho
 
@@ -729,13 +725,13 @@ def compute_sp_energies(
 ) -> Tuple[jax.Array, jax.Array]:
     """
     Compute single-particle and kinetic energies using vectorized operations.
-    
+
     Args:
         psi: Wavefunctions (nstates, 2, nx, ny, nz)
         meanfield: Mean-field potentials
         isospin: Isospin labels
         grid: Spatial grid
-        
+
     Returns:
         (sp_energy, sp_kinetic) arrays
     """
@@ -802,7 +798,7 @@ def hfb_iteration(
 ) -> SolverState:
     """
     Perform one HFB iteration.
-    
+
     Steps:
     1. Gradient step on wavefunctions
     2. Solve pairing
@@ -810,7 +806,7 @@ def hfb_iteration(
     4. Compute mean-field potentials
     5. Compute energies (optional - skip for speed when not needed)
     6. Check convergence
-    
+
     Args:
         state: Current solver state
         grid: Spatial grid
@@ -822,7 +818,7 @@ def hfb_iteration(
         nucleus_z: Target proton number
         use_coulomb: Whether to include Coulomb
         compute_energy: Whether to compute integrated energy (expensive)
-        
+
     Returns:
         Updated solver state
     """
@@ -926,7 +922,7 @@ def hfb_iteration(
         pairwg  = state.pairwg
         wstates = state.wstates
         pairing = state.pairing
-    
+
 
     # 4. Compute densities
     densities = compute_densities(
@@ -949,7 +945,7 @@ def hfb_iteration(
     constraint_state, constraint_potential = _apply_constraint(
         state.constraint_state, densities, grid, config,
     )
-    
+
     # 5. Coulomb potential
     wcoul = state.wcoul
     if use_coulomb:
@@ -959,7 +955,7 @@ def hfb_iteration(
             state.coulomb_solver,
             grid,
         )
-    
+
     # 6. Compute mean-field potentials
     from jax_hfbfft.physics.meanfield import compute_skyrme_meanfield
 
@@ -1006,9 +1002,8 @@ def hfb_iteration(
             wstates=wstates,
             sp_kinetic=sp_kinetic,
             sp_energy=sp_energy,
-            # Legacy reads meanfield.ecorrp (DDDI pairing rearrangement, set by
-            # skyrme); it was wrongly read from pairing (no such attr → 0.0).
-            # Keep as traced JAX scalar: hfb_iteration is jitted.
+            # DDDI pairing rearrangement energy, set by the mean-field build
+            # (legacy reads meanfield.ecorrp). Traced scalar: hfb_iteration is jitted.
             ecorrp=meanfield.ecorrp,
             e_ln=pairing.e_ln,
         )
@@ -1108,7 +1103,7 @@ def run_hfb(
     force,
     nucleus_z: int,
     nucleus_n: int,
-    npsi_n: int,  # Added
+    npsi_n: int,
     config: Optional[SolverConfig] = None,
     initial_state: Optional[SolverState] = None,
     callback: Optional[Callable[[SolverState], None]] = None,
@@ -1120,7 +1115,7 @@ def run_hfb(
 ) -> SolverState:
     """
     Run HFB calculation to convergence.
-    
+
     Args:
         grid: Spatial grid
         force: Force parameters
@@ -1133,7 +1128,7 @@ def run_hfb(
         use_coulomb: Whether to include Coulomb interaction
         constraint: Constraint configuration
         seed: Random seed for reproducibility (default: 42)
-        
+
     Returns:
         Converged SolverState
     """
@@ -1141,7 +1136,7 @@ def run_hfb(
         config = SolverConfig()
 
     use_pairing = force.ipair != 0
-    
+
     tbcs_init = not use_pairing
 
     # Initialize constraint state
@@ -1150,14 +1145,14 @@ def run_hfb(
         grid,
         mass_number=nucleus_n + nucleus_z,
     )
-    
+
     # Initialize state
     if initial_state is None:
         # Exactly npsi_n neutron states: every array below is split at npsi_n.
         nstates_n = npsi_n
         nstates_p = max(int(round(npsi_n * nucleus_z / max(nucleus_n, 1))),
                         nucleus_z + 10)
-        
+
         state = create_initial_state(
             grid,
             nstates_n,
@@ -1180,7 +1175,7 @@ def run_hfb(
                 constraint_state, lambda_crank=old_cs.lambda_crank)
         state = dataclasses.replace(state, constraint_state=constraint_state)
 
-    
+
     npsi = state.psi.shape[0]
     npsi_p = npsi - npsi_n
 
@@ -1305,12 +1300,12 @@ def run_hfb(
     initial_sp_energy, initial_sp_kinetic = compute_sp_energies(
         psi_new, state.meanfield, state.isospin, grid, force.h2m
     )
-    
+
     # 2. Update state with the new SP properties
     state = dataclasses.replace(
-        state, 
+        state,
         psi=psi_new,
-        sp_energy=initial_sp_energy, 
+        sp_energy=initial_sp_energy,
         sp_kinetic=initial_sp_kinetic,
     )
 
@@ -1423,11 +1418,11 @@ def run_hfb(
             prev_efluct1 = curr_efluct1
             prev_efluct2 = curr_efluct2
             prev_ehf = curr_ehf
-        
+
         state = dataclasses.replace(state, x0dmp=current_x0dmp)
         if callback is not None:
             callback(state)
-        
+
         if need_output:
             elapsed = time.time() - start_time
             # Compute axis-resolved Q20 to diagnose deformation axis
@@ -1441,7 +1436,7 @@ def run_hfb(
             print(f"Iter {state.iteration:4d}: E = {state.energies.ehfint:12.4f} MeV, "
                   f"fluct = {state.efluct:.2e}, time = {elapsed:.1f}s  "
                   f"Q_xx={Q_xx:.3f} Q_yy={Q_yy:.3f} Q_zz={Q_zz:.3f} fm^2")
-        
+
         if state.converged and i + 1 >= config.min_iterations:
             # Make sure we have final energy computed
             if not compute_energy:
@@ -1621,7 +1616,7 @@ def diagstep(
         # ── Apply transformation ─────────────────────────────────────────────
         psi_new_2d    = jnp.dot(psi_2d, U)
         psi_new_block = to_block(psi_new_2d)
-        
+
         # ── hmatrix in rotated basis: U† H_raw U ─────────────────────────────
         hmatrix = jnp.dot(jnp.conj(U.T), jnp.dot(H_raw, U))   # (nst, nst)
 

@@ -18,29 +18,29 @@ import numpy as np
 MULTIPOLE_NAMES = {
     # Monopole (lambda=0)
     'Q00': (0, 0),
-    
+
     # Dipole (lambda=1)
     'Q10': (1, 0),
     'Q11': (1, 1),
-    
+
     # Quadrupole (lambda=2)
     'Q20': (2, 0),
     'Q21': (2, 1),
     'Q22': (2, 2),
-    
+
     # Octupole (lambda=3)
     'Q30': (3, 0),
     'Q31': (3, 1),
     'Q32': (3, 2),
     'Q33': (3, 3),
-    
+
     # Hexadecapole (lambda=4)
     'Q40': (4, 0),
     'Q41': (4, 1),
     'Q42': (4, 2),
     'Q43': (4, 3),
     'Q44': (4, 4),
-    
+
     # Triakontadipole (lambda=5)
     'Q50': (5, 0),
     'Q51': (5, 1),
@@ -48,7 +48,7 @@ MULTIPOLE_NAMES = {
     'Q53': (5, 3),
     'Q54': (5, 4),
     'Q55': (5, 5),
-    
+
     # Hexacontatetrapole (lambda=6)
     'Q60': (6, 0),
     'Q61': (6, 1),
@@ -63,13 +63,13 @@ MULTIPOLE_NAMES = {
 def parse_multipole(spec: Union[str, Tuple[int, int]]) -> Tuple[int, int]:
     """
     Parse a multipole specification into (lambda, mu) tuple.
-    
+
     Args:
         spec: Either a string name like 'Q20', 'Q30', etc., or a tuple (lambda, mu)
-        
+
     Returns:
         Tuple of (lambda, mu) multipole quantum numbers
-        
+
     Examples:
         >>> parse_multipole('Q20')
         (2, 0)
@@ -77,7 +77,7 @@ def parse_multipole(spec: Union[str, Tuple[int, int]]) -> Tuple[int, int]:
         (3, 0)
         >>> parse_multipole((4, 2))
         (4, 2)
-    
+
     Raises:
         ValueError: If multipole specification is invalid
     """
@@ -92,7 +92,7 @@ def parse_multipole(spec: Union[str, Tuple[int, int]]) -> Tuple[int, int]:
         if abs(mu) > lam:
             raise ValueError(f"Mu must satisfy |mu| <= lambda, got lambda={lam}, mu={mu}")
         return (lam, mu)
-    
+
     elif isinstance(spec, str):
         spec_upper = spec.upper()
         if spec_upper not in MULTIPOLE_NAMES:
@@ -102,7 +102,7 @@ def parse_multipole(spec: Union[str, Tuple[int, int]]) -> Tuple[int, int]:
                 f"Available names: {', '.join(sorted(MULTIPOLE_NAMES.keys()))}"
             )
         return MULTIPOLE_NAMES[spec_upper]
-    
+
     else:
         raise ValueError(
             f"Multipole specification must be string or tuple, got {type(spec).__name__}"
@@ -112,11 +112,11 @@ def parse_multipole(spec: Union[str, Tuple[int, int]]) -> Tuple[int, int]:
 def multipole_name(lam: int, mu: int) -> str:
     """
     Get the standard name for a multipole moment.
-    
+
     Args:
         lam: Lambda quantum number
         mu: Mu quantum number
-        
+
     Returns:
         Standard name like 'Q20', 'Q30', etc.
     """
@@ -136,14 +136,14 @@ def beta_gamma_to_multipoles(
 ) -> Dict[Tuple[int, int], float]:
     """
     Convert beta-gamma deformation parameters to multipole moments.
-    
+
     The Hill-Wheeler parameterization relates deformation parameters to
     multipole moments via:
-    
+
     Q_λμ = β_λ × A^((2λ+1)/3) × R₀^λ × Y_λμ_factor
-    
+
     where R₀ = r₀ × A^(1/3) is the nuclear radius parameter.
-    
+
     For quadrupole deformation (targets for Q₂₀ = 2z² - x² - y², Q₂₂ = x² - y²):
     - Q₂₀ = (3/√(5π)) × β₂ × A × R₀² × cos(γ)
     - Q₂₂ = (√3/√(5π)) × β₂ × A × R₀² × sin(γ)
@@ -155,10 +155,10 @@ def beta_gamma_to_multipoles(
 
     For octupole:
     - Q₃₀ = (3/√(7π)) × β₃ × A × R₀³
-    
+
     For hexadecapole:
     - Q₄₀ = (3/√(9π)) × β₄ × A × R₀⁴
-    
+
     Args:
         beta2: Quadrupole deformation parameter
                Positive = prolate, negative = oblate
@@ -168,10 +168,10 @@ def beta_gamma_to_multipoles(
         beta4: Hexadecapole deformation parameter
         mass_number: Nuclear mass number A (required if any beta is provided)
         r0: Radius parameter in fm (default: 1.2 fm)
-        
+
     Returns:
         Dictionary mapping (lambda, mu) to multipole moment values in fm^λ
-        
+
     Examples:
         >>> # Prolate quadrupole deformation
         >>> beta_gamma_to_multipoles(beta2=0.3, mass_number=16)
@@ -188,21 +188,21 @@ def beta_gamma_to_multipoles(
         >>> # Octupole deformation (pear shape)
         >>> beta_gamma_to_multipoles(beta3=0.1, mass_number=224)
         {(3, 0): 5546.7}
-    
+
     Raises:
         ValueError: If mass_number is not provided when beta parameters are given
     """
     multipoles = {}
-    
+
     # Check if we need mass_number
     needs_A = beta2 is not None or beta3 is not None or beta4 is not None
     if needs_A and mass_number is None:
         raise ValueError("mass_number is required when specifying beta deformation parameters")
-    
+
     if mass_number is not None:
         A = float(mass_number)
         R0 = r0 * A**(1.0/3.0)  # Nuclear radius parameter
-    
+
     # Targets are for the solver's operators (physics/constraints.py):
     #   Q20 = 2z^2 - x^2 - y^2,  Q22 = x^2 - y^2,
     #   Q30 = 2z^3 - 3z(x^2 + y^2),  Q40 = (35z^4 - 30z^2 r^2 + 3r^4) / 4,
@@ -231,13 +231,13 @@ def beta_gamma_to_multipoles(
         factor_base = beta3 * A * R0**3
         Q30 = factor_base * (3.0 / np.sqrt(7.0 * np.pi))
         multipoles[(3, 0)] = float(Q30)
-    
+
     # Hexadecapole deformation (lambda=4)
     if beta4 is not None:
         factor_base = beta4 * A * R0**4
         Q40 = factor_base * (3.0 / np.sqrt(9.0 * np.pi))
         multipoles[(4, 0)] = float(Q40)
-    
+
     return multipoles
 
 
@@ -248,42 +248,42 @@ def multipoles_to_beta_gamma(
 ) -> Dict[str, float]:
     """
     Convert multipole moments to beta-gamma deformation parameters.
-    
+
     Inverts the Hill-Wheeler parameterization to extract deformation
     parameters from multipole moments.
-    
+
     Args:
         multipoles: Dictionary mapping (lambda, mu) to multipole values in fm^λ
         mass_number: Nuclear mass number A
         r0: Radius parameter in fm (default: 1.2 fm)
-        
+
     Returns:
         Dictionary with keys 'beta2', 'gamma', 'beta3', 'beta4' as available
-        
+
     Examples:
         >>> moments = {(2, 0): 110.4, (2, 2): 36.8}
         >>> multipoles_to_beta_gamma(moments, mass_number=40, r0=1.2)
         {'beta2': 0.25, 'gamma': 30.0}
     """
     result = {}
-    
+
     A = float(mass_number)
     R0 = r0 * A**(1.0/3.0)
-    
+
     # Extract quadrupole parameters
     Q20 = multipoles.get((2, 0), 0.0)
     Q22 = multipoles.get((2, 2), 0.0)
-    
+
     if Q20 != 0.0 or Q22 != 0.0:
         factor_base = A * R0**2
-        
+
         # Extract beta2 from magnitude
         q20_norm = Q20 / (factor_base * 3.0 / np.sqrt(5.0 * np.pi))
         q22_norm = Q22 / (factor_base * np.sqrt(3.0) / np.sqrt(5.0 * np.pi))
-        
+
         beta2 = np.sqrt(q20_norm**2 + q22_norm**2)
         result['beta2'] = float(beta2)
-        
+
         # Extract gamma from ratio
         if abs(q20_norm) > 1e-10:
             gamma_rad = np.arctan2(q22_norm, q20_norm)
@@ -292,21 +292,21 @@ def multipoles_to_beta_gamma(
             result['gamma'] = 90.0  # Pure Q22 deformation
         else:
             result['gamma'] = 0.0
-    
+
     # Extract octupole parameter
     Q30 = multipoles.get((3, 0), 0.0)
     if Q30 != 0.0:
         factor_base = A * R0**3
         beta3 = Q30 / (factor_base * 3.0 / np.sqrt(7.0 * np.pi))
         result['beta3'] = float(beta3)
-    
+
     # Extract hexadecapole parameter
     Q40 = multipoles.get((4, 0), 0.0)
     if Q40 != 0.0:
         factor_base = A * R0**4
         beta4 = Q40 / (factor_base * 3.0 / np.sqrt(9.0 * np.pi))
         result['beta4'] = float(beta4)
-    
+
     return result
 
 
@@ -315,54 +315,54 @@ def multipoles_to_beta_gamma(
 class Constraint:
     """
     Constraint configuration for constrained HFB calculations.
-    
+
     This class defines constraints that can be applied during HFB iterations
     to control nuclear deformation and other collective degrees of freedom.
-    
+
     Supports arbitrary multipole moment constraints specified either by name
     (e.g., 'Q20', 'Q30', 'Q22') or by quantum numbers (e.g., (2, 0), (3, 0)).
-    
+
     Examples:
         >>> # Spherical (no constraints)
         >>> constraint = Constraint.spherical()
-        
+
         >>> # Single Q20 constraint
         >>> constraint = Constraint.from_multipoles({'Q20': 5.0})
-        
+
         >>> # Multiple multipole constraints
         >>> constraint = Constraint.from_multipoles({
         ...     'Q20': 5.0,   # Quadrupole deformation
         ...     'Q30': 2.0,   # Octupole deformation
         ...     'Q22': 1.0,   # Triaxial deformation
         ... })
-        
+
         >>> # Using tuple notation for arbitrary multipoles
         >>> constraint = Constraint.from_multipoles({
         ...     (2, 0): 5.0,   # Same as 'Q20'
         ...     (4, 0): 1.0,   # Hexadecapole
         ...     (6, 2): 0.5,   # Higher multipole
         ... })
-        
+
         >>> # Legacy interface (deprecated, use from_multipoles instead)
         >>> constraint = Constraint(alpha20_wanted=0.3)
-    
+
     Attributes:
         multipole_constraints: Dictionary mapping multipoles to target values.
             Keys can be string names ('Q20', 'Q30') or tuples ((2, 0), (3, 0)).
         tq_prin_axes: Enable principal axes alignment constraints
     """
-    
+
     # Control flags
     tconstraint: bool = False
     tq_prin_axes: bool = False  # Principal axes constraints (6 additional constraints)
-    
+
     # Modern multipole constraint system
     multipole_constraints: Dict[Union[str, Tuple[int, int]], float] = field(default_factory=dict)
-    
+
     # Legacy interface (deprecated - use multipole_constraints instead)
     alpha20_wanted: float = -1e99  # Q20 quadrupole moment target
     alpha22_wanted: float = -1e99  # Q22 quadrupole moment target
-    
+
     # Constraint algorithm parameters
     c0constr: float = 0.8          # Penalty weight for the multipole constraints
     c0_cm: float = 0.2             # Penalty weight for the <z> = 0 (Q10) constraint
@@ -371,10 +371,10 @@ class Constraint:
     dampgamma: float = 1.0         # Damping parameter for masking function
     damprad: Optional[float] = None  # Damping radius (fm); None = scale with A and the
                                      # goal deformation (physics.constraints.default_damprad)
-    
+
     # Physical constants
     r0rms: float = 0.93            # RMS radius parameter (corresponds to R0=1.2 fm)
-    
+
     # Constraint arrays (allocated dynamically)
     numconstraint: int = 0
     constr_field: Optional[jax.Array] = None      # [iconstr, nx, ny, nz, isospin]
@@ -385,10 +385,10 @@ class Constraint:
     old_crank: Optional[jax.Array] = None         # Previous expectation values
     actual_crank2: Optional[jax.Array] = None     # Variances
     qcorr: Optional[jax.Array] = None             # Q-correction factors
-    
+
     # Metadata about constraints
     constraint_multipoles: List[Tuple[int, int]] = field(default_factory=list)
-    
+
     def __post_init__(self):
         """Validate and normalize multipole constraints after initialization."""
         # Convert any string keys to tuples and validate
@@ -397,10 +397,10 @@ class Constraint:
             for key, value in self.multipole_constraints.items():
                 lam, mu = parse_multipole(key)
                 normalized[(lam, mu)] = float(value)
-            
+
             # Use replace to update the field (needed for frozen dataclasses)
             object.__setattr__(self, 'multipole_constraints', normalized)
-        
+
         # Handle legacy alpha20/alpha22 interface
         if self.alpha20_wanted > -1e90:
             if (2, 0) not in self.multipole_constraints:
@@ -408,31 +408,31 @@ class Constraint:
         if self.alpha22_wanted > -1e90:
             if (2, 2) not in self.multipole_constraints:
                 self.multipole_constraints[(2, 2)] = self.alpha22_wanted
-    
+
     @classmethod
     def spherical(cls) -> "Constraint":
         """
         Create a constraint configuration for spherical calculations.
-        
+
         No deformation constraints are applied; nucleus evolves freely.
-        
+
         Returns:
             Constraint object for spherical calculation
         """
         return cls(tconstraint=False)
-    
+
     @classmethod
     def from_multipoles(
-        cls, 
+        cls,
         multipoles: Dict[Union[str, Tuple[int, int]], float],
         principal_axes: bool = False,
         **kwargs
     ) -> "Constraint":
         """
         Create constraint from arbitrary multipole moments.
-        
+
         This is the recommended way to create multipole constraints.
-        
+
         Args:
             multipoles: Dictionary mapping multipole specs to target values.
                 Keys can be:
@@ -441,21 +441,21 @@ class Constraint:
                 Values are the target expectation values in fm^lambda.
             principal_axes: Whether to enable principal axes constraints
             **kwargs: Additional constraint parameters
-            
+
         Returns:
             Constraint object with specified multipole constraints
-            
+
         Examples:
             >>> # Prolate Q20 constraint
             >>> c = Constraint.from_multipoles({'Q20': 5.0})
-            
+
             >>> # Multiple constraints
             >>> c = Constraint.from_multipoles({
             ...     'Q20': 5.0,
             ...     'Q30': 2.0,
             ...     'Q22': 1.0,
             ... })
-            
+
             >>> # Using tuple notation
             >>> c = Constraint.from_multipoles({
             ...     (2, 0): 5.0,
@@ -468,7 +468,7 @@ class Constraint:
             tconstraint=True,
             **kwargs
         )
-    
+
     @classmethod
     def from_beta_gamma(
         cls,
@@ -483,11 +483,11 @@ class Constraint:
     ) -> "Constraint":
         """
         Create constraint from beta-gamma deformation parameters.
-        
+
         This method converts Hill-Wheeler (β, γ) parameterization to multipole
         moments and creates the appropriate constraints. Commonly used in
         publications and experimental data.
-        
+
         The Hill-Wheeler parameterization:
         - β₂: Quadrupole deformation parameter
           * β₂ > 0: Prolate (football shape, elongated)
@@ -498,11 +498,11 @@ class Constraint:
           * 0° < γ < 60°: Triaxial (asymmetric)
         - β₃: Octupole deformation (pear shape, typical: 0.0-0.2)
         - β₄: Hexadecapole deformation (typical: 0.0-0.1)
-        
+
         Sign convention: Use β₂ > 0 for prolate or β₂ < 0 for oblate, both
         about the z axis. β₂ > 0 with γ = 60° is also oblate, but about the
         y axis.
-        
+
         Args:
             mass_number: Nuclear mass number A (protons + neutrons)
             beta2: Quadrupole deformation parameter
@@ -513,31 +513,31 @@ class Constraint:
             r0: Radius parameter in fm (default: 1.2 fm)
             principal_axes: Whether to enable principal axes constraints
             **kwargs: Additional constraint parameters
-            
+
         Returns:
             Constraint object with multipole constraints corresponding to
             the specified deformation parameters
-            
+
         Examples:
             >>> # Prolate deformation (typical for rare-earth nuclei)
             >>> c = Constraint.from_beta_gamma(
             ...     mass_number=238,
             ...     beta2=0.25
             ... )
-            
+
             >>> # Oblate deformation (using negative beta)
             >>> c = Constraint.from_beta_gamma(
             ...     mass_number=40,
             ...     beta2=-0.30
             ... )
-            
+
             >>> # Triaxial deformation
             >>> c = Constraint.from_beta_gamma(
             ...     mass_number=190,
             ...     beta2=0.2,
             ...     gamma=30
             ... )
-            
+
             >>> # Octupole deformation (pear shape, e.g., for Ra-224)
             >>> c = Constraint.from_beta_gamma(
             ...     mass_number=224,
@@ -545,7 +545,7 @@ class Constraint:
             ...     gamma=0,
             ...     beta3=0.08
             ... )
-            
+
             >>> # Multiple deformations
             >>> c = Constraint.from_beta_gamma(
             ...     mass_number=152,
@@ -553,7 +553,7 @@ class Constraint:
             ...     gamma=0,
             ...     beta4=0.05
             ... )
-        
+
         Notes:
             - The conversion uses R₀ = r₀ × A^(1/3) for the nuclear radius
             - Standard r₀ = 1.2 fm, but can be adjusted (e.g., 1.1-1.3 fm)
@@ -574,14 +574,14 @@ class Constraint:
             mass_number=mass_number,
             r0=r0
         )
-        
+
         # Create constraint from multipoles
         return cls.from_multipoles(
             multipoles=multipoles,
             principal_axes=principal_axes,
             **kwargs
         )
-    
+
     @classmethod
     def prolate(cls, mass_number: float, beta2: float = 0.3, **kwargs) -> "Constraint":
         """
@@ -628,44 +628,44 @@ class Constraint:
             alpha20: Q20 = <2z^2 - x^2 - y^2> target in fm^2
             alpha22: Q22 = <x^2 - y^2> target in fm^2
             **kwargs: Additional constraint parameters
-            
+
         Returns:
             Constraint object for triaxial deformation
         """
         return cls(
-            alpha20_wanted=alpha20, 
-            alpha22_wanted=alpha22, 
-            tconstraint=True, 
+            alpha20_wanted=alpha20,
+            alpha22_wanted=alpha22,
+            tconstraint=True,
             **kwargs
         )
-    
+
     def with_principal_axes(self, enable: bool = True) -> "Constraint":
         """
         Enable or disable principal axes constraints.
-        
+
         Args:
             enable: Whether to enable principal axes alignment
-            
+
         Returns:
             New Constraint with updated setting
         """
         return dataclasses.replace(self, tq_prin_axes=enable)
-    
+
     def add_multipole(
-        self, 
-        multipole: Union[str, Tuple[int, int]], 
+        self,
+        multipole: Union[str, Tuple[int, int]],
         value: float
     ) -> "Constraint":
         """
         Add a multipole constraint to existing constraints.
-        
+
         Args:
             multipole: Multipole specification (name or tuple)
             value: Target value
-            
+
         Returns:
             New Constraint with added multipole
-            
+
         Example:
             >>> c = Constraint.spherical()
             >>> c = c.add_multipole('Q20', 5.0)
@@ -675,21 +675,21 @@ class Constraint:
         new_multipoles = dict(self.multipole_constraints)
         new_multipoles[(lam, mu)] = value
         return dataclasses.replace(
-            self, 
+            self,
             multipole_constraints=new_multipoles,
             tconstraint=True
         )
-    
+
     def remove_multipole(
-        self, 
+        self,
         multipole: Union[str, Tuple[int, int]]
     ) -> "Constraint":
         """
         Remove a multipole constraint.
-        
+
         Args:
             multipole: Multipole specification to remove
-            
+
         Returns:
             New Constraint without the specified multipole
         """
@@ -697,36 +697,36 @@ class Constraint:
         new_multipoles = dict(self.multipole_constraints)
         if (lam, mu) in new_multipoles:
             del new_multipoles[(lam, mu)]
-        
+
         tconstraint = len(new_multipoles) > 0 or self.tq_prin_axes
         return dataclasses.replace(
-            self, 
+            self,
             multipole_constraints=new_multipoles,
             tconstraint=tconstraint
         )
-    
+
     def get_multipole_list(self) -> List[Tuple[Tuple[int, int], float]]:
         """
         Get list of all multipole constraints as (quantum numbers, value) pairs.
-        
+
         Returns:
             List of ((lambda, mu), value) tuples sorted by lambda then mu
         """
         return sorted(self.multipole_constraints.items(), key=lambda x: (x[0][0], x[0][1]))
-    
+
     def to_beta_gamma(self, mass_number: float, r0: float = 1.2) -> Dict[str, float]:
         """
         Convert current multipole constraints to beta-gamma parameters.
-        
+
         Useful for reporting deformation in standard parameterization.
-        
+
         Args:
             mass_number: Nuclear mass number A
             r0: Radius parameter in fm (default: 1.2 fm)
-            
+
         Returns:
             Dictionary with 'beta2', 'gamma', 'beta3', 'beta4' as available
-            
+
         Example:
             >>> c = Constraint.from_multipoles({'Q20': 10.0, 'Q22': 2.0})
             >>> params = c.to_beta_gamma(mass_number=40)
@@ -737,33 +737,33 @@ class Constraint:
             mass_number=mass_number,
             r0=r0
         )
-    
+
     def initialize_arrays(self, grid_shape: tuple, mass_number: float) -> "Constraint":
         """
         Initialize constraint arrays for a given grid.
-        
+
         Args:
             grid_shape: Tuple of (nx, ny, nz) grid dimensions
             mass_number: Mass number of the nucleus
-            
+
         Returns:
             New Constraint with initialized arrays
         """
         # Count number of constraints from multipoles
         numconstraint = len(self.multipole_constraints)
-        
+
         # Add principal axes constraints if enabled
         if self.tq_prin_axes:
             numconstraint += 6  # xy, xz, yz, x, y, z
-        
+
         if numconstraint == 0:
             return dataclasses.replace(self, numconstraint=0, tconstraint=False)
-        
+
         nx, ny, nz = grid_shape
-        
+
         # Build list of constraint multipoles in order
         constraint_multipoles = [mp for mp, _ in self.get_multipole_list()]
-        
+
         # Add principal axes if needed
         if self.tq_prin_axes:
             # These are represented as special "multipoles" internally
@@ -775,12 +775,12 @@ class Constraint:
                 (-2, 1),  # y displacement
                 (-2, 2),  # z displacement
             ])
-        
+
         # Build goal array from multipole constraints
         goal_crank = jnp.zeros(numconstraint)
         for i, (mp, val) in enumerate(self.get_multipole_list()):
             goal_crank = goal_crank.at[i].set(val)
-        
+
         return dataclasses.replace(
             self,
             numconstraint=numconstraint,
@@ -795,31 +795,31 @@ class Constraint:
             actual_crank2=jnp.zeros(numconstraint),
             qcorr=jnp.zeros(numconstraint),
         )
-    
+
     def __str__(self) -> str:
         if not self.tconstraint:
             return "Constraint(spherical)"
-        
+
         parts = []
-        
+
         # Show multipole constraints
         for (lam, mu), value in self.get_multipole_list():
             name = multipole_name(lam, mu)
             parts.append(f"{name}={value:.3f}")
-        
+
         # Legacy compatibility
         if self.alpha20_wanted > -1e90 and (2, 0) not in self.multipole_constraints:
             parts.append(f"α20={self.alpha20_wanted:.3f}")
         if self.alpha22_wanted > -1e90 and (2, 2) not in self.multipole_constraints:
             parts.append(f"α22={self.alpha22_wanted:.3f}")
-        
+
         if self.tq_prin_axes:
             parts.append("principal_axes")
-        
+
         return f"Constraint({', '.join(parts)})"
-        
+
         return f"Constraint({', '.join(parts)})"
-    
+
     def __repr__(self) -> str:
         return (
             f"Constraint(alpha20_wanted={self.alpha20_wanted}, "

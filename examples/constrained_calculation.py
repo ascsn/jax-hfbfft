@@ -12,11 +12,11 @@ def main():
     # Calculate deformation for U-238
     nucleus = Nucleus(protons=92, neutrons=146, name="U-238")
     force = Force.from_name("SLy4")
-    
+
     print(f"Constrained HFB calculation for {nucleus.name}")
     print(f"Force: {force.name}")
     print("=" * 60)
-    
+
     # Define deformation points along the fission path. Each point is an
     # independent constrained solve; for converged energy curves use
     # jax_hfbfft.physics.run_constrained_scan instead.
@@ -48,40 +48,40 @@ def main():
             nx=48, ny=48, nz=48,
             dx=0.8, dy=0.8, dz=0.8,
         )
-        
+
         calc.initialize_wavefunctions(method="harmonic_oscillator")
-        
+
         # Run with more iterations for constrained calculations
         result = calc.run(
             max_iterations=2000,
             convergence_threshold=1e-5,
             print_interval=0,
         )
-        
+
         results.append({
             'beta2_target': beta2,
             'beta2_actual': result.beta2,
             'energy': result.total_energy,
             'converged': result.converged,
         })
-        
+
         print(f"  E = {result.total_energy:.3f} MeV")
         print(f"  β₂(actual) = {result.beta2:.3f}")
-    
+
     # Print potential energy surface
     print("\n" + "=" * 60)
     print("POTENTIAL ENERGY SURFACE")
     print("=" * 60)
     print(f"{'β₂(target)':>12} {'β₂(actual)':>12} {'E (MeV)':>12} {'ΔE (MeV)':>12}")
     print("-" * 60)
-    
+
     e_min = min(r['energy'] for r in results)
-    
+
     for r in results:
         delta_e = r['energy'] - e_min
         print(f"{r['beta2_target']:>12.2f} {r['beta2_actual']:>12.3f} "
               f"{r['energy']:>12.3f} {delta_e:>12.3f}")
-    
+
     # Find equilibrium deformation
     min_result = min(results, key=lambda x: x['energy'])
     print(f"\nEquilibrium deformation: β₂ = {min_result['beta2_actual']:.3f}")
@@ -94,23 +94,23 @@ def constrained_triaxial():
     """
     nucleus = Nucleus.from_symbol("Ge", 76)
     force = Force.from_name("SLy4")
-    
+
     print(f"\nTriaxial calculation for {nucleus.name}")
     print("=" * 60)
-    
+
     # Create triaxial constraint (default grid: 32^3 at 0.8 fm, so damprad < 9.8 fm)
     constraint = Constraint.from_beta_gamma(nucleus.mass_number, beta2=0.25, gamma=30,
                                             damprad=9.5)
-    
+
     calc = HFBFFT(
         nucleus=nucleus,
         force=force,
         constraint=constraint,
     )
-    
+
     calc.initialize_wavefunctions()
     result = calc.run(max_iterations=1000)
-    
+
     print(f"\nResults:")
     print(f"  β₂ = {result.beta2:.3f}")
     print(f"  γ  = {result.gamma:.1f}°")

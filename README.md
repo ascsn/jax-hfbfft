@@ -1,24 +1,19 @@
 # HFBFFT: Coordinate Space Nuclear DFT with JAX
 
-`HFBFFT` (Hartree-Fock-Bogoliubov with Fast Fourier Transforms) is a high-performance nuclear density functional theory (DFT) code implemented in Python using [JAX](https://github.com/google/jax). It solves the HFB equations in coordinate space on a 3D Cartesian grid, utilizing a natural orbital representation for efficient treatment of pairing correlations.
+`HFBFFT` (Hartree-Fock-Bogoliubov with Fast Fourier Transforms) is a nuclear density functional theory (DFT) code written in Python with [JAX](https://github.com/google/jax). It solves the Skyrme HFB equations on a 3D Cartesian grid in coordinate space, with pairing treated in the natural-orbital (canonical) basis, and propagates the solutions in time with TDHF and TDHFB.
 
 ## Key Features
 
-- **HFB with Natural Orbitals**: Implements a robust HFB scheme using natural orbitals to handle pairing correlations in nuclear systems.
-- **Coordinate Space Solver**: Performs calculations on a 3D Cartesian grid, avoiding basis set expansion errors and enabling flexible boundary conditions.
-- **FFT-Accelerated Operators**: Uses Fast Fourier Transforms for highly accurate and efficient numerical derivatives and kinetic energy operations.
-- **Powered by JAX**: 
-  - **Performance**: Just-In-Time (JIT) compilation via XLA for near-native performance.
-  - **Portability**: Runs seamlessly on CPUs, GPUs, and TPUs without code changes.
-  - **Differentiability**: Ready for future applications involving automatic differentiation.
+- **3D coordinate space**: no spatial symmetry is imposed and the orbitals live on the grid, with no oscillator basis; derivatives and the kinetic energy are evaluated spectrally with FFTs.
+- **HFB in the natural-orbital basis**: pairing correlations are carried by the occupations and pair amplitudes of the canonical orbitals.
+- **JAX**: the solver is jit-compiled with XLA and runs on CPUs and NVIDIA GPUs (Apple Metal is experimental), in 64-bit by default.
 - **Skyrme functionals**: SLy4/5/6, SkM, SkM*, SkP, SIII, UNEDF0 and UNEDF1 (see [Functionals](#functionals)), with the centre-of-mass treatment each was fitted with, up to the microscopic ⟨P²⟩/2mA.
 - **Pairing**: volume and density-dependent delta pairing (VDI/DDDI) and the Lipkin-Nogami particle-number correction.
 - **Time-Dependent Hartree-Fock (TDHF)**: Real-time propagation of converged static states for collective modes, linear response and heavy-ion collisions (see `examples/tdhf`).
 - **Time-Dependent HFB (TDHFB)**: Real-time propagation of paired states (global in-span scheme) for collective modes, collisions and fission (see [TDHFB](#time-dependent-hfb) and `examples/tdhfb`).
 - **Checkpoints**: static runs save and restart from `.npz` files, which also seed TDHFB.
 - **Constrained Calculations**: Multipole constraints (Q10 to Q40) and deformation scans with an outer/inner augmented-Lagrangian solver.
-- **Flexible Configuration**: Easily configure nuclei, forces, and grid parameters using YAML files.
-- **Extensible Architecture**: Designed to be modular, allowing for easy integration of new functionals or physical observables.
+- **Configuration files**: a commented `config.yml` covers every option, for the `hfbfft` CLI and `run_hfb.py`.
 
 ## Project Structure
 
@@ -86,7 +81,7 @@ Other extras: `viz` (matplotlib, for TDHF renders), `dev` (pytest and linters), 
 
 ## Quick Start
 
-### Command-Line Interface (Recommended for beginners)
+### Command-Line Interface
 
 ```bash
 # 1. Generate a sample configuration file
@@ -139,7 +134,7 @@ python run_hfb.py
 This provides the classic HFB code workflow:
 - Edit input file with all parameters
 - Run executable
-- Output written to directory with comprehensive result files
+- Output written to a directory of result files (energies, radii, moments, pairing, spectra, densities)
 - Easy benchmarking against other codes (HFBTHO, Sky3D, etc.)
 - **Multipole constraints** (Q20, Q22, Q30, Q32, Q40 and the centre of mass, Q10)
 - **Optional TDHF or TDHFB run** after the static solve (`dynamics:` section)
@@ -285,7 +280,7 @@ Each target warm-starts from the previous one, so keep the steps small (here abo
 | UNEDF0 | Kortelainen et al., PRC 82, 024313 (2010) | 0 | Parameters from HFBTHO's UNE0; fitted with Lipkin-Nogami |
 | UNEDF1 | Kortelainen et al., PRC 85, 024304 (2012) | 2 | Parameters from HFBTHO's UNE1; fitted with Lipkin-Nogami |
 
-`tests/test_forces.py` checks every entry against its published parameters (and the UNEDF coupling constants against HFBTHO). Before October 2026 the spin-orbit terms of all forces except SLy4 were stored incorrectly (and several UNEDF parameters were wrong), so results with those forces from earlier versions should be redone.
+`tests/test_forces.py` checks every entry against its published parameters (and the UNEDF coupling constants against HFBTHO). Several entries were corrected in October 2026; see [CHANGELOG.md](CHANGELOG.md) before reusing results from earlier versions.
 
 The centre-of-mass treatment is set per force by `zpe`:
 

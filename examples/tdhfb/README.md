@@ -85,9 +85,9 @@ is no longer exact by construction; N and E stay exactly conserved.
 - Collisions beyond ~300 fm/c, after the pairing collapses, have not been
   validated with relaxed statics; check against dt/2.
 - The Ebata arm advances its amplitudes by explicit Euler (as in all
-  comparison runs) and uses fixed rest-frame Kramers partners. Re-finding
-  partners by time reversal in a moving frame is wrong; that artifact was
-  the retracted "Galilean failure".
+  comparison runs) and uses fixed rest-frame Kramers partners. Partners must
+  not be re-found by time reversal in a moving frame: time reversal flips the
+  momentum, so the re-found partners are wrong for a moving nucleus.
 
 ## Frames and the 3D viewer
 

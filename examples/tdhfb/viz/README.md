@@ -1,8 +1,7 @@
 # TDHFB visualization
 
-Self-contained HTML viewers (one file, no server) for the runs of `run.py`,
-`collide.py` and `fission.py`. They publish as Claude artifacts or open locally
-in any browser with WebGL 2.
+A self-contained HTML viewer (one file, no server) for the runs of `run.py`,
+`collide.py` and `fission.py`. It opens in any browser with WebGL 2.
 
 ## 1. Record frames during the run
 
@@ -52,12 +51,4 @@ density and pair density on the GPU (WebGL 2):
 Data are cropped to the region the run touches, quantized to 8 bits per
 channel, gzipped and base64-embedded. The browser inflates them with
 `DecompressionStream`. Budget: about 9–15 KB per frame for U238, so 400 frames
-per run (the `--max-frames` default thins longer runs evenly) is about 5 MB. An
-artifact page must stay under 16 MB.
-
-## 3. The 2D fission-study viewer
-
-`build_fission_2d.py` builds the y = 0 slice viewer of the 2026-10-06 U238
-study: the static path, the releases with the old-step runs overlaid, and the
-pairing energy against Q20 from the ground-state side to scission. Its input
-paths are those of that study (`/mnt/scratch/knigh137/fission`). Run it there.
+per run (the `--max-frames` default thins longer runs evenly) is about 5 MB.

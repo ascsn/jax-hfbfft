@@ -12,15 +12,15 @@ Main Classes:
 
 Example:
     >>> from jax_hfbfft import HFBFFT, Force, Nucleus
-    >>> 
+    >>>
     >>> # Create a calculation for Sn-132
     >>> nucleus = Nucleus(protons=50, neutrons=82)
     >>> force = Force.from_name("SLy4")
-    >>> 
+    >>>
     >>> # Create and run the HFB calculation
     >>> calc = HFBFFT(nucleus=nucleus, force=force)
     >>> calc.run(max_iterations=1000)
-    >>> 
+    >>>
     >>> # Access results
     >>> print(f"Binding energy: {calc.total_energy:.3f} MeV")
 """
@@ -56,7 +56,7 @@ from jax_hfbfft.forces import AVAILABLE_FORCES
 __all__ = [
     # Main classes
     "HFBFFT",
-    "Nucleus", 
+    "Nucleus",
     "Force",
     "Constraint",
     "Grid",

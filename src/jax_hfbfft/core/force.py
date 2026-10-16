@@ -21,40 +21,40 @@ RHO_SAT = 0.16
 class Force:
     """
     Skyrme-type effective nuclear interaction.
-    
+
     This class encapsulates the parameters of a Skyrme interaction including
-    the standard Skyrme parameters (t0, t1, t2, t3, x0, x1, x2, x3) and 
+    the standard Skyrme parameters (t0, t1, t2, t3, x0, x1, x2, x3) and
     derived coefficients (b0, b1, b2, b3, etc.).
-    
+
     Attributes:
         name (str): Name of the force parameterization
         t0, t1, t2, t3, t4 (float): Skyrme interaction strengths
         x0, x1, x2, x3 (float): Skyrme exchange parameters
         power (float): Density-dependence power (typically 1/6 to 1)
-        
+
     Examples:
         >>> # Load a predefined force
         >>> force = Force.from_name("SLy4")
-        
+
         >>> # Create custom force with parameters
         >>> force = Force(name="custom", t0=-2488.91, t1=486.82, ...)
-        
+
         >>> # Modify pairing parameters
         >>> force = force.with_pairing(v0prot=362.0, v0neut=362.0)
     """
-    
+
     # Force identification
     name: str = field(metadata=dict(static=True))
-    
+
     # Exchange type
     ex: int = field(metadata=dict(static=True))
-    
+
     # Zero-point energy correction flag
     zpe: int = 0
-    
+
     # Effective mass (h-bar^2 / 2m for each isospin)
     h2m: Optional[jax.Array] = None
-    
+
     # Standard Skyrme parameters
     t0: float = 0.0
     t1: float = 0.0
@@ -65,13 +65,13 @@ class Force:
     x1: float = 0.0
     x2: float = 0.0
     x3: float = 0.0
-    
+
     # Spin-orbit parameter
     b4p: float = 0.0
-    
+
     # Density-dependence power
     power: float = 1.0
-    
+
     # Pairing parameters
     ipair: int = field(default=0, metadata=dict(static=True))  # Pairing type
     v0prot: float = 0.0  # Proton pairing strength
@@ -94,11 +94,11 @@ class Force:
     pair_kcut: float = field(default=0.0, metadata=dict(static=True))
     pair_kwidth: float = field(default=0.1, metadata=dict(static=True))
     tbcs: bool = False  # Use BCS approximation
-    
+
     # Physical constants
     h2ma: float = 20.73553  # h-bar^2 / (2 * nucleon mass)
     nucleon_mass: float = 938.9  # Nucleon mass in MeV
-    
+
     # Derived Skyrme coefficients (calculated from t, x parameters)
     b0: float = 0.0
     b0p: float = 0.0
@@ -120,7 +120,7 @@ class Force:
 
     # Slater determinant parameter
     slate: float = 0.0
-    
+
     # EDF coupling constants (derived)
     Crho0: float = 0.0
     Crho1: float = 0.0
@@ -132,7 +132,7 @@ class Force:
     Ctau1: float = 0.0
     CdJ0: float = 0.0
     CdJ1: float = 0.0
-    
+
     def __post_init__(self):
         """Calculate derived coefficients after initialization."""
         # Initialize arrays if not set
@@ -144,25 +144,25 @@ class Force:
             object.__setattr__(self, 'state_cutoff', jnp.array([0.0, 0.0]))
         if self.h2m is None:
             object.__setattr__(self, 'h2m', jnp.array([self.h2ma, self.h2ma]))
-    
+
     @classmethod
     def from_name(
-        cls, 
+        cls,
         name: str,
         forces_file: Optional[str] = None,
         **kwargs
     ) -> "Force":
         """
         Create a Force from a predefined parameterization.
-        
+
         Args:
             name: Name of the force (e.g., "SLy4", "SkM*", "UNEDF1")
             forces_file: Path to YAML file with force definitions
             **kwargs: Override parameters (e.g., pairing strengths)
-            
+
         Returns:
             Initialized Force object
-            
+
         Examples:
             >>> force = Force.from_name("SLy4")
             >>> force = Force.from_name("SLy4", v0prot=362.0, v0neut=362.0)
@@ -178,25 +178,25 @@ class Force:
                 if path.exists():
                     forces_file = str(path)
                     break
-        
+
         if forces_file is None:
             raise FileNotFoundError(
                 "Could not find forces definition file. "
                 "Please provide forces_file argument."
             )
-        
+
         # Load force parameters from YAML
         with open(forces_file, 'r') as f:
             forces_data = yaml.safe_load(f)
-        
+
         if name not in forces_data:
             available = ", ".join(forces_data.keys())
             raise ValueError(
                 f"Force '{name}' not found. Available forces: {available}"
             )
-        
+
         force_params = forces_data[name]
-        
+
         # Build initialization parameters
         init_kwargs = {
             'name': name,
@@ -248,50 +248,50 @@ class Force:
         # Create force and calculate derived coefficients
         force = cls(**init_kwargs)
         return force._calculate_derived_coefficients()
-    
+
     def _calculate_derived_coefficients(self) -> "Force":
         """Calculate derived Skyrme coefficients from primary parameters."""
         import dataclasses
-        
+
         # Calculate b coefficients from t and x parameters
         b0 = self.t0 * (1 + 0.5 * self.x0)
         b0p = self.t0 * (0.5 + self.x0)
-        
-        b1 = (self.t1 + 0.5 * self.x1 * self.t1 + 
+
+        b1 = (self.t1 + 0.5 * self.x1 * self.t1 +
               self.t2 + 0.5 * self.x2 * self.t2) / 4
-        b1p = (self.t1 * (0.5 + self.x1) - 
+        b1p = (self.t1 * (0.5 + self.x1) -
                self.t2 * (0.5 + self.x2)) / 4
-        
-        b2 = (3 * self.t1 * (1 + 0.5 * self.x1) - 
+
+        b2 = (3 * self.t1 * (1 + 0.5 * self.x1) -
               self.t2 * (1 + 0.5 * self.x2)) / 8
-        b2p = (3 * self.t1 * (0.5 + self.x1) + 
+        b2p = (3 * self.t1 * (0.5 + self.x1) +
                self.t2 * (0.5 + self.x2)) / 8
-        
+
         b3 = self.t3 * (1 + 0.5 * self.x3) / 4
         b3p = self.t3 * (0.5 + self.x3) / 4
-        
+
         b4 = self.t4 / 2
-        
+
         # Calculate EDF coupling constants using the b parameters
         Crho0 = 0.5 * b0 - 0.25 * b0p
         Crho1 = -0.25 * b0p
-        
+
         Crho0D = (1.0 / 3.0) * b3 - (1.0 / 6.0) * b3p
         Crho1D = -(1.0 / 6.0) * b3p
-        
+
         Cdrho0 = -0.5 * b2 + 0.25 * b2p
         Cdrho1 = 0.25 * b2p
-        
+
         Ctau0 = b1 - 0.5 * b1p
         Ctau1 = -0.5 * b1p
-        
+
         CdJ0 = -b4 - 0.5 * self.b4p
         CdJ1 = -0.5 * self.b4p
-        
+
         # Coulomb constant integration
         e2 = 1.4399784085965135   # MeV·fm
         slate = (3.0 / jnp.pi) ** (1.0 / 3.0) * e2
-        
+
         return dataclasses.replace(
             self,
             b0=b0, b0p=b0p,
@@ -306,7 +306,7 @@ class Force:
             Ctau0=Ctau0, Ctau1=Ctau1,
             CdJ0=CdJ0, CdJ1=CdJ1,
         )
-    
+
     def with_pairing(
         self,
         ipair: Optional[int] = None,
@@ -322,7 +322,7 @@ class Force:
     ) -> "Force":
         """
         Create a new Force with modified pairing parameters.
-        
+
         Args:
             ipair: Pairing type (0=none, 5=VDI, 6=DDDI)
             v0prot: Proton pairing strength (MeV·fm³)
@@ -338,7 +338,7 @@ class Force:
             New Force with updated pairing parameters
         """
         import dataclasses
-        
+
         updates = {}
         if ipair is not None:
             updates['ipair'] = ipair
@@ -446,7 +446,7 @@ class Force:
 
     def __str__(self) -> str:
         return f"Force({self.name})"
-    
+
     def __repr__(self) -> str:
         return (
             f"Force(name={self.name!r}, t0={self.t0:.2f}, t1={self.t1:.2f}, "

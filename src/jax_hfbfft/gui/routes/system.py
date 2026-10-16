@@ -19,12 +19,12 @@ router = APIRouter()
 async def get_system_status():
     """
     Get system status including backend, JIT warmup, and resource usage.
-    
-    Returns comprehensive system information for the status display.
+
+    Returns the system information shown in the status display.
     """
     warmup = get_warmup_manager()
     service = get_hfb_service()
-    
+
     # Get JAX backend info
     jax_version = None
     try:
@@ -33,7 +33,7 @@ async def get_system_status():
         devices = jax.devices()
         device_name = str(devices[0]) if devices else "unknown"
         jax_version = jax.__version__
-        
+
         # Check precision
         from jax_hfbfft.jax_config import check_precision
         precision = "float64" if check_precision() else "float32"
@@ -41,13 +41,13 @@ async def get_system_status():
         backend = "unknown"
         device_name = "JAX not loaded"
         precision = "unknown"
-    
+
     # Get memory usage if available
     memory_used_gb = None
     memory_total_gb = None
     gpu_memory_used_gb = None
     gpu_memory_total_gb = None
-    
+
     try:
         import psutil
         process = psutil.Process()
@@ -55,14 +55,14 @@ async def get_system_status():
         memory_total_gb = psutil.virtual_memory().total / (1024**3)
     except ImportError:
         pass
-    
+
     # Get GPU memory if available
     try:
         if backend == "gpu":
             # Try to get GPU memory from JAX
             try:
                 import jax
-                
+
                 # Get device memory stats
                 devices = jax.devices()
                 if devices:
@@ -77,7 +77,7 @@ async def get_system_status():
                                 gpu_memory_total_gb = stats.get('bytes_limit', 0) / (1024**3)
                     except Exception:
                         pass
-                    
+
                     # Method 2: Try jax.lib.xla_bridge for older versions
                     if gpu_memory_total_gb is None:
                         try:
@@ -92,7 +92,7 @@ async def get_system_status():
                             pass
             except Exception as e:
                 print(f"Warning: Could not get JAX GPU memory stats: {e}")
-            
+
             # Fallback: try nvidia-smi if JAX methods failed
             if gpu_memory_total_gb is None:
                 try:
@@ -112,17 +112,17 @@ async def get_system_status():
                     print(f"Warning: Could not get nvidia-smi GPU memory: {e}")
     except Exception as e:
         print(f"Warning: Error in GPU memory detection: {e}")
-    
+
     # Count active calculations
     calcs = await service.list_calculations()
     active_count = sum(
-        1 for c in calcs 
+        1 for c in calcs
         if c.phase.value in ("pending", "warmup", "initializing", "iterating")
     )
-    
+
     # Get warmup status with error details
     warmup_status = warmup.get_status()
-    
+
     return SystemStatus(
         backend=backend,
         device_name=device_name,
@@ -145,8 +145,8 @@ async def get_system_status():
 async def get_diagnostics():
     """
     Get detailed system diagnostics for debugging.
-    
-    Returns comprehensive system information including:
+
+    Returns:
     - JAX configuration and devices
     - Memory usage (CPU and GPU)
     - Python environment details
@@ -154,7 +154,7 @@ async def get_diagnostics():
     - JIT compilation status
     """
     diagnostics = {}
-    
+
     # Python environment
     import sys
     import platform
@@ -163,12 +163,12 @@ async def get_diagnostics():
         "platform": platform.platform(),
         "architecture": platform.machine(),
     }
-    
+
     # JAX information
     try:
         import jax
         import jax.numpy as jnp
-        
+
         diagnostics["jax"] = {
             "version": jax.__version__,
             "backend": jax.default_backend(),
@@ -176,7 +176,7 @@ async def get_diagnostics():
             "device_count": len(jax.devices()),
             "x64_enabled": jnp.array(1.0).dtype == jnp.float64,
         }
-        
+
         # Device details
         devices_info = []
         for device in jax.devices():
@@ -185,7 +185,7 @@ async def get_diagnostics():
                 "platform": device.platform,
                 "device_kind": str(device.device_kind),
             }
-            
+
             # Try to get memory stats
             try:
                 if hasattr(device, 'memory_stats'):
@@ -198,16 +198,16 @@ async def get_diagnostics():
                         }
             except Exception as e:
                 device_info["memory_stats_error"] = str(e)
-            
+
             devices_info.append(device_info)
-        
+
         diagnostics["jax"]["device_details"] = devices_info
-        
+
     except ImportError as e:
         diagnostics["jax"] = {"error": f"JAX not available: {e}"}
     except Exception as e:
         diagnostics["jax"] = {"error": str(e)}
-    
+
     # System memory
     try:
         import psutil
@@ -222,7 +222,7 @@ async def get_diagnostics():
         diagnostics["system_memory"] = {"error": "psutil not available"}
     except Exception as e:
         diagnostics["system_memory"] = {"error": str(e)}
-    
+
     # GPU information (nvidia-smi)
     try:
         import subprocess
@@ -252,22 +252,22 @@ async def get_diagnostics():
         diagnostics["nvidia_gpus"] = {"error": "nvidia-smi not found"}
     except Exception as e:
         diagnostics["nvidia_gpus"] = {"error": str(e)}
-    
+
     # Warmup status
     warmup = get_warmup_manager()
     diagnostics["warmup"] = warmup.get_status()
-    
+
     # Installed packages
     try:
         import pkg_resources
         packages = {
-            pkg.key: pkg.version 
+            pkg.key: pkg.version
             for pkg in pkg_resources.working_set
         }
         diagnostics["installed_packages"] = packages
     except Exception as e:
         diagnostics["installed_packages"] = {"error": str(e)}
-    
+
     return diagnostics
 
 
@@ -275,24 +275,24 @@ async def get_diagnostics():
 async def trigger_warmup(force: bool = False):
     """
     Trigger JIT warmup.
-    
+
     Args:
         force: If True, re-run warmup even if already complete.
-        
+
     Returns:
         Warmup status.
     """
     warmup = get_warmup_manager()
-    
+
     if warmup.is_ready and not force:
         return {
             "message": "JIT already warmed up",
             "status": warmup.get_status(),
         }
-    
+
     # Start warmup in background
     warmup.start_background_warmup()
-    
+
     return {
         "message": "JIT warmup started",
         "status": warmup.get_status(),
@@ -303,7 +303,7 @@ async def trigger_warmup(force: bool = False):
 async def get_warmup_status():
     """
     Get current JIT warmup status.
-    
+
     Returns detailed warmup progress information.
     """
     warmup = get_warmup_manager()
@@ -314,22 +314,22 @@ async def get_warmup_status():
 async def list_forces():
     """
     List all available Skyrme forces.
-    
+
     Returns a list of force names with their parameters.
     """
     try:
         from jax_hfbfft.core.force import Force
         from pathlib import Path
         import yaml
-        
+
         # Load forces from YAML file
         forces_file = Path(__file__).parent.parent.parent / "data" / "_forces.yml"
         if not forces_file.exists():
             forces_file = Path(__file__).parent.parent.parent.parent.parent / "_forces.yml"
-        
+
         with open(forces_file, 'r') as f:
             forces_data = yaml.safe_load(f)
-        
+
         forces = []
         for name in forces_data.keys():
             try:
@@ -352,9 +352,9 @@ async def list_forces():
             except Exception:
                 # Skip forces that fail to load
                 continue
-        
+
         return forces
-    
+
     except ImportError:
         raise HTTPException(
             status_code=500,
@@ -366,16 +366,16 @@ async def list_forces():
 async def get_force(name: str):
     """
     Get parameters for a specific Skyrme force.
-    
+
     Args:
         name: Force name (e.g., "SLy4", "SkM*").
-        
+
     Returns:
         Force parameters.
     """
     try:
         from jax_hfbfft.core.force import Force
-        
+
         force = Force.from_name(name)
         return ForceInfo(
             name=name,
@@ -392,7 +392,7 @@ async def get_force(name: str):
             b4p=float(force.b4p),
             power=float(force.power),
         )
-    
+
     except KeyError:
         raise HTTPException(
             status_code=404,
@@ -409,7 +409,7 @@ async def get_force(name: str):
 async def list_elements():
     """
     List common elements for the nucleus selector.
-    
+
     Returns a list of element symbols with atomic numbers.
     """
     # Common elements used in nuclear physics
@@ -509,7 +509,7 @@ async def list_elements():
         {"symbol": "Np", "z": 93, "name": "Neptunium"},
         {"symbol": "Pu", "z": 94, "name": "Plutonium"},
     ]
-    
+
     return elements
 
 
@@ -517,7 +517,7 @@ async def list_elements():
 async def list_nucleus_presets():
     """
     List preset nuclei for quick selection.
-    
+
     Returns common nuclei used in nuclear physics studies.
     """
     presets = [
@@ -536,5 +536,5 @@ async def list_nucleus_presets():
         {"symbol": "Gd", "a": 154, "z": 64, "n": 90, "label": "Gd-154 (Deformed)"},
         {"symbol": "Er", "a": 166, "z": 68, "n": 98, "label": "Er-166 (Deformed)"},
     ]
-    
+
     return presets

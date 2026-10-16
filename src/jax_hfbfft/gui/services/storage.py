@@ -40,25 +40,25 @@ class StorageConfig:
 class RunStorage:
     """
     SQLite-based storage for calculation history.
-    
+
     This service persists calculation results to disk, allowing users
     to browse historical runs and compare results.
-    
+
     Example:
         storage = RunStorage()
         await storage.initialize()
-        
+
         # Save a completed calculation
         await storage.save_calculation(calc_status)
-        
+
         # Query history
         history = await storage.get_history(filter=HistoryFilter(element="Ca"))
     """
-    
+
     def __init__(self, config: Optional[StorageConfig] = None):
         """
         Initialize the storage service.
-        
+
         Args:
             config: Storage configuration.
         """
@@ -66,19 +66,19 @@ class RunStorage:
         self._db_path = Path(self.config.db_path).expanduser()
         self._db: Optional[aiosqlite.Connection] = None
         self._initialized = False
-    
+
     async def initialize(self):
         """Initialize the database, creating tables if needed."""
         if self._initialized:
             return
-        
+
         # Ensure directory exists
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        
+
         # Connect and create tables
         self._db = await aiosqlite.connect(str(self._db_path))
         self._db.row_factory = aiosqlite.Row
-        
+
         await self._db.execute("""
             CREATE TABLE IF NOT EXISTS calculations (
                 id TEXT PRIMARY KEY,
@@ -112,54 +112,54 @@ class RunStorage:
             await self._db.execute("ALTER TABLE calculations ADD COLUMN request_json TEXT")
         if "tags" not in columns:
             await self._db.execute("ALTER TABLE calculations ADD COLUMN tags TEXT")
-        
+
         # Create indices for common queries
         await self._db.execute("""
-            CREATE INDEX IF NOT EXISTS idx_element 
+            CREATE INDEX IF NOT EXISTS idx_element
             ON calculations(element_symbol)
         """)
         await self._db.execute("""
-            CREATE INDEX IF NOT EXISTS idx_force 
+            CREATE INDEX IF NOT EXISTS idx_force
             ON calculations(force_name)
         """)
         await self._db.execute("""
-            CREATE INDEX IF NOT EXISTS idx_started 
+            CREATE INDEX IF NOT EXISTS idx_started
             ON calculations(started_at)
         """)
         await self._db.execute("""
-            CREATE INDEX IF NOT EXISTS idx_phase 
+            CREATE INDEX IF NOT EXISTS idx_phase
             ON calculations(phase)
         """)
-        
+
         await self._db.commit()
         self._initialized = True
-    
+
     async def close(self):
         """Close the database connection."""
         if self._db:
             await self._db.close()
             self._db = None
             self._initialized = False
-    
+
     async def save_calculation(self, status: CalculationStatus, request: Optional[CalculationRequest] = None):
         """
         Save a calculation to the database.
-        
+
         Args:
             status: The calculation status to save.
             request: Optional original request for tag generation.
         """
         await self.initialize()
-        
+
         nucleus = status.nucleus
         results_json = None
         if status.results:
             results_json = status.results.model_dump_json()
-        
+
         # Auto-generate tags if not already set
         tags = status.tags if status.tags else self._generate_tags_from_request(request) if request else self._generate_tags_from_status(status)
         tags_json = json.dumps(tags) if tags else None
-        
+
         await self._db.execute("""
             INSERT OR REPLACE INTO calculations (
                 id, protons, neutrons, element_symbol, mass_number,
@@ -187,21 +187,21 @@ class RunStorage:
             status.progress.model_dump_json() if status.progress else None,
             tags_json,
         ))
-        
+
         await self._db.commit()
-    
+
     def _generate_tags_from_request(self, request: CalculationRequest) -> List[str]:
         """
         Auto-generate tags based on calculation request configuration.
-        
+
         Args:
             request: The calculation request.
-            
+
         Returns:
             List of generated tags.
         """
         tags = []
-        
+
         # Constraint tags
         if request.constraint.type != ConstraintType.NONE:
             tags.append("constrained")
@@ -209,7 +209,7 @@ class RunStorage:
                 tags.append("multipole")
             elif request.constraint.type == ConstraintType.BETA_GAMMA:
                 tags.append("beta-gamma")
-        
+
         # Pairing tags
         if request.pairing.type != PairingType.NONE:
             tags.append("pairing")
@@ -217,25 +217,25 @@ class RunStorage:
                 tags.append("vdi")
             elif request.pairing.type == PairingType.DDDI:
                 tags.append("dddi")
-        
+
         return tags
-    
+
     def _generate_tags_from_status(self, status: CalculationStatus) -> List[str]:
         """
         Auto-generate tags based on calculation status (fallback for backward compatibility).
-        
+
         Args:
             status: The calculation status.
-            
+
         Returns:
             List of generated tags.
         """
         tags = []
-        
+
         # Surface scan tag
         if status.run_type == RunType.SURFACE:
             tags.append("surface-scan")
-        
+
         return tags
 
     async def save_surface(self, surface_id: str, nucleus: NucleusInput, force_name: str, result: BetaSurfaceResult, request: Optional[BetaSurfaceRequest] = None):
@@ -244,10 +244,10 @@ class RunStorage:
 
         results_json = result.model_dump_json()
         now = datetime.now().isoformat()
-        
+
         # Auto-generate tags for surface scan
         tags = ["surface-scan"]
-        
+
         # Add pairing tags if request is provided
         if request:
             if request.pairing.type != PairingType.NONE:
@@ -256,7 +256,7 @@ class RunStorage:
                     tags.append("vdi")
                 elif request.pairing.type == PairingType.DDDI:
                     tags.append("dddi")
-        
+
         tags_json = json.dumps(tags)
 
         await self._db.execute("""
@@ -288,19 +288,19 @@ class RunStorage:
         ))
 
         await self._db.commit()
-    
+
     async def get_calculation(self, calc_id: str) -> Optional[CalculationStatus]:
         """
         Get a calculation by ID.
-        
+
         Args:
             calc_id: The calculation ID.
-            
+
         Returns:
             The calculation status, or None if not found.
         """
         await self.initialize()
-        
+
         async with self._db.execute(
             "SELECT * FROM calculations WHERE id = ?",
             (calc_id,)
@@ -309,26 +309,26 @@ class RunStorage:
             if row:
                 return self._row_to_status(row)
         return None
-    
+
     async def delete_calculation(self, calc_id: str) -> bool:
         """
         Delete a calculation from history.
-        
+
         Args:
             calc_id: The calculation ID.
-            
+
         Returns:
             True if deleted, False if not found.
         """
         await self.initialize()
-        
+
         cursor = await self._db.execute(
             "DELETE FROM calculations WHERE id = ?",
             (calc_id,)
         )
         await self._db.commit()
         return cursor.rowcount > 0
-    
+
     async def get_history(
         self,
         filter: Optional[HistoryFilter] = None,
@@ -339,23 +339,23 @@ class RunStorage:
     ) -> HistoryResponse:
         """
         Get calculation history with filtering and pagination.
-        
+
         Args:
             filter: Optional filters to apply.
             page: Page number (1-indexed).
             page_size: Number of results per page.
             sort_by: Column to sort by.
             sort_desc: Sort descending if True.
-            
+
         Returns:
             Paginated history response.
         """
         await self.initialize()
-        
+
         # Build query
         conditions = []
         params = []
-        
+
         if filter:
             if filter.element:
                 conditions.append("element_symbol = ?")
@@ -381,24 +381,24 @@ class RunStorage:
             if filter.to_date:
                 conditions.append("started_at <= ?")
                 params.append(filter.to_date.isoformat())
-        
+
         where_clause = ""
         if conditions:
             where_clause = "WHERE " + " AND ".join(conditions)
-        
+
         # Validate sort column
         valid_columns = ["started_at", "completed_at", "total_energy", "mass_number", "element_symbol"]
         if sort_by not in valid_columns:
             sort_by = "started_at"
-        
+
         sort_order = "DESC" if sort_desc else "ASC"
-        
+
         # Get total count
         count_query = f"SELECT COUNT(*) FROM calculations {where_clause}"
         async with self._db.execute(count_query, params) as cursor:
             row = await cursor.fetchone()
             total = row[0]
-        
+
         # Get paginated results
         offset = (page - 1) * page_size
         query = f"""
@@ -407,14 +407,14 @@ class RunStorage:
             LIMIT ? OFFSET ?
         """
         params.extend([page_size, offset])
-        
+
         calculations = []
         async with self._db.execute(query, params) as cursor:
             async for row in cursor:
                 calculations.append(self._row_to_summary(row))
-        
+
         total_pages = (total + page_size - 1) // page_size
-        
+
         return HistoryResponse(
             calculations=calculations,
             total=total,
@@ -422,19 +422,19 @@ class RunStorage:
             page_size=page_size,
             total_pages=total_pages,
         )
-    
+
     async def get_results(self, calc_id: str) -> Optional[CalculationResults]:
         """
         Get the full results for a calculation.
-        
+
         Args:
             calc_id: The calculation ID.
-            
+
         Returns:
             The calculation results, or None if not found.
         """
         await self.initialize()
-        
+
         async with self._db.execute(
             "SELECT results_json, run_type FROM calculations WHERE id = ?",
             (calc_id,)
@@ -458,11 +458,11 @@ class RunStorage:
             if row and row["results_json"] and row["run_type"] == RunType.SURFACE.value:
                 return BetaSurfaceResult.model_validate_json(row["results_json"])
         return None
-    
+
     def _row_to_status(self, row) -> CalculationStatus:
         """Convert a database row to CalculationStatus."""
         from jax_hfbfft.gui.models import CalculationProgress
-        
+
         results = None
         surface_results = None
         if row["results_json"]:
@@ -470,14 +470,14 @@ class RunStorage:
                 surface_results = BetaSurfaceResult.model_validate_json(row["results_json"])
             else:
                 results = CalculationResults.model_validate_json(row["results_json"])
-        
+
         nucleus = NucleusInput(
             protons=row["protons"],
             neutrons=row["neutrons"],
         )
-        
+
         phase = CalculationPhase(row["phase"])
-        
+
         # Parse tags from JSON
         tags = []
         if row["tags"]:
@@ -485,7 +485,7 @@ class RunStorage:
                 tags = json.loads(row["tags"])
             except (json.JSONDecodeError, TypeError):
                 tags = []
-        
+
         return CalculationStatus(
             id=row["id"],
             nucleus=nucleus,
@@ -506,7 +506,7 @@ class RunStorage:
             surface_results=surface_results,
             tags=tags,
         )
-    
+
     def _row_to_summary(self, row) -> CalculationSummary:
         """Convert a database row to CalculationSummary."""
         # Parse tags from JSON
@@ -516,7 +516,7 @@ class RunStorage:
                 tags = json.loads(row["tags"])
             except (json.JSONDecodeError, TypeError):
                 tags = []
-        
+
         return CalculationSummary(
             id=row["id"],
             nucleus_symbol=row["element_symbol"],

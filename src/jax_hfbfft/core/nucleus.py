@@ -13,80 +13,80 @@ from typing import Optional
 class Nucleus:
     """
     Specification of a nuclear system.
-    
+
     This immutable class defines the basic properties of a nucleus including
     proton number (Z), neutron number (N), and optionally a name/symbol.
-    
+
     Attributes:
         protons (int): Number of protons (Z)
         neutrons (int): Number of neutrons (N)
         name (str, optional): Optional name or symbol for the nucleus
-        
+
     Properties:
         mass_number (int): Total nucleon number A = Z + N
         charge_number (int): Same as protons (Z)
-        
+
     Examples:
         >>> # Create Sn-132 by specifying protons and neutrons
         >>> nucleus = Nucleus(protons=50, neutrons=82)
         >>> print(f"A={nucleus.mass_number}, Z={nucleus.charge_number}")
         A=132, Z=50
-        
+
         >>> # Create with a name
         >>> pb208 = Nucleus(protons=82, neutrons=126, name="Pb-208")
-        
+
         >>> # Use class method for common isotopes
         >>> ca40 = Nucleus.from_symbol("Ca", mass_number=40)
     """
-    
+
     protons: int
     neutrons: int
     name: Optional[str] = None
-    
+
     def __post_init__(self):
         """Validate nucleus parameters."""
         if self.protons < 0:
             raise ValueError(f"Number of protons must be non-negative, got {self.protons}")
         if self.neutrons < 0:
             raise ValueError(f"Number of neutrons must be non-negative, got {self.neutrons}")
-    
+
     @property
     def mass_number(self) -> int:
         """Total nucleon number A = Z + N."""
         return self.protons + self.neutrons
-    
+
     @property
     def charge_number(self) -> int:
         """Charge number (same as proton number)."""
         return self.protons
-    
+
     @property
     def Z(self) -> int:
         """Proton number (alias for charge_number)."""
         return self.protons
-    
+
     @property
     def N(self) -> int:
         """Neutron number."""
         return self.neutrons
-    
+
     @property
     def A(self) -> int:
         """Mass number (alias for mass_number)."""
         return self.mass_number
-    
+
     @classmethod
     def from_symbol(cls, symbol: str, mass_number: int) -> "Nucleus":
         """
         Create a Nucleus from element symbol and mass number.
-        
+
         Args:
             symbol: Element symbol (e.g., "Ca", "Sn", "Pb")
             mass_number: Total number of nucleons
-            
+
         Returns:
             Nucleus instance
-            
+
         Examples:
             >>> ca40 = Nucleus.from_symbol("Ca", 40)
             >>> sn132 = Nucleus.from_symbol("Sn", 132)
@@ -112,25 +112,25 @@ class Nucleus:
             "Cn": 112, "Nh": 113, "Fl": 114, "Mc": 115, "Lv": 116, "Ts": 117,
             "Og": 118
         }
-        
+
         if symbol not in element_z:
             raise ValueError(f"Unknown element symbol: {symbol}")
-        
+
         z = element_z[symbol]
         n = mass_number - z
-        
+
         if n < 0:
             raise ValueError(
                 f"Invalid mass number {mass_number} for {symbol} (Z={z}): "
                 f"would give negative neutron number"
             )
-        
+
         return cls(protons=z, neutrons=n, name=f"{symbol}-{mass_number}")
-    
+
     def __str__(self) -> str:
         if self.name:
             return self.name
         return f"Z={self.protons}, N={self.neutrons}"
-    
+
     def __repr__(self) -> str:
         return f"Nucleus(protons={self.protons}, neutrons={self.neutrons}, name={self.name!r})"

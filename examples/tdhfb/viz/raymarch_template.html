@@ -770,12 +770,11 @@ async function recordGif() {
     const blob = new Blob([out.bytes()], { type: 'image/gif' });
     const name = `${ds.id}_t${ds.times[seq[0]].toFixed(0)}-${ds.times[seq[seq.length - 1]].toFixed(0)}.gif`;
     msg(`${(blob.size / 1e6).toFixed(1)} MB GIF ready`);
-    $('gifImg').src = URL.createObjectURL(blob); $('gifOut').hidden = false;
-    const dl = window.claude && window.claude.use ? await window.claude.use('downloads') : null;
-    if (dl) {
-      try { await dl.save({ filename: name, data: blob }); msg(`saved ${name}`); }
-      catch (e) { msg(e && e.code === 'declined' ? 'save declined; the GIF is shown below' : `could not save (${e && e.code || 'error'}); the GIF is shown below`); }
-    } else msg('saving is not available in this view; the GIF is shown below');
+    const url = URL.createObjectURL(blob);
+    $('gifImg').src = url; $('gifOut').hidden = false;
+    const a = document.createElement('a');
+    a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
+    msg(`saved ${name} (also shown below)`);
   } catch (e) {
     msg(e.message === 'cancelled' ? 'recording stopped' : `recording failed: ${e.message}`);
   } finally {

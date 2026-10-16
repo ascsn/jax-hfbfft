@@ -8,7 +8,7 @@ Usage:
     # At the start of your script (before any JAX operations):
     from jax_hfbfft.utils.jit_cache import enable_jit_cache
     enable_jit_cache()
-    
+
     # Or set environment variables BEFORE importing JAX:
     # export JAX_ENABLE_COMPILATION_CACHE=true
     # export JAX_COMPILATION_CACHE_DIR=/path/to/cache
@@ -27,57 +27,57 @@ def enable_jit_cache(
 ) -> str:
     """
     Enable persistent JIT compilation caching for JAX.
-    
+
     This stores compiled XLA computations on disk so they can be reused
     across Python sessions. This is particularly useful for:
-    
+
     1. **Uncertainty Quantification**: Varying force parameters (t0, t1, v0, etc.)
        doesn't change the computation graph, so cached compilations are reused.
-       
+
     2. **Constrained Calculations**: Adding constraint potentials uses the same
        compiled kernels as unconstrained calculations.
-       
+
     3. **Same Grid/Basis Calculations**: Any calculations with the same grid size
        and number of states will reuse cached compilations.
-    
+
     Things that trigger recompilation (cache miss):
     - Different grid dimensions (nx, ny, nz)
     - Different number of states (npsi_n, npsi_p)
     - Different pairing type (ipair)
     - Different static configuration options
-    
+
     Args:
         cache_dir: Directory for cache storage. Defaults to ~/.jax_cache
-        min_entry_size: Minimum compiled object size to cache (bytes). 
+        min_entry_size: Minimum compiled object size to cache (bytes).
                        Default 0 caches everything.
         min_compile_time: Minimum compile time to cache (seconds).
                          Default 0 caches everything.
-    
+
     Returns:
         The path to the cache directory being used.
-        
+
     Example:
         >>> from jax_hfbfft.utils.jit_cache import enable_jit_cache
         >>> cache_path = enable_jit_cache()
         >>> print(f"JIT cache at: {cache_path}")
-        
+
         # Now run your calculation - first run will be slow
         # Subsequent runs with same grid/basis will be fast
     """
     import jax
-    
+
     if cache_dir is None:
         cache_dir = str(Path.home() / ".jax_cache" / "jax_hfbfft")
-    
+
     # Create cache directory if it doesn't exist
     Path(cache_dir).mkdir(parents=True, exist_ok=True)
-    
+
     # Use JAX's config API (works even after JAX is imported)
     jax.config.update("jax_enable_compilation_cache", True)
     jax.config.update("jax_compilation_cache_dir", cache_dir)
     jax.config.update("jax_persistent_cache_min_compile_time_secs", min_compile_time)
     jax.config.update("jax_persistent_cache_min_entry_size_bytes", min_entry_size)
-    
+
     return cache_dir
 
 
@@ -101,47 +101,47 @@ def get_cache_config() -> dict:
 def clear_jit_cache(cache_dir: Optional[str] = None) -> int:
     """
     Clear the JIT compilation cache.
-    
+
     Args:
         cache_dir: Directory to clear. Defaults to ~/.jax_cache/jax_hfbfft
-        
+
     Returns:
         Number of files deleted.
     """
     import shutil
-    
+
     if cache_dir is None:
         cache_dir = str(Path.home() / ".jax_cache" / "jax_hfbfft")
-    
+
     cache_path = Path(cache_dir)
     if not cache_path.exists():
         return 0
-    
+
     count = sum(1 for _ in cache_path.rglob("*") if _.is_file())
     shutil.rmtree(cache_path)
     cache_path.mkdir(parents=True, exist_ok=True)
-    
+
     return count
 
 
 def get_cache_info(cache_dir: Optional[str] = None) -> dict:
     """
     Get information about the JIT cache.
-    
+
     Returns:
         Dictionary with cache statistics.
     """
     if cache_dir is None:
         cache_dir = str(Path.home() / ".jax_cache" / "jax_hfbfft")
-    
+
     cache_path = Path(cache_dir)
     if not cache_path.exists():
         return {"exists": False, "path": cache_dir}
-    
+
     files = list(cache_path.rglob("*"))
     file_count = sum(1 for f in files if f.is_file())
     total_size = sum(f.stat().st_size for f in files if f.is_file())
-    
+
     return {
         "exists": True,
         "path": cache_dir,

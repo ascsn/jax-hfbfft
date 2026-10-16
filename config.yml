@@ -12,7 +12,7 @@ nucleus:
   # Number of protons and neutrons in the nucleus
   protons: 92        # Z (atomic number)
   neutrons: 146       # N (neutron number)
-  
+
   # Name for output files (optional, auto-generated if not provided)
   name: "U238"       # e.g., "O16", "Sn132", "Pb208"
 
@@ -22,27 +22,27 @@ nucleus:
 force:
   # Skyrme force name: SLy4, SLy5, SkM*, SkP, SV-min, UNEDF0, UNEDF1, UNEDF2
   name: "SLy4"
-  
+
   # Pairing interaction type:
   #   0 = No pairing (pure Hartree-Fock)
   #   5 = Volume Delta Interaction (VDI)
   #   6 = Density-Dependent Delta Interaction (DDDI, recommended)
   ipair: 6
-  
+
   # Use BCS approximation (true) or HFB (false)
   # BCS is faster and usually sufficient; HFB allows for more complex pairing
   use_bcs: false
-  
+
   # Pairing strength (MeV·fm³)
   # Negative values use force-specific defaults
   # Typical values: 300-400 for medium-mass nuclei
   v0_neutron: 362    # Neutron pairing strength
   v0_proton: 362    # Proton pairing strength
-  
+
   # Density at which DDDI pairing strength is half of surface value (fm⁻³)
   # Only used with ipair=6 (DDDI)
   rho0_pairing: 0.32  # Typical nuclear saturation density
-  
+
   # Energy cutoff for pairing window (MeV)
   # Only states within this energy from Fermi surface participate in pairing
   # Larger values = more states, longer computation
@@ -56,7 +56,7 @@ force:
   # Floor on u*v (sqrt(uv_floor)) and, capped at 1e-10, on v^2 (FORTRAN 1e-6).
   # Statics that seed TDHFB want 0.
   # uv_floor: 1.0e-6
-  
+
   # Include center-of-mass correction (recommended: true)
   include_cm_correction: true
 
@@ -70,7 +70,7 @@ grid:
   nx: 32
   ny: 32
   nz: 32
-  
+
   # Grid spacing in each direction (fm)
   # Smaller = more accurate but needs larger box
   # Typical: 0.8-1.0 fm for most calculations
@@ -78,7 +78,7 @@ grid:
   dx: .8  # null = auto-determine
   dy: .8
   dz: .8
-  
+
   # Box size (fm) - alternative to specifying dx/dy/dz
   # Specify either spacing OR box size, not both
   # box_x: 24.0
@@ -95,7 +95,7 @@ basis:
   # For pairing: use 2-3× the particle number for convergence
   npsi_neutron: 292  # null = auto-determine
   npsi_proton: 184   # null = auto-determine
-  
+
   # Manual specification (overrides auto)
   # npsi_neutron: 16
   # npsi_proton: 16
@@ -109,7 +109,7 @@ initialization:
   #   "woods_saxon" - Woods-Saxon potential
   #   "random" - Random wavefunctions (for testing)
   method: "harmonic_oscillator"
-  
+
   # Harmonic oscillator parameters (only for method="harmonic_oscillator")
   # Oscillator length parameters in fm
   # Typical: 2.5-3.5 fm for medium-mass nuclei
@@ -123,27 +123,27 @@ initialization:
 iteration:
   # Maximum number of iterations
   max_iterations: 1200
-  
+
   # Convergence threshold (MeV)
   # Calculation stops when energy fluctuation < threshold
   # Typical: 1e-5 to 1e-7 for production runs
   convergence_threshold: 1.0e-20
-  
+
   # Gradient descent damping parameter
   # Controls step size in imaginary time evolution
   # Smaller = more stable but slower; typical: 0.3-0.5
   x0dmp: 0.45
-  
+
   # Preconditioning energy scale (MeV)
   # Typical: 20-100 MeV
   e0dmp: 100.0
-  
+
   # Density mixing parameter (0.0 to 1.0)
   # Fraction of new density mixed with old
   # Smaller = more stable; typical: 0.3-0.7
   # Legacy value: 0.2
   density_mixing: 0.2
-  
+
   # Full diagonalization for iterations <= diag_start (legacy inidiag)
   # Legacy run uses inidiag=30: tdiag=True for the first 30 main-loop iterations.
   diag_start: 30
@@ -173,10 +173,10 @@ iteration:
 physics:
   # Include Coulomb interaction for protons
   include_coulomb: true
-  
+
   # Time-reversal symmetry (true = even-even nuclei, standard)
   time_reversal: true
-  
+
   # Include time-odd terms in mean field
   # Usually false for ground states, true for odd-mass or rotating nuclei
   time_odd: false
@@ -188,7 +188,7 @@ output:
   # Base directory for output files
   # Will create subdirectory: output_dir/nucleus_name/
   output_dir: "hfb_results"
-  
+
   # Print interval (iterations)
   # Print progress every N iterations
   print_interval: 50
@@ -196,7 +196,7 @@ output:
   # Single-particle info (sinfo) print interval (iterations)
   # How often to print the detailed sinfo block (Fermi energies, pairing, etc.)
   sinfo_interval: 50
-  
+
   # Save detailed results files
   save_convergence: true      # Iteration-by-iteration convergence data
   save_energies: true          # Detailed energy breakdowns
@@ -206,10 +206,10 @@ output:
   save_single_particle: true   # Single-particle spectra
   save_pairing: true           # Pairing properties
   save_wavefunctions: false    # Full wavefunctions (large files!)
-  
+
   # Write final summary to stdout
   verbose: true
-  
+
   # Create plots (requires matplotlib)
   make_plots: false
 
@@ -250,17 +250,17 @@ advanced:
   # JAX precision (32 or 64)
   # Use 64 for production runs, 32 for faster testing
   precision: 64
-  
+
   # JAX device (cpu, gpu, or tpu)
   # null = auto-detect
   device: null
-  
+
   # Enable JAX JIT compilation
   use_jit: true
-  
+
   # Random seed for reproducibility (if using random initialization)
   random_seed: 42
-  
+
   # Restart from previous calculation
   restart: false
   restart_file: null
@@ -288,17 +288,17 @@ advanced:
 #   # Units: fm^λ (e.g., Q20 in fm², Q30 in fm³)
 #   #
 #   # Examples:
-#   
+#
 #   # Single Q20 constraint (prolate deformation)
 #   # multipoles:
 #   #   Q20: 5.0
-#   
+#
 #   # Multiple constraints (Q20 + Q30 + triaxial Q22)
 #   # multipoles:
 #   #   Q20: 5.0    # Quadrupole (fm²)
 #   #   Q30: 2.0    # Octupole (fm³)
 #   #   Q22: 1.0    # Triaxiality (fm²)
-#   
+#
 #   # Using tuple notation for arbitrary multipoles
 #   # Format: [lambda, mu] for Q_λμ
 #   # multipoles:
@@ -306,7 +306,7 @@ advanced:
 #   #   [3, 0]: 2.0     # Same as Q30
 #   #   [4, 0]: 1.0     # Q40 (hexadecapole)
 #   #   [5, 1]: 0.5     # Q51 (arbitrary higher multipole)
-#   
+#
 #   # =========================================================================
 #   # OPTION 2: BETA-GAMMA PARAMETERS (Hill-Wheeler parameterization)
 #   # =========================================================================
@@ -326,43 +326,43 @@ advanced:
 #   #   r0: Radius parameter in fm (default: 1.2)
 #   #
 #   # Examples:
-#   
+#
 #   # Prolate deformation (football shape)
 #   # beta_gamma:
 #   #   beta2: 0.25
-#   
+#
 #   # Oblate deformation (pancake shape) - using negative beta
 #   # beta_gamma:
 #   #   beta2: -0.20
-#   
+#
 #   # Oblate about the y axis instead of z (gamma=60)
 #   # beta_gamma:
 #   #   beta2: 0.20
 #   #   gamma: 60
-#   
+#
 #   # Triaxial deformation
 #   # beta_gamma:
 #   #   beta2: 0.30
 #   #   gamma: 30
-#   
+#
 #   # Octupole deformation (pear shape, e.g., Ra-224)
 #   # beta_gamma:
 #   #   beta2: 0.10
 #   #   beta3: 0.08
 #   #   gamma: 0
-#   
+#
 #   # Superdeformed (high-spin states)
 #   # beta_gamma:
 #   #   beta2: 0.60
 #   #   gamma: 0
-#   
+#
 #   # =========================================================================
 #   # PRINCIPAL AXES ALIGNMENT
 #   # =========================================================================
 #   # Enforce alignment with principal axes (adds 6 constraints)
 #   # Useful for triaxial systems to prevent rotation
 #   # principal_axes: false
-#   
+#
 #   # =========================================================================
 #   # ALGORITHM PARAMETERS (advanced users)
 #   # =========================================================================

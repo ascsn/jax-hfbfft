@@ -1,10 +1,11 @@
 # Skyrme Force Parameterizations for JAX-HFBFFT
-# 
+#
 # This file contains the standard Skyrme parameters for various forces.
 # Parameters are in standard nuclear physics units:
 #   - t0, t1, t2, t3 in MeV·fm^3, MeV·fm^5, MeV·fm^5, MeV·fm^(3+3α)
 #   - x0, x1, x2, x3 are dimensionless
-#   - b4p (spin-orbit) in MeV·fm^5
+#   - t4 and b4p (spin-orbit) in MeV·fm^5: b4 = t4/2 and b4' = b4p, so a standard
+#     Skyrme force with strength W0 has t4 = W0 and b4p = W0/2
 #   - power (α) is dimensionless
 #   - h2m is ℏ²/2m in MeV·fm²
 #   - zpe selects the centre-of-mass correction: 0 = h2m*(1-1/A), 1 = 17.3/A^0.2,
@@ -31,7 +32,7 @@ SLy4:
 SLy5:
   description: "Lyon Skyrme parameterization with different spin-orbit"
   reference: "Chabanat et al., Nucl. Phys. A 635 (1998) 231"
-  # spin-orbit: t4 = W0 (b4 = W0/2), b4p = W0/2 (FORTRAN forces.data, SkyAx, HFBTHO agree); was t4 0, b4p W0 (2026-10-16); fitted with J^2 terms, which this code lacks
+  # fitted with J^2 terms, which are not implemented
   ex: 1
   zpe: 0
   h2m: [20.73553, 20.73553]
@@ -50,9 +51,8 @@ SLy5:
 SLy6:
   description: "Lyon Skyrme parameterization"
   reference: "Chabanat et al., Nucl. Phys. A 635 (1998) 231"
-  # spin-orbit: t4 = W0 (b4 = W0/2), b4p = W0/2 (FORTRAN forces.data, SkyAx, HFBTHO agree); was t4 0, b4p W0 (2026-10-16)
   ex: 1
-  zpe: 3  # fitted with the full (two-body) c.m. correction (HFBTHO use_full_cm_cor)
+  zpe: 3  # fitted with the full (two-body) c.m. correction
   h2m: [20.73553, 20.73553]
   t0: -2479.50
   t1: 462.18
@@ -69,7 +69,6 @@ SLy6:
 SkM:
   description: "Original SkM parameterization"
   reference: "Krivine et al., Nucl. Phys. A 336 (1980) 155"
-  # spin-orbit: t4 = W0 (b4 = W0/2), b4p = W0/2 (FORTRAN forces.data, SkyAx, HFBTHO agree); was t4 0, b4p W0 (2026-10-16)
   ex: 1
   zpe: 0
   h2m: [20.73553, 20.73553]
@@ -88,7 +87,6 @@ SkM:
 SkM*:
   description: "Modified SkM with improved fission barriers"
   reference: "Bartel et al., Nucl. Phys. A 386 (1982) 79"
-  # spin-orbit: t4 = W0 (b4 = W0/2), b4p = W0/2 (FORTRAN forces.data, SkyAx, HFBTHO agree); was t4 0, b4p W0 (2026-10-16)
   ex: 1
   zpe: 0
   h2m: [20.73553, 20.73553]
@@ -107,7 +105,7 @@ SkM*:
 SkP:
   description: "Skyrme parameterization with pairing"
   reference: "Dobaczewski et al., Nucl. Phys. A 422 (1984) 103"
-  # spin-orbit: t4 = W0 (b4 = W0/2), b4p = W0/2 (FORTRAN forces.data, SkyAx, HFBTHO agree); was t4 0, b4p W0 (2026-10-16); t1-x3 to full FORTRAN precision; fitted with J^2 terms, which this code lacks
+  # fitted with J^2 terms, which are not implemented
   ex: 1
   zpe: 0
   h2m: [20.73553, 20.73553]
@@ -126,7 +124,6 @@ SkP:
 SIII:
   description: "Classic Skyrme III parameterization"
   reference: "Beiner et al., Nucl. Phys. A 238 (1975) 29"
-  # spin-orbit: t4 = W0 (b4 = W0/2), b4p = W0/2 (FORTRAN forces.data, SkyAx, HFBTHO agree); was t4 0, b4p W0 (2026-10-16)
   ex: 1
   zpe: 0
   h2m: [20.73553, 20.73553]
@@ -146,10 +143,9 @@ UNEDF0:
   description: "UNEDF0 universal functional"
   reference: "Kortelainen et al., Phys. Rev. C 82 (2010) 024313"
   ex: 1
-  zpe: 0  # HFBTHO UNE0 "c.m. correction: T" = h2m(1-1/A)
+  zpe: 0  # as HFBTHO's UNE0 (one-body c.m. correction)
   h2m: [20.73553, 20.73553]
-  # t, x, b4, b4p, sigma from the HFBTHO UNE0 printout (2026-10-16); the previous
-  # entry had wrong t2 (417.64), power (0.32125), t4 (0) and b4p (74.03)
+  # t, x, b4, b4p and power as defined in HFBTHO (UNE0)
   t0: -1883.68781034247695
   t1: 277.500212238931113
   t2: 608.430905591534383
@@ -166,13 +162,13 @@ UNEDF1:
   description: "UNEDF1 universal functional"
   reference: "Kortelainen et al., Phys. Rev. C 85 (2012) 024304"
   ex: 1
-  zpe: 2  # no c.m. correction (HFBTHO UNE1: "c.m. correction: F")
+  zpe: 2  # as HFBTHO's UNE1 (no c.m. correction)
   h2m: [20.73553, 20.73553]
   t0: -2078.32802326
   t1: 239.40081204
   t2: 1575.11954190
   t3: 14263.64624708
-  t4: 76.7361441232  # 2*b4; b4, b4p, sigma from HFBTHO UNE1 printout (2026-09-23)
+  t4: 76.7361441232  # 2*b4; b4, b4p and power as defined in HFBTHO (UNE1)
   x0: 0.05375692
   x1: -5.07723238
   x2: -1.36650561

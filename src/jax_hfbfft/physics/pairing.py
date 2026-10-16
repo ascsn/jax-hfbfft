@@ -6,8 +6,7 @@ This module implements BCS pairing with:
 - Density-dependent delta interaction (DDDI)
 - Fermi energy search via Brent's method
 - Soft cutoff functions for pairing windows
-- Lipkin-Nogami approximate particle-number projection (validated against
-  HFBTHO+LN on the UNEDF1 Ca chain, 2026-09-30)
+- Lipkin-Nogami approximate particle-number projection
 """
 
 import jax
@@ -24,7 +23,7 @@ from jax_hfbfft.core.force import Force
 class Pairing:
     """
     Container for pairing results.
-    
+
     Attributes:
         eferm: Fermi energy per isospin (2,)
         epair: Pairing energy per isospin (2,)
@@ -67,7 +66,7 @@ def find_fermi_energy_jax(
 ) -> float:
     """
     Find Fermi energy using JAX-native bisection search.
-    
+
     This is much faster than scipy's brentq as it avoids CPU-GPU synchronization.
     """
     def body_fun(state):
@@ -81,7 +80,7 @@ def find_fermi_energy_jax(
     # Initial brackets - check if expansion is needed
     f_low = bcs_occupation(emin, sp_energy, deltaf, wstates) - target_n
     f_high = bcs_occupation(emax, sp_energy, deltaf, wstates) - target_n
-    
+
     # Simple bracket expansion
     emin = jnp.where(f_low > 0, emin - 100.0, emin)
     emax = jnp.where(f_high < 0, emax + 100.0, emax)
@@ -92,7 +91,7 @@ def find_fermi_energy_jax(
         body_fun,
         (emin, emax, 0)
     )
-    
+
     return (low + high) / 2.0
 
 
@@ -104,17 +103,17 @@ def bcs_occupation(
 ) -> jax.Array:
     """
     Calculate particle number for given Fermi energy.
-    
+
     BCS occupation: v^2 = 0.5 * (1 - (e - ef) / sqrt((e - ef)^2 + Delta^2))
     """
     edif = sp_energy - eferm
     equasi = jnp.sqrt(edif**2 + deltaf**2)
     equasi_safe = jnp.maximum(equasi, 1.0e-20)
-    
+
     # BCS v^2
     v2 = 0.5 * (1.0 - edif / equasi_safe)
     v2 = jnp.clip(v2, 1.0e-10, 1.0 - 1.0e-10)
-    
+
     return jnp.sum(v2 * wstates)
 
 
@@ -128,14 +127,14 @@ def find_fermi_energy(
 ) -> float:
     """
     Find Fermi energy that gives target particle number.
-    
+
     Args:
         target_n: Target particle number (N or Z)
         sp_energy: Single-particle energies
         deltaf: Pairing gaps
         wstates: State degeneracy weights
         emin, emax: Search bounds
-        
+
     Returns:
         Fermi energy
     """
@@ -145,14 +144,14 @@ def find_fermi_energy(
 def soft_cutoff(energy: jax.Array, cutoff: float, width: float) -> jax.Array:
     """
     Fermi-function soft cutoff.
-    
+
     f(e) = 1 / (1 + exp((e - cutoff) / width))
-    
+
     Args:
         energy: Single-particle energies
         cutoff: Cutoff energy
         width: Cutoff width
-        
+
     Returns:
         Cutoff factors in [0, 1]
     """
@@ -166,25 +165,25 @@ def compute_bcs_occupations(
 ) -> Tuple[jax.Array, jax.Array]:
     """
     Compute BCS occupation factors v^2 and uv.
-    
+
     Args:
         sp_energy: Single-particle energies
         deltaf: Pairing gaps
         eferm: Fermi energy
-        
+
     Returns:
         (v2, uv) - occupation and anomalous occupation
     """
     edif = sp_energy - eferm
     equasi = jnp.sqrt(edif**2 + deltaf**2)
     equasi_safe = jnp.maximum(equasi, 1.0e-20)
-    
+
     v2 = 0.5 * (1.0 - edif / equasi_safe)
     v2 = jnp.clip(v2, 1.0e-10, 1.0 - 1.0e-10)
-    
+
     # uv = sqrt(v^2 * (1 - v^2))
     uv = jnp.sqrt(jnp.maximum(v2 * (1.0 - v2), 1.0e-10))
-    
+
     return v2, uv
 
 
@@ -205,10 +204,9 @@ def compute_lambda2(
         SDtor    = 32 * ( S_u2v2^2         - S_u4v4 )
         G_eff    = <Delta>^2 / E_pair
 
-    with the sums running over paired states.  THE LEADING SIGN IS NOT COPIED
-    -- see the note at the sign flip below; HFBTHO's E_pair is negative and
-    this code's is positive, so reproducing the minus inverted the result.
-    Note SNtor/SDtor reduces to
+    with the sums running over paired states.  The leading minus is dropped
+    because HFBTHO's E_pair is negative and this code's is positive (see the
+    sign note below).  SNtor/SDtor reduces to
     (1/4)(Su3v1*Su1v3 - Su4v4)/(Su2v2^2 - Su4v4), matching the closed form in
     that file's doc comment.  The expression is invariant under u <-> v, so
     the u/v naming inversion inside the reference routine is immaterial.
@@ -233,12 +231,10 @@ def compute_lambda2(
     u = jnp.sqrt(jnp.maximum(1.0 - v2c, 0.0))
     v = jnp.sqrt(v2c)
 
-    # HFBTHO's traces run over the canonical states with Omega > 0, i.e. ONE
-    # member of each Kramers pair.  Here both members are explicit states, so
-    # every sum carries a factor 1/2.  Summing over both partners doubled
-    # E_LN outright and distorted SN/SD (whose S_u4v4 terms do not scale with
-    # the squares): measured on UNE1 40-48Ca, E_LN(p) came out -7..-10 MeV at
-    # the Z = 20 closed shell against HFBTHO's -1.55.
+    # HFBTHO's traces run over the canonical states with Omega > 0, one member
+    # of each Kramers pair.  Here both members are explicit states, so every
+    # sum carries a factor 1/2 (the S_u4v4 terms do not scale like the squares,
+    # so this is not an overall normalisation).
     uv = u * v
     half = 0.5
     s_u3v1 = half * jnp.sum(u**3 * v * wstates)
@@ -249,26 +245,11 @@ def compute_lambda2(
     sn = 8.0 * (s_u3v1 * s_u1v3 - s_u4v4)
     sd = 32.0 * (s_u2v2**2 - s_u4v4)
 
-    # ── When is there anything to correct? ──────────────────────────────────
-    # As pairing collapses every one of these sums goes to zero together --
-    # u*v -> 0 state by state -- so SN/SD becomes 0/0 and G_eff = <Delta>^2 /
-    # E_pair becomes 0/0 alongside it.  The result is not large, it is noise.
-    #
-    # The first version of this guard tested for numerical zeros
-    # (|epair| > 1e-8, |avdelt| > 1e-6, |sd| > 1e-13) and that is much too
-    # loose to catch the physical collapse.  Measured on 16O: gap = 0.008 MeV,
-    # S_u2v2 = 3.6e-6, SD = 3.7e-10 -- every threshold passed, the ratio was
-    # computed from noise, and lambda_2 came out at exactly -4.0000, i.e. the
-    # HFBTHO guard rail below.  Clipping made it look bounded while leaving it
-    # wrong, and it feeds `sp_energy + 4*lambda2*v2`, a 16 MeV shift on the
-    # occupied states.
-    #
-    # The right criterion is physical and is already in hand: LN corrects the
-    # particle-number fluctuation, and 4*S_u2v2 = <(Delta N)^2> IS that
-    # fluctuation.  If it is below a thousandth of a particle there is nothing
-    # to correct and lambda_2 = 0 is the exact answer, not an approximation.
-    # The cut sits at a gap of roughly 0.13 MeV, an order of magnitude below
-    # any real pairing gap and an order of magnitude above collapsed 16O.
+    # Collapsed pairing: every sum vanishes together, so SN/SD and G_eff are
+    # 0/0 and the ratio is noise.  LN corrects the particle-number fluctuation
+    # 4 S_u2v2 = <(Delta N)^2>; below 1e-3 particles (a gap of ~0.1 MeV) there
+    # is nothing to correct and lambda_2 = 0 exactly.  Tests for numerical
+    # zeros alone are too loose: a collapsed 16O (gap 0.008 MeV) passes them.
     number_fluct = 4.0 * s_u2v2
     paired = ((number_fluct > 1e-3) & (jnp.abs(epair) > 1e-8)
               & (jnp.abs(avdelt) > 1e-6) & (jnp.abs(sd) > 1e-13))
@@ -276,36 +257,15 @@ def compute_lambda2(
     sd_safe = jnp.where(paired, sd, 1.0)
     g_eff = avdelt**2 / epair_safe
 
-    # ── SIGN.  Not the reference's, and deliberately so. ────────────────────
-    # HFBTHO writes  ala2 = -Geff*(SNtor/SDtor)  with  Geff = del^2/ept, and
-    # this routine reproduced that minus sign verbatim.  But HFBTHO's `ept`
-    # accumulates as  ept1 += akn2*whl/geff_inv  with geff_inv carrying the
-    # sign of an ATTRACTIVE pairing coupling, so its pairing energy is
-    # negative and its Geff with it; the leading minus then delivers a
-    # POSITIVE lambda_2.  This code's convention is the opposite:
-    # epair = sumduv = sum 0.5*wguv*wstates*Delta is a positive magnitude.
-    # Copying the minus across the convention boundary flipped the result.
-    #
-    # The inconsistency is visible without reference to either code.  The
-    # routine below returns  E_LN = -4*lambda_2*S_u2v2  with S_u2v2 > 0 by
-    # construction, and the LN correction must LOWER the energy -- it recovers
-    # correlation energy thrown away by breaking particle number.  So
-    # lambda_2 > 0 is forced.  Measured on 18O before this fix: lambda_2 =
-    # -0.4572 (right magnitude, wrong sign) and E_LN = +2.6376 MeV, i.e. LN
-    # made the nucleus 2.66 MeV LESS bound.
+    # Sign: HFBTHO writes ala2 = -Geff*(SNtor/SDtor) with Geff = del^2/ept,
+    # where its ept is negative (attractive coupling), so its lambda_2 comes
+    # out positive.  Here epair is a positive magnitude, so the minus is
+    # dropped.  lambda_2 > 0 is required: E_LN = -4 lambda_2 S_u2v2 must lower
+    # the energy.
     lam2 = jnp.where(paired, g_eff * sn / sd_safe, 0.0)
 
-    # Reference guard: HFBTHO clips ala2 >= 10 -> 4, "in case ala2 goes to
-    # hell".  lambda_2 is an energy-scale correction of order a fraction of an
-    # MeV, so anything larger is numerical.
-    #
-    # A symmetric negative clip used to sit here too, and it did active harm:
-    # it turned the collapsed-pairing noise into a clean-looking -4.0000 on
-    # both 16O isospins and on 18O's closed proton shell, which reads as a
-    # bounded value rather than the garbage it was, and hid the sign error
-    # above for as long as it was there.  The collapse guard is what handles
-    # that case now; a negative lambda_2 surviving to here means something is
-    # wrong and should be visible, not disguised.
+    # HFBTHO's guard: lambda_2 >= 10 MeV is numerical, reset to 4.  There is
+    # deliberately no negative clip, so a negative lambda_2 stays visible.
     lam2 = jnp.where(lam2 >= 10.0, 4.0, lam2)
     return lam2
 
@@ -324,12 +284,9 @@ def ln_occupations(
     The right-hand side falls monotonically with v2 (lambda2 >= 0), so the root is unique and
     bisection on [0, 1] always finds it.
 
-    Do NOT replace this with the plain substitution v2 <- f(e + 4*lambda2*v2): near the Fermi surface
-    that map has slope 4*lambda2 * f' ~ 4*lambda2/(2*Delta) ~ 1.4 for UNE1 Ca (lambda2 0.7, Delta 1),
-    so it overshoots and oscillates.  Three substitution passes left occupations far from the root
-    (0.69 against 0.86 on 40Ca) and amplified tiny level splittings into anisotropic densities:
-    every LN run deformed 40-48Ca (beta2 0.05-0.14) and ended 0.7-2.7 MeV above HFBTHO+LN, which
-    returns to sphericity from beta2 = +-0.15 (2026-09-29).
+    The plain substitution v2 <- f(e + 4*lambda2*v2) does not converge near the Fermi surface: its
+    slope there is ~4*lambda2/(2*Delta), about 1.4 for UNEDF1 Ca (lambda2 0.7, Delta 1).  Unconverged
+    occupations amplify small level splittings and deform spherical nuclei.
     """
     lam2 = jnp.maximum(lambda2, 0.0)
 
@@ -364,10 +321,10 @@ def find_fermi_energy_ln(
     """
     Fermi energy for Lipkin-Nogami occupations (ln_occupations); N(eferm) is monotonic.
 
-    Each round evaluates N at n_trial Fermi energies AT ONCE and shrinks the bracket to the cell holding
-    target_n, so the bracket falls by n_trial-1 per round (1000 MeV -> ~2e-8 MeV in 6 rounds).  A scalar
-    bisection needed 60 sequential outer steps, each running the inner occupation bisection: 3000
-    sequential steps per call made LN runs ~10x slower than plain HFB.
+    Each round evaluates N at n_trial Fermi energies at once and shrinks the bracket to the cell holding
+    target_n, so the bracket falls by n_trial-1 per round (1000 MeV -> ~2e-8 MeV in 6 rounds).  This
+    keeps the number of sequential steps small; a scalar bisection nested around the occupation
+    bisection is about 10x slower.
     """
     frac = jnp.linspace(0.0, 1.0, n_trial)
 
@@ -429,8 +386,8 @@ def solve_pairing_isospin(
     pairwg = jax.lax.cond(
         pair_cutoff > 0.0,
         lambda _: soft_cutoff(
-            sp_energy, 
-            eferm + pair_cutoff, 
+            sp_energy,
+            eferm + pair_cutoff,
             jnp.maximum(softcut_range * pair_cutoff, 1e-6)
         ),
         lambda _: pairwg,  # The fallback value if pair_cutoff <= 0.0
@@ -441,8 +398,8 @@ def solve_pairing_isospin(
     wstates = jax.lax.cond(
         state_cutoff > 0.0,
         lambda _: soft_cutoff(
-            sp_energy, 
-            eferm + state_cutoff, 
+            sp_energy,
+            eferm + state_cutoff,
             jnp.maximum(softcut_range * state_cutoff, 1e-6)
         ),
         lambda _: wstates,  # The fallback value if state_cutoff <= 0.0
@@ -485,10 +442,9 @@ def solve_pairing_isospin(
     # F = compute_lambda2 evaluated on the LN solution AT that lambda_2.  The
     # bracket starts at [0, F(0)] and is doubled while the residual is still
     # negative (in an open shell F rises with lambda_2, so the root can lie
-    # above F(0)); Illinois regula falsi then converges in a few steps.  All
-    # three pieces fix bugs found against HFBTHO+LN in 2026-09 (see the
-    # docstrings of the helpers).  E_LN = -4 lambda_2 Tr rho(1-rho) depends on
-    # the orbitals only through v2, so the wave-function step is unchanged.
+    # above F(0)); Illinois regula falsi then converges in a few steps.
+    # E_LN = -4 lambda_2 Tr rho(1-rho) depends on the orbitals only through v2,
+    # so the wave-function step is unchanged.
     def ln_solution(lam2):
         ef = find_fermi_energy_ln(particle_number, sp_energy, deltaf_eff, wstates_in, lam2)
         vv = jnp.clip(ln_occupations(ef, sp_energy, deltaf_eff, lam2), vfloor, 1.0 - vfloor)
@@ -556,10 +512,10 @@ def compute_pairing_gaps(
 ) -> jax.Array:
     """
     Compute pairing gaps from wavefunctions and pairing field.
-    
+
     For early iterations, uses a simple estimate. Otherwise computes:
     Delta_i = pairwg_i * integral(v_pair(r) * |psi_i(r)|^2)
-    
+
     Args:
         psi: Wavefunctions (nstates, 2, nx, ny, nz)
         v_pair: Pairing potential (2, nx, ny, nz)
@@ -568,31 +524,31 @@ def compute_pairing_gaps(
         wxyz: Integration weight
         iteration: Current iteration number
         mass_number: Total mass number
-        
+
     Returns:
         Pairing gaps (nstates,)
     """
     nstates = psi.shape[0]
     dtypes = get_dtypes()
-    
+
     # For early iterations, use constant gap estimate
     gap_estimate = 11.2 / jnp.sqrt(jnp.maximum(1.0, mass_number))
     initial_gaps = gap_estimate * jnp.ones(nstates, dtype=dtypes.float)
-    
+
     # Compute |psi|^2 summed over spin
     psi_sq = jnp.real(psi * jnp.conjugate(psi))
     density = jnp.sum(psi_sq, axis=1)  # (nstates, nx, ny, nz)
-    
+
     # Compute gaps using vectorized operations instead of vmap for speed
     # Select v_pair for each state (nstates, nx, ny, nz)
     # isospin is (nstates,)
     v_pair_states = jnp.where(isospin[:, None, None, None] == 0, v_pair[0], v_pair[1])
-    
+
     # Gap_i = wxyz * sum_r (v_pair(r) * density_i(r))
     calculated_gaps = wxyz * jnp.sum(v_pair_states * density, axis=(1, 2, 3))
-    
+
     calculated_gaps = calculated_gaps * pairwg
-    
+
     # Switch between initial estimate and calculated gaps
     return jnp.where(iteration <= 10, initial_gaps, calculated_gaps)
 
@@ -613,7 +569,7 @@ def solve_pairing(
 ) -> Tuple[jax.Array, jax.Array, jax.Array, jax.Array, Pairing]:
     """
     Solve BCS pairing for both isospins.
-    
+
     Args:
         sp_energy: Single-particle energies (nstates,)
         deltaf: Pairing gaps (nstates,)
@@ -633,14 +589,14 @@ def solve_pairing(
     """
     dtypes = get_dtypes()
     nstates = sp_energy.shape[0]
-    
+
     # Process each isospin using slices for JIT compatibility
     # This assumes neutrons come first in the state arrays
     sp_n = sp_energy[:nstates_n]
     delta_n = deltaf[:nstates_n]
     wst_n = wstates[:nstates_n]
     pwg_n = pairwg[:nstates_n]
-    
+
     eferm_n, v2_n, uv_n, pwg_new_n, wst_new_n, stats_n = solve_pairing_isospin(
         0, float(target_n), sp_n, delta_n, wst_n, pwg_n,
         pair_cutoff=force.pair_cutoff[0],
@@ -650,12 +606,12 @@ def solve_pairing(
         use_ln=use_ln,
         ln_passes=ln_passes,
     )
-    
+
     sp_p = sp_energy[nstates_n:]
     delta_p = deltaf[nstates_n:]
     wst_p = wstates[nstates_n:]
     pwg_p = pairwg[nstates_n:]
-    
+
     eferm_p, v2_p, uv_p, pwg_new_p, wst_new_p, stats_p = solve_pairing_isospin(
         1, float(target_p), sp_p, delta_p, wst_p, pwg_p,
         pair_cutoff=force.pair_cutoff[1],
@@ -665,22 +621,22 @@ def solve_pairing(
         use_ln=use_ln,
         ln_passes=ln_passes,
     )
-    
+
     # Reassemble arrays
     wocc = jnp.concatenate([v2_n, v2_p])
     wguv = jnp.concatenate([uv_n, uv_p])
-    
+
     # For cutoff weights, conditionally update
     pairwg_new = jnp.concatenate([
         jnp.where(force.pair_cutoff[0] > 0.0, pwg_new_n, pwg_n),
         jnp.where(force.pair_cutoff[1] > 0.0, pwg_new_p, pwg_p)
     ])
-    
+
     wstates_new = jnp.concatenate([
         jnp.where(force.state_cutoff[0] > 0.0, wst_new_n, wst_n),
         jnp.where(force.state_cutoff[1] > 0.0, wst_new_p, wst_p)
     ])
-    
+
     # Create result container
     pairing = Pairing(
         eferm=jnp.array([stats_n['eferm'], stats_p['eferm']]),
@@ -691,5 +647,5 @@ def solve_pairing(
         lambda2=jnp.array([stats_n['lambda2'], stats_p['lambda2']]),
         e_ln=jnp.array([stats_n['e_ln'], stats_p['e_ln']]),
     )
-    
+
     return wocc, wguv, pairwg_new, wstates_new, pairing

@@ -45,6 +45,7 @@ from jax_hfbfft.core.constraint import Constraint
 from jax_hfbfft.core.grid import Grid
 from jax_hfbfft.core.tdhf import TDHF
 from jax_hfbfft.core.tdhfb import TDHFB
+from jax_hfbfft.core.chain import run_chain, separation_energies
 from jax_hfbfft.physics.dynamics import TDConfig
 
 # Configuration utilities
@@ -63,6 +64,8 @@ __all__ = [
     "TDHF",
     "TDHFB",
     "TDConfig",
+    "run_chain",
+    "separation_energies",
     # Configuration
     "Config",
     # Force presets

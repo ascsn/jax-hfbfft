@@ -28,23 +28,10 @@ def enable_jit_cache(
     """
     Enable persistent JIT compilation caching for JAX.
 
-    This stores compiled XLA computations on disk so they can be reused
-    across Python sessions. This is particularly useful for:
-
-    1. **Uncertainty Quantification**: Varying force parameters (t0, t1, v0, etc.)
-       doesn't change the computation graph, so cached compilations are reused.
-
-    2. **Constrained Calculations**: Adding constraint potentials uses the same
-       compiled kernels as unconstrained calculations.
-
-    3. **Same Grid/Basis Calculations**: Any calculations with the same grid size
-       and number of states will reuse cached compilations.
-
-    Things that trigger recompilation (cache miss):
-    - Different grid dimensions (nx, ny, nz)
-    - Different number of states (npsi_n, npsi_p)
-    - Different pairing type (ipair)
-    - Different static configuration options
+    Compiled XLA computations are stored on disk and reused across Python
+    sessions. Changing force parameters (t0, v0, ...) or constraint targets
+    reuses them; changing the grid, the number of states, the pairing type or
+    a static solver option compiles anew.
 
     Args:
         cache_dir: Directory for cache storage. Defaults to ~/.jax_cache

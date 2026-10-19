@@ -31,7 +31,7 @@ import jax
 import jax.numpy as jnp
 
 from jax_hfbfft.core.grid import Grid
-from jax_hfbfft.core.constraint import Constraint, multipole_name
+from jax_hfbfft.core.constraint import NECK, Constraint, multipole_name
 
 # Set JAX_HFBFFT_CONSTR_DEBUG=1 to print the multiplier update every iteration.
 _CONSTR_DEBUG = bool(int(os.environ.get('JAX_HFBFFT_CONSTR_DEBUG', '0')))
@@ -96,9 +96,10 @@ def default_damprad(mass_number: float, grid: Grid, beta_max: float = 0.0,
     want = 2.2 * R * (1.0 + 0.75 * beta_max) + 2.0 * min(beta_max / 0.6, 1.0)
     half_box = min(grid.nx * grid.dx, grid.ny * grid.dy, grid.nz * grid.dz) / 2.0 - 3.0
     if verbose and want > half_box:
-        print(f"  WARNING: deformation up to beta2 = {beta_max:.2f} needs a damping "
-              f"radius of {want:.1f} fm but the box allows {half_box:.1f} fm; "
-              f"enlarge the grid", flush=True)
+        import warnings
+        warnings.warn(f"deformation up to beta2 = {beta_max:.2f} needs a damping radius of "
+                      f"{want:.1f} fm but the box allows {half_box:.1f} fm; enlarge the grid",
+                      stacklevel=2)
     return min(want, half_box)
 
 
@@ -117,6 +118,40 @@ def resolved_damprad(constraint: Constraint, grid: Grid, mass_number: float) -> 
     if constraint.damprad is not None:
         return float(constraint.damprad)
     return default_damprad(mass_number, grid, _goal_beta(constraint, mass_number))
+
+
+def multipole_operator(grid: Grid, spec, neck_z: float = 0.0, neck_width: float = 1.0) -> jax.Array:
+    """
+    The (undamped) constraint operator of a multipole on the grid, by name ('Q20')
+    or (lambda, mu), in the convention Q_lam,mu = sqrt(16 pi / (2 lam + 1)) r^lam Y_lam,mu
+    for Q20, Q30 and Q40; Q22 and Q32 are the raw forms x^2 - y^2 and z(x^2 - y^2)
+    (the strict convention would put a factor sqrt(3/2) on Q22).
+    """
+    from jax_hfbfft.core.constraint import parse_multipole
+    lam, mu = parse_multipole(spec) if isinstance(spec, str) else spec
+    x, y, z = grid.get_meshgrid()
+    r2, rho2 = x**2 + y**2 + z**2, x**2 + y**2
+    if (lam, mu) == (1, 0):
+        # <z>, the centre of mass. Q20 is not translation invariant (a shift dz adds
+        # 2 A dz^2 at no energy cost), so a Q20 constraint alone can be satisfied by
+        # moving the nucleus; constraining <z> = 0 removes that direction.
+        return z
+    if (lam, mu) == (2, 0):
+        return 2.0 * z**2 - rho2
+    if (lam, mu) == (2, 2):
+        return x**2 - y**2
+    if (lam, mu) == (3, 0):
+        return 2.0 * z**3 - 3.0 * z * rho2
+    if (lam, mu) == (3, 2):
+        return z * (x**2 - y**2)
+    if (lam, mu) == (4, 0):
+        return (35.0 * z**4 - 30.0 * z**2 * r2 + 3.0 * r2**2) / 4.0
+    if (lam, mu) == NECK:
+        # Q_N: nucleons within ~neck_width of the plane z = neck_z (HFBTHO's neck);
+        # small Q_N means a thin neck, i.e. near scission.
+        return jnp.exp(-((z - neck_z) / neck_width) ** 2)
+    raise ValueError(f"Constraint multipole {multipole_name(lam, mu)} not implemented. "
+                     "Supported: Q10, Q20, Q22, Q30, Q32, Q40, QN.")
 
 
 def _build_constraint_fields(
@@ -142,44 +177,13 @@ def _build_constraint_fields(
     constr_fields: List[jax.Array] = []
     goals: List[float] = []
 
-    # Operators in the convention Q_lam,mu = sqrt(16 pi / (2 lam + 1)) r^lam Y_lam,mu
-    # (the one beta_gamma_to_multipoles uses) for Q20, Q30 and Q40:
-    #   Q20 = 2z^2 - x^2 - y^2
-    #   Q30 = 2z^3 - 3z(x^2 + y^2)
-    #   Q40 = (35z^4 - 30z^2 r^2 + 3r^4) / 4
-    # Q22 and Q32 are the raw forms x^2 - y^2 and z(x^2 - y^2); the strict
-    # convention would put a factor sqrt(3/2) on Q22.
-    r2 = x_mesh**2 + y_mesh**2 + z_mesh**2
-    rho2 = x_mesh**2 + y_mesh**2
-
     for (lam, mu), value in constraint.get_multipole_list():
-        if (lam, mu) == (1, 0):
-            # <z>, the centre of mass. Q20 is not translation invariant (a shift
-            # dz adds 2 A dz^2 at no energy cost), so a Q20 constraint alone can
-            # be satisfied by moving the nucleus; constraining <z> = 0 removes
-            # that direction.
-            op = z_mesh
-        elif (lam, mu) == (2, 0):
-            op = 2.0 * z_mesh**2 - x_mesh**2 - y_mesh**2
-        elif (lam, mu) == (2, 2):
-            op = x_mesh**2 - y_mesh**2
-        elif (lam, mu) == (3, 0):
-            op = 2.0 * z_mesh**3 - 3.0 * z_mesh * rho2
-        elif (lam, mu) == (3, 2):
-            op = z_mesh * (x_mesh**2 - y_mesh**2)
-        elif (lam, mu) == (4, 0):
-            op = (35.0 * z_mesh**4 - 30.0 * z_mesh**2 * r2 + 3.0 * r2**2) / 4.0
-        else:
-            name = multipole_name(lam, mu)
-            raise ValueError(
-                f"Constraint multipole {name} not implemented. "
-                "Supported: Q10, Q20, Q22, Q30, Q32, Q40."
-            )
+        op = multipole_operator(grid, (lam, mu), constraint.neck_z, constraint.neck_width)
         # The multipole operators are damped beyond damprad because they grow
         # like r^lambda. The centre-of-mass operator is not: it is linear, and a
         # damped <z> would stop seeing displacements exactly where the damped
         # Q20 saturates.
-        field = (op * jnp.ones_like(masking) if (lam, mu) == (1, 0)
+        field = (op * jnp.ones_like(masking) if (lam, mu) in ((1, 0), NECK)
                  else op * masking)
         constr_fields.append(jnp.stack([field, field], axis=-1))
         goals.append(float(value))

@@ -60,3 +60,36 @@ def test_statics_only_terms():
     assert statics_only_terms({"lambda2": [0.0, 0.0], "zpe": 0}) == []
     assert len(statics_only_terms({"lambda2": [0.3, 0.6], "zpe": 0})) == 1
     assert len(statics_only_terms({"lambda2": [0.3, 0.6], "zpe": 3})) == 2
+
+
+@pytest.mark.parametrize("axis", [0, 2])
+def test_oblate_beta_gamma(axis):
+    """An axial oblate shape has gamma = 60 deg and the beta of its symmetry axis, along any axis."""
+    g = Grid.create(nx=24, ny=24, nz=24, dx=0.8, dy=0.8, dz=0.8)
+    R = list(g.get_meshgrid())
+    widths = [9.0, 9.0, 9.0]
+    widths[axis] = 4.0                                    # flattened along `axis`
+    rho = jnp.exp(-sum(r**2 / w for r, w in zip(R, widths)))
+    d = dataclasses.replace(Densities.zeros(24, 24, 24), rho=jnp.stack([rho, rho]))
+    r = compute_radii(d, g)
+    A = float(jnp.sum(2 * rho) * g.wxyz)
+    r2 = float(jnp.sum(2 * rho * sum(x**2 for x in R)) * g.wxyz) / A
+    q_axis = float(jnp.sum(2 * rho * (3 * R[axis]**2 - sum(x**2 for x in R))) * g.wxyz)
+    want = abs(np.sqrt(5 / (16 * np.pi)) * q_axis * 4 * np.pi / (5 * r2 * A))
+    assert float(r.gamma) == pytest.approx(60.0, abs=0.1)
+    assert float(r.beta2) == pytest.approx(want, rel=1e-6)
+
+
+def test_converges_with_only_occupied_orbitals():
+    """16O HF with 8 + 8 orbitals: equal occupations make the Lagrange asymmetry vanish
+    identically, so the residual |(1 - P) h psi| must measure convergence (the run used to
+    stop at iteration 1 on the initial guess)."""
+    from jax_hfbfft.core.force import Force
+    E = {}
+    for npsi in ((8, 8), (12, 12)):
+        calc = HFBFFT(nucleus=Nucleus(protons=8, neutrons=8), force=Force.from_name("SLy4").with_pairing(ipair=0),
+                      grid=Grid.create_cubic(n=12, d=1.2), npsi=npsi)
+        r = calc.run(max_iterations=1500, convergence_threshold=1e-5, print_interval=10**9, sinfo_interval=10**9)
+        assert r.converged and r.iterations > 20
+        E[npsi] = r.total_energy
+    assert E[(8, 8)] == pytest.approx(E[(12, 12)], abs=0.01)

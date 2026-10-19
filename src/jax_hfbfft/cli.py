@@ -386,7 +386,7 @@ def run_calculation(config_path: Optional[str], verbose: bool = False):
             # Algorithm parameters (if specified), as in run_hfb.py
             constraint_kwargs = {
                 param: constraints_config[param]
-                for param in ['c0constr', 'qepsconstr', 'dampgamma', 'damprad']
+                for param in ['c0constr', 'qepsconstr', 'dampgamma', 'damprad', 'neck_z', 'neck_width']
                 if param in constraints_config
             }
 
@@ -436,13 +436,16 @@ def run_calculation(config_path: Optional[str], verbose: bool = False):
             npsi = (npsi_neutron, npsi_proton)
 
         # Create calculator
+        physics_config = config.get('physics') or {}
         calc = HFBFFT(
             nucleus=nucleus,
             force=force,
             grid=grid,
             constraint=constraint,
             npsi=npsi,
+            include_coulomb=bool(physics_config.get('include_coulomb', True)),
         )
+        calc.temperature = float(physics_config.get('temperature', 0.0))
 
         # Initialize wavefunctions
         init_config = config.get('initialization', {})
@@ -556,6 +559,8 @@ def run_calculation(config_path: Optional[str], verbose: bool = False):
             print(f"Results saved to: {run_dir}")
             print()
 
+        _run_analysis(calc, results, config.get('analysis') or {}, run_dir if output_dir_name else None)
+
         dynamics_config = config.get('dynamics') or {}
         if dynamics_config.get('enabled', False):
             _run_dynamics(calc, dynamics_config, run_dir if output_dir_name else None)
@@ -614,6 +619,9 @@ def _run_dynamics(calc, dyn: dict, run_dir: Optional[Path]):
                          f"monopole, isovector_dipole or boost.")
 
     print(f"TDHF: {config.n_steps} steps of {config.dt} fm/c, kick: {kind}")
+    if kind in ('monopole', 'quadrupole', 'isovector_dipole'):
+        print(f"EWSR m1 = {td.ewsr(kind):.4f} MeV fm^{4 if kind != 'isovector_dipole' else 2} "
+              f"(compare the m1 of the strength function)")
     print(f"{'t (fm/c)':>10} {'E (MeV)':>14} {'dE/E':>11} {'Q20 (fm^2)':>12} {'r2_int':>10}")
     for rec in td.iterate():
         print(f"{rec['time']:10.2f} {rec['E']:14.6f} {rec['dE_rel']:+11.3e} "
@@ -622,10 +630,46 @@ def _run_dynamics(calc, dyn: dict, run_dir: Optional[Path]):
     if run_dir is not None:
         h = td.history_arrays()
         cols = ['time', 'E', 'dE_rel', 'ortho', 'A', 'cm_x', 'cm_y', 'cm_z',
-                'r2', 'r2_int', 'Q20', 'Q22']
+                'r2', 'r2_int', 'Q20', 'Q22', 'Dz_iv']
         np.savetxt(run_dir / "tdhf_history.dat", np.column_stack([h[c] for c in cols]),
                    header=" ".join(cols), fmt="%.10e")
         print(f"TDHF history saved to: {run_dir / 'tdhf_history.dat'}")
+    if kind in ('monopole', 'quadrupole', 'isovector_dipole'):
+        _save_strength(td, kind, dyn, run_dir)
+
+
+def _run_analysis(calc, results, opt: dict, run_dir: Optional[Path]):
+    """Post-static analyses of the analysis: block (number projection, form factors)."""
+    lines = []
+    if opt.get('particle_number_projection', False):
+        out = calc.project_particle_number(int(opt.get('n_gauge', 11)))
+        lines += [f"PAV total energy:      {out['total_energy']:14.6f} MeV",
+                  f"PAV correction:        {out['correction']:14.6f} MeV",
+                  "P(N): " + " ".join(f"{n}:{p:.4f}" for n, p in out['distribution']['n'].items() if p > 1e-4),
+                  "P(Z): " + " ".join(f"{n}:{p:.4f}" for n, p in out['distribution']['p'].items() if p > 1e-4)]
+    q = opt.get('form_factors_q') or []
+    if q:
+        from jax_hfbfft.physics.form_factors import form_factors
+        ff = form_factors(calc.solver_state.densities, calc.grid, q)
+        lines += [f"R_ch {ff['R_ch']:.4f}  R_W {ff['R_W']:.4f}  skin {ff['skin']:.4f}  weak skin {ff['weak_skin']:.4f} fm",
+                  f"{'q (fm^-1)':>10} {'F_ch':>10} {'F_W':>10}"]
+        lines += [f"{a:10.4f} {b:10.5f} {c:10.5f}" for a, b, c in zip(ff['q'], ff['F_ch'], ff['F_W'])]
+    if lines:
+        print("\n".join(lines))
+        if run_dir is not None:
+            (run_dir / "analysis.res").write_text("\n".join(lines) + "\n")
+
+
+def _save_strength(td, kind: str, dyn: dict, run_dir: Optional[Path]):
+    """Strength function of a kicked run (td.strength), its moments against the EWSR."""
+    import numpy as np
+    from jax_hfbfft.physics.dynamics import strength_moments
+    E, S = td.strength(gamma=float(dyn.get('strength_gamma', 1.0)), e_max=float(dyn.get('strength_emax', 60.0)))
+    m0, m1, c = strength_moments(E, S)
+    print(f"Strength: m0 = {m0:.4f}, m1 = {m1:.4f} ({m1 / td.ewsr(kind):.3f} of the EWSR), "
+          f"centroid {c:.3f} MeV (the run must be long enough to resolve it)")
+    if run_dir is not None:
+        np.savetxt(run_dir / "strength.dat", np.column_stack([E, S]), header="E (MeV)  S (fm^2l/MeV)", fmt="%.8e")
 
 
 def _run_tdhfb(calc, dyn: dict, run_dir: Optional[Path]):
@@ -667,12 +711,19 @@ def _run_tdhfb(calc, dyn: dict, run_dir: Optional[Path]):
         td.kick_quadrupole(eta)
     elif kind == 'monopole':
         td.kick_monopole(eta)
+    elif kind == 'isovector_dipole':
+        td.kick_isovector_dipole(eta)
+    elif kind == 'boost':
+        td.boost(kick.get('k', [0.0, 0.0, 0.0]))
     elif kind != 'none':
-        raise ValueError(f"dynamics.kick.type {kind!r} is not available for TDHFB; "
-                         f"use none, quadrupole or monopole.")
+        raise ValueError(f"Unknown dynamics.kick.type {kind!r}; use none, quadrupole, "
+                         f"monopole, isovector_dipole or boost.")
 
     steps, every = int(dyn.get('steps', 1000)), int(dyn.get('diag_interval', 10))
     print(f"TDHFB ({td.scheme} scheme): {steps} steps of {td.dt} fm/c, kick: {kind}")
+    if kind in ('monopole', 'quadrupole', 'isovector_dipole'):
+        print(f"EWSR m1 = {td.ewsr(kind):.4f} MeV fm^{4 if kind != 'isovector_dipole' else 2} "
+              f"(compare the m1 of the strength function)")
     print(f"{'t (fm/c)':>10} {'E (MeV)':>14} {'E-E0':>11} {'Epair n':>9} {'Epair p':>9} "
           f"{'N':>10} {'Z':>10} {'Q20 (fm^2)':>12}")
     e0 = None
@@ -682,9 +733,11 @@ def _run_tdhfb(calc, dyn: dict, run_dir: Optional[Path]):
               f"{rec['Epair_p']:9.4f} {rec['N']:10.6f} {rec['Z']:10.6f} {rec['Q20']:12.4f}")
     if opt.get('check_continuity', False) and td.scheme == 'global':
         print(f"Local continuity: {td.continuity()}")
+    if kind in ('monopole', 'quadrupole', 'isovector_dipole'):
+        _save_strength(td, kind, dyn, run_dir)
 
     if run_dir is not None:
-        cols = [c for c in ('time', 'E', 'Epair_n', 'Epair_p', 'N', 'Z', 'Q20', 'r2', 'purity')
+        cols = [c for c in ('time', 'E', 'Epair_n', 'Epair_p', 'N', 'Z', 'Q20', 'r2', 'cm_z', 'Dz_iv', 'purity')
                 if c in td.history[0]]
         np.savetxt(run_dir / "tdhfb_history.dat",
                    np.array([[float(r[c]) for c in cols] for r in td.history]),
@@ -738,6 +791,11 @@ def _save_summary(calc, results, config, output_dir):
             f.write(f"  Lipkin-Nogami:           {results.ln_energy:12.3f}\n")
         f.write(f"  Center-of-mass:          {results.cm_correction:12.3f}   ({_ZPE_LABEL.get(results.zpe, '?')})\n\n")
 
+        if results.temperature > 0.0:
+            f.write(f"Temperature:               {results.temperature:12.3f} MeV\n")
+            f.write(f"Entropy:                   {results.entropy:12.3f}\n")
+            f.write(f"Free energy F = E - TS:    {results.free_energy:12.3f} MeV\n\n")
+
         # Binding energy per nucleon
         f.write(f"Binding energy/A:          {results.total_energy/nucleus.mass_number:12.3f} MeV\n\n")
 
@@ -753,7 +811,8 @@ def _save_summary(calc, results, config, output_dir):
         f.write(f"Quadrupole Q20:            {results.q20:12.3f} fm²\n")
         f.write(f"Quadrupole Q22:            {results.q22:12.3f} fm²\n")
         f.write(f"Deformation β₂:            {results.beta2:12.4f}\n")
-        f.write(f"Deformation γ:             {results.gamma:12.1f} deg\n\n")
+        f.write(f"Deformation γ:             {results.gamma:12.1f} deg\n")
+        f.write(f"Deformation β₃, β₄:        {results.beta3:12.4f} {results.beta4:8.4f}\n\n")
 
         # Pairing
         if force.ipair != 0:
@@ -818,6 +877,10 @@ def _save_moments(results, output_dir):
         f.write(f"Q22 (fm²):     {results.q22:12.6f}\n")
         f.write(f"beta2:         {results.beta2:12.6f}\n")
         f.write(f"gamma (deg):   {results.gamma:12.2f}\n")
+        f.write(f"Q30 (fm³):     {results.q30:12.6f}\n")
+        f.write(f"Q40 (fm⁴):     {results.q40:12.6f}\n")
+        f.write(f"beta3:         {results.beta3:12.6f}\n")
+        f.write(f"beta4:         {results.beta4:12.6f}\n")
 
 
 def _save_radii(results, output_dir):

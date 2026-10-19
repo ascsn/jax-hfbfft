@@ -14,7 +14,7 @@ All three drivers record through `frames.py` (`FrameRecorder`):
 | `OUT_3d/t<time>.npz` | every `--frames3d-every` fm/c | full 3D ρ_q (float32) and Δ_q (complex64), plus v0, v0p, rho0pr |
 
 Sizes for U238 on a 1 fm grid: about 3–4 MB per 3D frame, so a 1,000 fm/c run
-with 3D frames every 2 fm/c is 1.5–2 GB. Write it to scratch. Everything is
+with 3D frames every 2 fm/c is 1.5–2 GB, so write it to a scratch file system. Everything is
 written atomically and survives `--resume`.
 
 ```

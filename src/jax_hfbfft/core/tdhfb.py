@@ -29,6 +29,7 @@ import numpy as np
 
 from jax_hfbfft.core.force import Force
 from jax_hfbfft.core.grid import Grid
+from jax_hfbfft.physics import dynamics as D
 from jax_hfbfft.physics import tdhfb as T
 from jax_hfbfft.physics.coulomb import CoulombSolver
 import warnings
@@ -109,8 +110,8 @@ class TDHFB:
     """
     Real-time TDHFB evolution with recorded observables.
 
-    Records are dicts with time, E, Epair_n, Epair_p, N, Z, Q20, r2 (<r^2>) and, for the
-    global scheme, purity (|rho~ - rho~^2 - kap~ kap~^+|, conserved exactly).
+    Records are dicts with time, E, Epair_n, Epair_p, N, Z, Q20, r2 (<r^2>), cm_z, Dz_iv
+    (isovector dipole, (N z_p - Z z_n)/A) and, for the global scheme, purity (|rho~ - rho~^2 - kap~ kap~^+|, conserved exactly).
     """
 
     def __init__(self, state, grid: Grid, force: Force, dt: float = 0.1, eps: float = 1e-7,
@@ -128,6 +129,7 @@ class TDHFB:
         self.strang, self.midpoint = strang, midpoint
         self.absorb_width, self.absorb_strength = absorb_width, absorb_strength   # absorbing boundaries (fm, MeV)
         self.history: List[dict] = []
+        self._kick = None        # (kind, eta) of the last kick_*, sign as exp(-i eta Q)
         self._step = None
         self._ref_step = None
 
@@ -216,19 +218,40 @@ class TDHFB:
     # ── Excitations and state maintenance ───────────────────────────────────
 
     def kick(self, operator, eta: float) -> "TDHFB":
-        """exp(i eta Q(r)) on every orbital (rho~ and kap~ are unchanged)."""
+        """
+        exp(i eta Q(r)) on every orbital (rho~ and kap~ are unchanged); Q on the grid or
+        (2, nx, ny, nz) per isospin. TDHF kicks with exp(-i eta Q): strength() accounts for
+        the sign, dynamics.strength_function needs -eta.
+        """
+        self._kick = None
         self.state = T.kick(self.state, operator, eta)
         return self
 
     def kick_quadrupole(self, eta: float) -> "TDHFB":
         """Isoscalar quadrupole kick, Q = 2z^2 - x^2 - y^2."""
         X, Y, Z = self.grid.get_meshgrid()
-        return self.kick(2 * Z**2 - X**2 - Y**2, eta)
+        self.kick(2 * Z**2 - X**2 - Y**2, eta)
+        self._kick = ('quadrupole', -eta)
+        return self
 
     def kick_monopole(self, eta: float) -> "TDHFB":
         """Isoscalar monopole (breathing) kick, Q = r^2."""
         X, Y, Z = self.grid.get_meshgrid()
-        return self.kick(X**2 + Y**2 + Z**2, eta)
+        self.kick(X**2 + Y**2 + Z**2, eta)
+        self._kick = ('monopole', -eta)
+        return self
+
+    def kick_isovector_dipole(self, eta: float) -> "TDHFB":
+        """Isovector dipole kick along z, Q = N/A z (protons), -Z/A z (neutrons): no c.m. motion."""
+        N, Z = T.particle_numbers(self.state)
+        self.kick(jnp.stack(D.response_operator(self.grid, 'isovector_dipole', N, Z)), eta)
+        self._kick = ('isovector_dipole', -eta)
+        return self
+
+    def boost(self, k) -> "TDHFB":
+        """Give every nucleon momentum hbar*k, k = (kx, ky, kz) in fm^-1."""
+        X, Y, Z = self.grid.get_meshgrid()
+        return self.kick(k[0] * X + k[1] * Y + k[2] * Z, 1.0)
 
     def relax(self, n_iter: int, step: float = 1.0, mix: float = 0.5, verbose: int = 0) -> "TDHFB":
         """
@@ -244,6 +267,23 @@ class TDHFB:
         self._step = self._ref_step = None
         self.history = []
         return self
+
+    def ewsr(self, kind: str) -> float:
+        """Energy-weighted sum rule (MeV fm^2l) of a kick operator; see dynamics.ewsr."""
+        N, Z = T.particle_numbers(self.state)
+        return D.ewsr(self.fields()[0], self.force, self.grid, *D.response_operator(self.grid, kind, N, Z))
+
+    def strength(self, minus=None, **kw):
+        """
+        S(E) of the last kick_monopole/kick_quadrupole/kick_isovector_dipole from the history
+        (dynamics.kick_strength; kw as dynamics.strength_function, e.g. gamma=1.0); minus is
+        the same run kicked with -eta. Returns (energies in MeV, strength in fm^2l / MeV).
+        """
+        if self._kick is None:
+            raise ValueError("strength() needs a kick_monopole/kick_quadrupole/kick_isovector_dipole")
+        kind, eta = self._kick
+        return D.kick_strength(self.history_arrays(), kind, eta,
+                               None if minus is None else minus.history_arrays(), **kw)
 
     def drop_empty(self, below: float):
         """Remove orbitals with occupation below `below` (global scheme). Returns (count, particles)."""
@@ -276,11 +316,14 @@ class TDHFB:
         flds = flds or self.fields()
         E, ep = T.energy_of_fields(flds, self.grid, self.force, self.use_coulomb)
         X, Y, Z = self.grid.get_meshgrid()
-        rho = flds[0].rho[0] + flds[0].rho[1]
+        rho_n, rho_p = flds[0].rho
+        rho, w = rho_n + rho_p, self.grid.wxyz
         N, Zp = T.particle_numbers(self.state)
         rec = dict(time=self.time, E=E, Epair_n=float(ep[0]), Epair_p=float(ep[1]), N=N, Z=Zp,
-                   Q20=float(self.grid.wxyz * jnp.sum(rho * (2 * Z**2 - X**2 - Y**2))),
-                   r2=float(self.grid.wxyz * jnp.sum(rho * (X**2 + Y**2 + Z**2))) / (N + Zp))
+                   Q20=float(w * jnp.sum(rho * (2 * Z**2 - X**2 - Y**2))),
+                   r2=float(w * jnp.sum(rho * (X**2 + Y**2 + Z**2))) / (N + Zp),
+                   cm_z=float(w * jnp.sum(rho * Z)) / (N + Zp),
+                   Dz_iv=float(w * (N * jnp.sum(rho_p * Z) - Zp * jnp.sum(rho_n * Z))) / (N + Zp))
         if self.scheme == 'global':
             rec['purity'] = T.purity(self.state)
         return rec

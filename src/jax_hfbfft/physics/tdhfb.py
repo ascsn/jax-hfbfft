@@ -202,19 +202,19 @@ def _eigh(H, site: str):
 
 # ── Fields and energy ────────────────────────────────────────────────────────
 
-def _densities_diag(psi, occ, isospin, grid: Grid) -> Densities:
+def _densities_diag(psi, occ, isospin, grid: Grid, tensor: bool = False) -> Densities:
     zeros, ones = jnp.zeros_like(occ), jnp.ones_like(occ)
-    return compute_densities(psi, occ, zeros, ones, ones, isospin, grid)
+    return compute_densities(psi, occ, zeros, ones, ones, isospin, grid, tensor=tensor)
 
 
-def _densities_matrix(psi, rho, isospin, grid: Grid) -> Densities:
+def _densities_matrix(psi, rho, isospin, grid: Grid, tensor: bool = False) -> Densities:
     """All Skyrme densities of rho~, from its eigen-orbitals with signed weights."""
     shift = 10.0                      # separates the isospins inside one eigh
     lam, V = _eigh(rho + jnp.diag(jnp.where(isospin == 1, shift, 0.0)).astype(rho.dtype), 'densities')
     iso_k = jnp.where(lam > 0.5 * shift, 1, 0).astype(isospin.dtype)
     lam = lam - jnp.where(iso_k == 1, shift, 0.0)
     chi = jnp.tensordot(V, psi, axes=([0], [0]))
-    return _densities_diag(chi, lam, iso_k, grid)
+    return _densities_diag(chi, lam, iso_k, grid, tensor)
 
 
 def _complete_fields(dens, xi, grid, force, cs, use_coulomb, external=None):
@@ -235,10 +235,10 @@ def _complete_fields(dens, xi, grid, force, cs, use_coulomb, external=None):
 def fields(S, grid: Grid, force: Force, cs: CoulombSolver, use_coulomb: bool = True, external=None):
     """(densities, meanfield, wcoul, delta, xi) of a GState or EbataState (external: see _complete_fields)."""
     if isinstance(S, EbataState):
-        dens = _densities_diag(S.psi, S.occ, S.isospin, grid)
+        dens = _densities_diag(S.psi, S.occ, S.isospin, grid, force.tensor)
         xi = pair_density_canonical(pair_view(S.psi, grid, force), S.kappa, S.isospin)
     else:
-        dens = _densities_matrix(S.psi, S.rho, S.isospin, grid)
+        dens = _densities_matrix(S.psi, S.rho, S.isospin, grid, force.tensor)
         xi = pair_density(pair_view(S.psi, grid, force), S.kap, S.isospin)
     return _complete_fields(dens, xi, grid, force, cs, use_coulomb, external) + (xi,)
 
@@ -377,8 +377,10 @@ def ebata_state(psi, wocc, wguv, isospin, grid: Grid, wstates=None, pairwg=None,
 
 
 def kick(S, operator, eta: float):
-    """Apply exp(i eta Q(r)) to every orbital (Q given on the grid)."""
-    return dataclasses.replace(S, psi=S.psi * jnp.exp(1j * eta * operator)[None, None])
+    """Apply exp(i eta Q(r)) to every orbital; Q on the grid, or (2, nx, ny, nz) per isospin."""
+    ph = jnp.exp(1j * eta * operator)
+    ph = ph[S.isospin][:, None] if ph.ndim == 4 else ph[None, None]
+    return dataclasses.replace(S, psi=S.psi * ph)
 
 
 # ── Global scheme: one step ──────────────────────────────────────────────────
@@ -525,7 +527,7 @@ def make_step(S: GState, grid: Grid, force: Force, cs: CoulombSolver, eps: float
     pv = lambda p: pair_view(p, grid, force)
 
     def flds(psi, rho, kap):
-        dens = _densities_matrix(psi, rho, iso, grid)
+        dens = _densities_matrix(psi, rho, iso, grid, force.tensor)
         dens, mf, _, delta = _complete_fields(dens, pair_density(pv(psi), kap, iso), grid, force, cs, use_coulomb)
         return dens, mf, delta
 
@@ -760,7 +762,7 @@ def _relax_stages(S: GState, grid: Grid, force: Force, cs: CoulombSolver, step: 
     @jax.jit
     def stage1(psi, rho, kap, mf_prev, delta_prev, w):
         psi, rho, kap = _recanon(psi, rho, kap, iso, perm)
-        dens = _densities_matrix(psi, rho, iso, grid)
+        dens = _densities_matrix(psi, rho, iso, grid, force.tensor)
         _, mf, _, delta = _complete_fields(dens, pair_density(pair_view(psi, grid, force), kap, iso), grid, force,
                                            cs, use_coulomb, external)
         mf = jax.tree_util.tree_map(lambda a, b: w * a + (1 - w) * b, mf, mf_prev)
@@ -967,7 +969,7 @@ def make_ebata_step(E: EbataState, grid: Grid, force: Force, cs: CoulombSolver,
     same = _same_iso(iso)
 
     def flds(psi, occ, kappa, coulomb):
-        dens = _densities_diag(psi, occ, iso, grid)
+        dens = _densities_diag(psi, occ, iso, grid, force.tensor)
         return _complete_fields(dens, pair_density_canonical(pair_view(psi, grid, force), kappa, iso), grid, force,
                                 cs, coulomb)
 

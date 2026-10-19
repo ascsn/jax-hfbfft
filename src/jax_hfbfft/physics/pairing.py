@@ -7,6 +7,7 @@ This module implements BCS pairing with:
 - Fermi energy search via Brent's method
 - Soft cutoff functions for pairing windows
 - Lipkin-Nogami approximate particle-number projection
+- Finite temperature (thermal BCS): quasiparticles occupied with f = 1/(1 + exp(E/T))
 """
 
 import jax
@@ -38,6 +39,7 @@ class Pairing:
     avg: jax.Array      # Average force
     lambda2: jax.Array  # Lipkin-Nogami lambda_2 per isospin (zero if LN off)
     e_ln: jax.Array     # Lipkin-Nogami energy correction per isospin
+    entropy: jax.Array  # Quasiparticle entropy per isospin (zero at T = 0)
 
     @classmethod
     def zeros(cls) -> "Pairing":
@@ -51,7 +53,23 @@ class Pairing:
             avg=jnp.zeros(2, dtype=dtypes.float),
             lambda2=jnp.zeros(2, dtype=dtypes.float),
             e_ln=jnp.zeros(2, dtype=dtypes.float),
+            entropy=jnp.zeros(2, dtype=dtypes.float),
         )
+
+
+def thermal_factor(equasi: jax.Array, temperature) -> jax.Array:
+    """1 - 2 f(E) = tanh(E / 2T) for quasiparticle energies E; exactly 1 at T = 0."""
+    t = jnp.maximum(temperature, 1e-12)
+    return jnp.where(temperature > 0.0, jnp.tanh(equasi / (2.0 * t)), 1.0)
+
+
+def qp_entropy(equasi: jax.Array, wstates: jax.Array, temperature) -> jax.Array:
+    """S = -sum_k w_k [f ln f + (1 - f) ln(1 - f)], f = 1 / (1 + exp(E_k / T)); zero at T = 0."""
+    x = equasi / jnp.maximum(temperature, 1e-12)
+    # f ln f + (1-f) ln(1-f) = -(log(1 + e^-x) + x f), stable for large x
+    f = jax.nn.sigmoid(-x)
+    s = jnp.sum(wstates * (jnp.log1p(jnp.exp(-x)) + x * f))
+    return jnp.where(temperature > 0.0, s, 0.0)
 
 
 @jax.jit
@@ -63,6 +81,7 @@ def find_fermi_energy_jax(
     emin: float = -200.0,
     emax: float = 200.0,
     max_iter: int = 40,
+    temperature: float = 0.0,
 ) -> float:
     """
     Find Fermi energy using JAX-native bisection search.
@@ -72,14 +91,14 @@ def find_fermi_energy_jax(
     def body_fun(state):
         low, high, i = state
         mid = (low + high) / 2.0
-        n = bcs_occupation(mid, sp_energy, deltaf, wstates)
+        n = bcs_occupation(mid, sp_energy, deltaf, wstates, temperature)
         low = jnp.where(n < target_n, mid, low)
         high = jnp.where(n >= target_n, mid, high)
         return low, high, i + 1
 
     # Initial brackets - check if expansion is needed
-    f_low = bcs_occupation(emin, sp_energy, deltaf, wstates) - target_n
-    f_high = bcs_occupation(emax, sp_energy, deltaf, wstates) - target_n
+    f_low = bcs_occupation(emin, sp_energy, deltaf, wstates, temperature) - target_n
+    f_high = bcs_occupation(emax, sp_energy, deltaf, wstates, temperature) - target_n
 
     # Simple bracket expansion
     emin = jnp.where(f_low > 0, emin - 100.0, emin)
@@ -100,18 +119,20 @@ def bcs_occupation(
     sp_energy: jax.Array,
     deltaf: jax.Array,
     wstates: jax.Array,
+    temperature: float = 0.0,
 ) -> jax.Array:
     """
     Calculate particle number for given Fermi energy.
 
-    BCS occupation: v^2 = 0.5 * (1 - (e - ef) / sqrt((e - ef)^2 + Delta^2))
+    BCS occupation: v^2 = 0.5 * (1 - (e - ef) / E * tanh(E / 2T)), E = sqrt((e - ef)^2 + Delta^2)
+    (tanh -> 1 at T = 0).
     """
     edif = sp_energy - eferm
     equasi = jnp.sqrt(edif**2 + deltaf**2)
     equasi_safe = jnp.maximum(equasi, 1.0e-20)
 
     # BCS v^2
-    v2 = 0.5 * (1.0 - edif / equasi_safe)
+    v2 = 0.5 * (1.0 - edif / equasi_safe * thermal_factor(equasi, temperature))
     v2 = jnp.clip(v2, 1.0e-10, 1.0 - 1.0e-10)
 
     return jnp.sum(v2 * wstates)
@@ -124,6 +145,7 @@ def find_fermi_energy(
     wstates: jax.Array,
     emin: float = -200.0,
     emax: float = 200.0,
+    temperature: float = 0.0,
 ) -> float:
     """
     Find Fermi energy that gives target particle number.
@@ -134,11 +156,13 @@ def find_fermi_energy(
         deltaf: Pairing gaps
         wstates: State degeneracy weights
         emin, emax: Search bounds
+        temperature: T in MeV (thermal occupations)
 
     Returns:
         Fermi energy
     """
-    return find_fermi_energy_jax(target_n, sp_energy, deltaf, wstates, emin, emax)
+    return find_fermi_energy_jax(target_n, sp_energy, deltaf, wstates, emin, emax,
+                                 temperature=temperature)
 
 
 def soft_cutoff(energy: jax.Array, cutoff: float, width: float) -> jax.Array:
@@ -367,8 +391,15 @@ def solve_pairing_isospin(
     smallp: float = 1.0e-6,
     use_ln: bool = False,        # Lipkin-Nogami particle-number correction
     ln_passes: int = 12,         # Illinois iterations for lambda_2 = F(lambda_2)
+    temperature: float = 0.0,    # MeV; thermal BCS (FT-HF when the gaps vanish)
+    blocked=None,                # EFA: 1 for the blocked doublet (v^2 = 1/2, no pairing)
 ):
     wstates_in = wstates         # Fermi-search weights (before the state cutoff update)
+    free = 1.0 if blocked is None else 1.0 - blocked
+    if blocked is not None:      # the doublet holds one particle outside the pairing pool
+        if use_ln:
+            raise ValueError("Lipkin-Nogami with blocking is not implemented")
+        particle_number = particle_number - 0.5 * jnp.sum(blocked * wstates)
 
     # FORTRAN convention (pairs.f90): pairwg is applied to the gap exactly once,
     # in pairgap/diagstep. The BCS solve does NOT reapply it — see pairs.f90:223,
@@ -378,8 +409,8 @@ def solve_pairing_isospin(
 
     # Find Fermi energy using effective gaps (pairwg baked in)
     eferm = find_fermi_energy(
-        particle_number, sp_energy, deltaf_eff, wstates,
-        emin=-500.0, emax=500.0,
+        particle_number, sp_energy, deltaf_eff * free, wstates * free,
+        emin=-500.0, emax=500.0, temperature=temperature,
     )
 
     # Update cutoffs
@@ -411,15 +442,21 @@ def solve_pairing_isospin(
     equasi = jnp.sqrt(edif**2 + deltaf_eff**2)
     equasi_safe = jnp.maximum(equasi, 1.0e-20)
 
-    v2 = 0.5 * (1.0 - edif / equasi_safe)
+    # At T > 0 each quasiparticle is occupied with f = 1/(1 + exp(E/T)):
+    # rho_k = v^2 (1 - f) + u^2 f and kappa_k = u v (1 - 2f), with 1 - 2f = tanh(E/2T).
+    th = thermal_factor(equasi, temperature)
+    v2_bcs = 0.5 * (1.0 - edif / equasi_safe)
+    v2 = 0.5 * (1.0 - edif / equasi_safe * th)
     # FORTRAN floors v2 at smal = 1e-10 (pairs.f90 bcs_occupation) and u*v at
     # sqrt(smallp) = sqrt(1e-6) (pairdn); smallp is not a floor on v2.  vfloor
     # keeps uv_floor = 0 (TDHFB statics) exactly unfloored.
     vfloor = jnp.minimum(smallp, 1.0e-10)
     v2 = jnp.clip(v2, vfloor, 1.0 - vfloor)
 
-    # wguv = sqrt(v2*(1-v2)), no pairwg here (already in deltaf_eff)
-    wguv = jnp.sqrt(jnp.maximum(v2 * (1.0 - v2), smallp))
+    # wguv = u v tanh(E/2T), no pairwg here (already in deltaf_eff)
+    wguv = jnp.sqrt(jnp.maximum(v2_bcs * (1.0 - v2_bcs), smallp)) * th
+    if blocked is not None:
+        v2, wguv, pairwg = jnp.where(blocked > 0.5, 0.5, v2), wguv * free, pairwg * free
 
     # Statistics — vol uses wstates only, NOT pairwg (FORTRAN comment)
     vol = 0.5 * wguv * wstates
@@ -499,6 +536,7 @@ def solve_pairing_isospin(
 
     stats['lambda2'] = lambda2
     stats['e_ln'] = lipkin_nogami_energy(lambda2, v2, wstates)
+    stats['entropy'] = qp_entropy(equasi, wstates, temperature)
     return eferm, v2, wguv, pairwg, wstates, stats
 
 def compute_pairing_gaps(
@@ -566,6 +604,8 @@ def solve_pairing(
     force: Force,
     use_ln: bool = False,
     ln_passes: int = 12,
+    temperature: float = 0.0,
+    blocked=None,
 ) -> Tuple[jax.Array, jax.Array, jax.Array, jax.Array, Pairing]:
     """
     Solve BCS pairing for both isospins.
@@ -583,6 +623,8 @@ def solve_pairing(
         force: Force parameters
         use_ln: Apply the Lipkin-Nogami correction (static)
         ln_passes: Illinois iterations for lambda_2 (static)
+        temperature: T in MeV for thermal occupations
+        blocked: (nstates,) EFA mask of the blocked doublet (physics.blocking), or None
 
     Returns:
         (wocc, wguv, pairwg_new, wstates_new, pairing)
@@ -605,6 +647,8 @@ def solve_pairing(
         smallp=force.uv_floor,
         use_ln=use_ln,
         ln_passes=ln_passes,
+        temperature=temperature,
+        blocked=None if blocked is None else blocked[:nstates_n],
     )
 
     sp_p = sp_energy[nstates_n:]
@@ -620,6 +664,8 @@ def solve_pairing(
         smallp=force.uv_floor,
         use_ln=use_ln,
         ln_passes=ln_passes,
+        temperature=temperature,
+        blocked=None if blocked is None else blocked[nstates_n:],
     )
 
     # Reassemble arrays
@@ -646,6 +692,7 @@ def solve_pairing(
         avg=jnp.array([stats_n['avg'], stats_p['avg']]),
         lambda2=jnp.array([stats_n['lambda2'], stats_p['lambda2']]),
         e_ln=jnp.array([stats_n['e_ln'], stats_p['e_ln']]),
+        entropy=jnp.array([stats_n['entropy'], stats_p['entropy']]),
     )
 
     return wocc, wguv, pairwg_new, wstates_new, pairing

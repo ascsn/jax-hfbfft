@@ -126,7 +126,7 @@ def build_fields(
     ones = jnp.ones_like(wocc)
     densities = compute_densities(
         psi, wocc, jnp.zeros_like(wocc), ones, ones, isospin, grid,
-        chunk=density_chunk,
+        chunk=density_chunk, tensor=force.tensor,
     )
 
     wcoul = jnp.zeros((grid.nx, grid.ny, grid.nz), dtype=densities.rho.dtype)
@@ -435,6 +435,7 @@ def _moments(densities: Densities, grid: Grid) -> dict:
     A = jnp.sum(rho) * w
     cm = jnp.array([jnp.sum(rho * X), jnp.sum(rho * Y), jnp.sum(rho * Z)]) * w / A
     r2 = jnp.sum(rho * (X**2 + Y**2 + Z**2)) * w / A
+    nn, nz = jnp.sum(densities.rho[0]) * w, jnp.sum(densities.rho[1]) * w
     return {
         'A': A,
         'cm_x': cm[0], 'cm_y': cm[1], 'cm_z': cm[2],
@@ -442,6 +443,8 @@ def _moments(densities: Densities, grid: Grid) -> dict:
         'r2_int': r2 - jnp.sum(cm**2),   # about the centre of mass
         'Q20': jnp.sum(rho * (2 * Z**2 - X**2 - Y**2)) * w,
         'Q22': jnp.sum(rho * (X**2 - Y**2)) * w,
+        # isovector dipole (N z_p - Z z_n)/A: the moment the isovector dipole kick excites
+        'Dz_iv': (nn * jnp.sum(densities.rho[1] * Z) - nz * jnp.sum(densities.rho[0] * Z)) * w / A,
     }
 
 
@@ -543,47 +546,98 @@ def run_tdhf(
 
 # ── Strength functions (as in Sky3D) ─────────────────────────────────────────
 
-def strength_function(times, q_of_t, eta, e_max=60.0, n_e=600, window=True):
+def response_operator(grid: Grid, kind: str, N: float, Z: float):
     """
-    Strength distribution S(E) from the time signal of a one-body observable
-    after a kick exp(-i eta Q):
+    (q_n, q_p) on the grid for the kicks of TDHF/TDHFB: 'monopole' r^2,
+    'quadrupole' 2z^2 - x^2 - y^2 (both isoscalar), and 'isovector_dipole'
+    -Z/A z (neutrons), N/A z (protons).
+    """
+    X, Y, Zc = grid.get_meshgrid()
+    if kind == 'monopole':
+        q = X**2 + Y**2 + Zc**2
+        return q, q
+    if kind == 'quadrupole':
+        q = 2 * Zc**2 - X**2 - Y**2
+        return q, q
+    if kind == 'isovector_dipole':
+        return -Z / (N + Z) * Zc, N / (N + Z) * Zc
+    raise ValueError(f"unknown response operator {kind!r}")
 
-        S(E) = (1 / pi eta) * integral dt  delta<Q>(t) sin(E t / hbar)
 
-    The energy resolution is about 2 pi hbar c / T for a run of length T
-    (1 MeV needs T ~ 1240 fm/c). The optional cos^2 window suppresses the
-    ringing caused by the abrupt end of the signal.
+def ewsr(densities: Densities, force: Force, grid: Grid, q_n: jax.Array, q_p: jax.Array) -> float:
+    """
+    Energy-weighted sum rule m1 = sum_n E_n |<n|Q|0>|^2 of Q = q_n (neutrons) + q_p (protons)
+    for a time-even ground state. A kick exp(i eta Q) adds the currents rho_q grad q_q and
+    raises the energy by eta^2 m1, so
 
-    Args:
-        times: sample times in fm/c
-        q_of_t: <Q>(t) at those times
-        eta: the kick amplitude used
-        e_max, n_e: energy grid
-        window: apply the cos^2 filter
+      m1 = sum_q h2m_q Int rho_q |grad q_q|^2
+           + sum_t C^tau_t Int [rho_t (rho_n |grad q_n|^2 +- rho_p |grad q_p|^2)
+                                - |rho_n grad q_n +- rho_p grad q_p|^2].
 
-    Returns:
-        (energies in MeV, strength)
+    The C^tau part vanishes for isoscalar Q (q_n = q_p); for the isovector dipole it is the
+    enhancement kappa of the Thomas-Reiche-Kuhn sum rule. Gradients are central
+    differences, exact for operators up to quadratic order.
+    """
+    d = (grid.dx, grid.dy, grid.dz)
+    g_n, g_p = (jnp.stack(jnp.gradient(q, *d)) for q in (q_n, q_p))
+    rn, rp = densities.rho
+    gg_n, gg_p = jnp.sum(g_n**2, axis=0), jnp.sum(g_p**2, axis=0)
+    m1 = force.h2m[0] * jnp.sum(rn * gg_n) + force.h2m[1] * jnp.sum(rp * gg_p)
+    for C, sgn in ((force.Ctau0, 1.0), (force.Ctau1, -1.0)):
+        rho_t = rn + sgn * rp
+        cur_t = rn * g_n + sgn * rp * g_p
+        m1 = m1 + C * jnp.sum(rho_t * (rn * gg_n + sgn * rp * gg_p) - jnp.sum(cur_t**2, axis=0))
+    return float(m1 * grid.wxyz)
+
+
+def strength_function(times, q_of_t, eta, e_max=60.0, n_e=600, window=True, gamma=0.0, q_minus=None):
+    """
+    Strength distribution S(E) = sum_n |<n|Q|0>|^2 delta(E - E_n) (fm^2l / MeV) from the
+    signal <Q>(t) after a kick exp(-i eta Q) (TDHF's sign; TDHFB kicks with exp(+i eta Q),
+    so pass -eta), for which delta<Q>(t) = -2 eta sum_n |<n|Q|0>|^2 sin(E_n t / hbar):
+
+        S(E) = -1 / (pi eta hbar) * integral dt  delta<Q>(t) sin(E t / hbar)
+
+    The resolution is about 2 pi hbar c / T for a run of length T (1 MeV needs
+    T ~ 1240 fm/c). The cos^2 window suppresses the ringing from the abrupt end of the
+    signal; gamma > 0 (MeV) replaces it by the damping exp(-gamma t / 2 hbar), a
+    Lorentzian of width gamma. q_minus is the signal of the same run kicked with -eta:
+    using (q - q_minus) / 2 cancels the even orders in eta, e.g. the offset from
+    nucleons the kick emits into the box.
+
+    Returns (energies in MeV, strength).
     """
     import numpy as np
     t = np.asarray(times, dtype=float)
     q = np.asarray(q_of_t, dtype=float)
-    dq = q - q[0]
-
-    if window and t[-1] > 0:
+    dq = q - q[0] if q_minus is None else 0.5 * (q - np.asarray(q_minus, dtype=float)[:len(q)])
+    if gamma > 0:
+        dq = dq * np.exp(-gamma * t / (2.0 * HBARC))
+    elif window and t[-1] > 0:
         dq = dq * np.cos(np.pi * t / (2.0 * t[-1])) ** 2
-
     E = np.linspace(0.0, e_max, n_e)
-    phase = np.outer(E / HBARC, t)                 # (n_e, n_t)
-    integrand = np.sin(phase) * dq[None, :]
-    S = np.trapezoid(integrand, t, axis=1) / (np.pi * eta)
+    S = -np.trapezoid(np.sin(np.outer(E / HBARC, t)) * dq[None, :], t, axis=1) / (np.pi * eta * HBARC)
     return E, S
 
 
+def kick_strength(history: dict, kind: str, eta: float, minus: Optional[dict] = None, **kw):
+    """
+    strength_function for a kick of response_operator(kind) with exp(-i eta Q), from a
+    history (dict of arrays with 'time' and the moment the kick excites); minus is the
+    history of the run kicked with -eta.
+    """
+    import numpy as np
+    key = {'monopole': 'r2', 'quadrupole': 'Q20', 'isovector_dipole': 'Dz_iv'}[kind]
+    A = history['A'] if 'A' in history else history['N'] + history['Z']
+    signal = lambda h: np.asarray(h[key]) * (A[0] if key == 'r2' else 1.0)    # r2 is per nucleon
+    return strength_function(history['time'], signal(history), eta,
+                             q_minus=None if minus is None else signal(minus), **kw)
+
+
 def strength_moments(E, S, e_min=0.0):
-    """Moments m0, m1 and the centroid m1/m0 of |S(E)| above e_min."""
+    """Moments m0, m1 and the centroid m1/m0 of S(E) above e_min."""
     import numpy as np
     m = E >= e_min
-    Em, Sm = E[m], np.abs(S[m])
-    m0 = np.trapezoid(Sm, Em)
-    m1 = np.trapezoid(Em * Sm, Em)
+    m0 = np.trapezoid(S[m], E[m])
+    m1 = np.trapezoid(E[m] * S[m], E[m])
     return float(m0), float(m1), float(m1 / m0) if m0 > 0 else float('nan')

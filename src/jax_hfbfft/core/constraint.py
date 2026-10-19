@@ -14,8 +14,15 @@ import dataclasses
 import numpy as np
 
 
+# The neck operator Q_N = Int rho exp(-((z - neck_z) / neck_width)^2) is stored
+# under this reserved key (negative keys are internal, like the principal axes).
+NECK = (-3, 0)
+
 # Mapping from common multipole names to (lambda, mu) tuples
 MULTIPOLE_NAMES = {
+    # Neck (particle number in a slab around z = neck_z)
+    'QN': NECK,
+
     # Monopole (lambda=0)
     'Q00': (0, 0),
 
@@ -120,6 +127,8 @@ def multipole_name(lam: int, mu: int) -> str:
     Returns:
         Standard name like 'Q20', 'Q30', etc.
     """
+    if (lam, mu) == NECK:
+        return 'QN'
     name = f"Q{lam}{abs(mu)}"
     if name in MULTIPOLE_NAMES and MULTIPOLE_NAMES[name] == (lam, mu):
         return name
@@ -137,14 +146,7 @@ def beta_gamma_to_multipoles(
     """
     Convert beta-gamma deformation parameters to multipole moments.
 
-    The Hill-Wheeler parameterization relates deformation parameters to
-    multipole moments via:
-
-    Q_λμ = β_λ × A^((2λ+1)/3) × R₀^λ × Y_λμ_factor
-
-    where R₀ = r₀ × A^(1/3) is the nuclear radius parameter.
-
-    For quadrupole deformation (targets for Q₂₀ = 2z² - x² - y², Q₂₂ = x² - y²):
+    With R₀ = r₀ A^(1/3), for quadrupole deformation (targets for Q₂₀ = 2z² - x² - y², Q₂₂ = x² - y²):
     - Q₂₀ = (3/√(5π)) × β₂ × A × R₀² × cos(γ)
     - Q₂₂ = (√3/√(5π)) × β₂ × A × R₀² × sin(γ)
 
@@ -177,17 +179,10 @@ def beta_gamma_to_multipoles(
         >>> beta_gamma_to_multipoles(beta2=0.3, mass_number=16)
         {(2, 0): 33.2}
 
-        >>> # Oblate (using negative beta)
-        >>> beta_gamma_to_multipoles(beta2=-0.25, mass_number=40)
-        {(2, 0): -127.5}
-
         >>> # Triaxial
         >>> beta_gamma_to_multipoles(beta2=0.25, gamma=30, mass_number=40)
         {(2, 0): 110.4, (2, 2): 36.8}
 
-        >>> # Octupole deformation (pear shape)
-        >>> beta_gamma_to_multipoles(beta3=0.1, mass_number=224)
-        {(3, 0): 5546.7}
 
     Raises:
         ValueError: If mass_number is not provided when beta parameters are given
@@ -316,35 +311,14 @@ class Constraint:
     """
     Constraint configuration for constrained HFB calculations.
 
-    This class defines constraints that can be applied during HFB iterations
-    to control nuclear deformation and other collective degrees of freedom.
-
-    Supports arbitrary multipole moment constraints specified either by name
-    (e.g., 'Q20', 'Q30', 'Q22') or by quantum numbers (e.g., (2, 0), (3, 0)).
+    Multipoles are given by name ('Q20') or as (lambda, mu) tuples. The solver
+    implements Q10 (the centre of mass), Q20, Q22, Q30, Q32 and Q40, plus the
+    optional principal-axes constraints.
 
     Examples:
-        >>> # Spherical (no constraints)
-        >>> constraint = Constraint.spherical()
-
-        >>> # Single Q20 constraint
-        >>> constraint = Constraint.from_multipoles({'Q20': 5.0})
-
-        >>> # Multiple multipole constraints
-        >>> constraint = Constraint.from_multipoles({
-        ...     'Q20': 5.0,   # Quadrupole deformation
-        ...     'Q30': 2.0,   # Octupole deformation
-        ...     'Q22': 1.0,   # Triaxial deformation
-        ... })
-
-        >>> # Using tuple notation for arbitrary multipoles
-        >>> constraint = Constraint.from_multipoles({
-        ...     (2, 0): 5.0,   # Same as 'Q20'
-        ...     (4, 0): 1.0,   # Hexadecapole
-        ...     (6, 2): 0.5,   # Higher multipole
-        ... })
-
-        >>> # Legacy interface (deprecated, use from_multipoles instead)
-        >>> constraint = Constraint(alpha20_wanted=0.3)
+        >>> Constraint.spherical()                                # unconstrained
+        >>> Constraint.from_multipoles({'Q20': 50.0, 'Q30': 20.0})
+        >>> Constraint.from_beta_gamma(mass_number=40, beta2=0.2)
 
     Attributes:
         multipole_constraints: Dictionary mapping multipoles to target values.
@@ -369,6 +343,8 @@ class Constraint:
     d0constr: float = 1e-4         # Small parameter to avoid division by zero
     qepsconstr: float = 1.0        # Overall gain on the in-loop multiplier update
     dampgamma: float = 1.0         # Damping parameter for masking function
+    neck_z: float = 0.0            # Neck position (fm) for the QN constraint
+    neck_width: float = 1.0        # Neck Gaussian width (fm), as in HFBTHO
     damprad: Optional[float] = None  # Damping radius (fm); None = scale with A and the
                                      # goal deformation (physics.constraints.default_damprad)
 
@@ -431,8 +407,6 @@ class Constraint:
         """
         Create constraint from arbitrary multipole moments.
 
-        This is the recommended way to create multipole constraints.
-
         Args:
             multipoles: Dictionary mapping multipole specs to target values.
                 Keys can be:
@@ -445,22 +419,8 @@ class Constraint:
         Returns:
             Constraint object with specified multipole constraints
 
-        Examples:
-            >>> # Prolate Q20 constraint
-            >>> c = Constraint.from_multipoles({'Q20': 5.0})
-
-            >>> # Multiple constraints
-            >>> c = Constraint.from_multipoles({
-            ...     'Q20': 5.0,
-            ...     'Q30': 2.0,
-            ...     'Q22': 1.0,
-            ... })
-
-            >>> # Using tuple notation
-            >>> c = Constraint.from_multipoles({
-            ...     (2, 0): 5.0,
-            ...     (4, 0): 1.0,
-            ... })
+        Example:
+            >>> Constraint.from_multipoles({'Q20': 50.0, (3, 0): 20.0})
         """
         return cls(
             multipole_constraints=multipoles,
@@ -482,88 +442,30 @@ class Constraint:
         **kwargs
     ) -> "Constraint":
         """
-        Create constraint from beta-gamma deformation parameters.
+        Create a constraint from Hill-Wheeler deformation parameters.
 
-        This method converts Hill-Wheeler (β, γ) parameterization to multipole
-        moments and creates the appropriate constraints. Commonly used in
-        publications and experimental data.
+        The parameters are converted to Q20, Q22, Q30 and Q40 targets by
+        beta_gamma_to_multipoles (R0 = r0 A^(1/3)). beta2 > 0 is prolate and
+        beta2 < 0 oblate, both about the z axis; beta2 > 0 with gamma = 60 deg
+        is oblate about the y axis.
 
-        The Hill-Wheeler parameterization:
-        - β₂: Quadrupole deformation parameter
-          * β₂ > 0: Prolate (football shape, elongated)
-          * β₂ < 0: Oblate (pancake shape, flattened)
-          * Typical magnitude: 0.0-0.6
-        - γ: Triaxiality angle in degrees (for non-axially symmetric shapes)
-          * γ = 0°: Axially symmetric
-          * 0° < γ < 60°: Triaxial (asymmetric)
-        - β₃: Octupole deformation (pear shape, typical: 0.0-0.2)
-        - β₄: Hexadecapole deformation (typical: 0.0-0.1)
-
-        Sign convention: Use β₂ > 0 for prolate or β₂ < 0 for oblate, both
-        about the z axis. β₂ > 0 with γ = 60° is also oblate, but about the
-        y axis.
+        The multipole operators are damped beyond `damprad` (a keyword
+        argument). By default it scales with A and the goal deformation and
+        stays 3 fm inside the box (physics.constraints.default_damprad).
 
         Args:
-            mass_number: Nuclear mass number A (protons + neutrons)
-            beta2: Quadrupole deformation parameter
-                   Positive = prolate, negative = oblate
-            gamma: Triaxiality angle in degrees (default: 0 = axially symmetric)
-            beta3: Octupole deformation parameter
-            beta4: Hexadecapole deformation parameter
-            r0: Radius parameter in fm (default: 1.2 fm)
-            principal_axes: Whether to enable principal axes constraints
-            **kwargs: Additional constraint parameters
+            mass_number: Mass number A.
+            beta2: Quadrupole deformation.
+            gamma: Triaxiality angle in degrees (default 0, axial).
+            beta3: Octupole deformation.
+            beta4: Hexadecapole deformation.
+            r0: Radius parameter in fm.
+            principal_axes: Also constrain the principal axes (fixes the
+                orientation of a deformed shape).
+            **kwargs: Other Constraint fields (damprad, dampgamma, c0constr, ...).
 
-        Returns:
-            Constraint object with multipole constraints corresponding to
-            the specified deformation parameters
-
-        Examples:
-            >>> # Prolate deformation (typical for rare-earth nuclei)
-            >>> c = Constraint.from_beta_gamma(
-            ...     mass_number=238,
-            ...     beta2=0.25
-            ... )
-
-            >>> # Oblate deformation (using negative beta)
-            >>> c = Constraint.from_beta_gamma(
-            ...     mass_number=40,
-            ...     beta2=-0.30
-            ... )
-
-            >>> # Triaxial deformation
-            >>> c = Constraint.from_beta_gamma(
-            ...     mass_number=190,
-            ...     beta2=0.2,
-            ...     gamma=30
-            ... )
-
-            >>> # Octupole deformation (pear shape, e.g., for Ra-224)
-            >>> c = Constraint.from_beta_gamma(
-            ...     mass_number=224,
-            ...     beta2=0.1,
-            ...     gamma=0,
-            ...     beta3=0.08
-            ... )
-
-            >>> # Multiple deformations
-            >>> c = Constraint.from_beta_gamma(
-            ...     mass_number=152,
-            ...     beta2=0.3,
-            ...     gamma=0,
-            ...     beta4=0.05
-            ... )
-
-        Notes:
-            - The conversion uses R₀ = r₀ × A^(1/3) for the nuclear radius
-            - Standard r₀ = 1.2 fm, but can be adjusted (e.g., 1.1-1.3 fm)
-            - For axially symmetric shapes about z, set gamma=0 and use the sign
-              of beta2 (gamma=60 gives an oblate shape about the y axis)
-            - For reflection-asymmetric shapes, include beta3 (octupole)
-            - The multipole operators are damped beyond `damprad`. By default it
-              scales with A and the goal deformation (about 2.2 R0 along the long
-              axis) and stays 3 fm inside the box; a warning is printed if the box
-              is too small for the requested shape
+        Example:
+            >>> Constraint.from_beta_gamma(mass_number=238, beta2=0.25, principal_axes=True)
         """
         # Convert beta-gamma to multipoles
         multipoles = beta_gamma_to_multipoles(

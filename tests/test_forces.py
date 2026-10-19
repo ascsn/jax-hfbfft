@@ -44,12 +44,19 @@ UNEDF = {
                    Cdrho0=-45.1351310222373030, Cdrho1=-145.382167908056999,
                    CdJ0=-74.0263331764599002, CdJ1=-35.6582611147916992,
                    power=0.270018011502707600),
+    "UNEDF2": dict(Crho0=-650.796319465688839, Crho1=291.664014339185485,
+                   Crho0D=768.327705882033570, Crho1D=-283.187292227492492,
+                   Ctau0=9.78520558824309639, Ctau1=-23.3573612977035339,
+                   Cdrho0=-46.8314091470605973, Cdrho1=-113.163790795259004,
+                   CdJ0=-64.3088624157838069, CdJ1=-38.6501946851355029,
+                   CJ0=-54.4333635973721002, CJ1=-65.9030310445938028,
+                   power=0.351455132555483607),
 }
 
 # Centre-of-mass treatment each functional was fitted with (see the zpe
 # values in the header of _forces.yml).
 ZPE = {"SLy4": 0, "SLy5": 0, "SLy6": 3, "SkM*": 0, "SkP": 0, "SIII": 0,
-       "UNEDF0": 0, "UNEDF1": 2}
+       "UNEDF0": 0, "UNEDF1": 2, "UNEDF2": 2}
 
 
 @pytest.mark.parametrize("name", sorted(SKYRME))
@@ -75,3 +82,15 @@ def test_unedf_coupling_constants(name):
 @pytest.mark.parametrize("name", sorted(ZPE))
 def test_cm_correction_flag(name):
     assert int(Force.from_name(name).zpe) == ZPE[name]
+
+
+def test_central_j2_terms():
+    """SLy5 and SkP carry the J^2 terms of their central force; HFBTHO gives
+    CJ0 = 14.65886375, CJ1 = 65.0575 for its SLy5 parameters."""
+    from jax_hfbfft.core.force import Force
+    t1, x1, t2, x2 = 484.23, -0.317, -556.69, -1.0
+    assert (t1 - t2) / 16 - (t1 * x1 + t2 * x2) / 8 == pytest.approx(14.65886375)
+    for name in ("SLy5", "SkP"):
+        f = Force.from_name(name)
+        assert float(f.CJ1) == pytest.approx((float(f.t1) - float(f.t2)) / 16)
+    assert float(Force.from_name("SLy4").CJ0) == 0.0

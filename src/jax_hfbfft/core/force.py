@@ -132,6 +132,12 @@ class Force:
     Ctau1: float = 0.0
     CdJ0: float = 0.0
     CdJ1: float = 0.0
+    # J^2 (tensor) couplings, coefficients of sum_mu,nu J_mu,nu^2 (HFBTHO's CJ). The vector
+    # (antisymmetric) part of J_mu,nu, 1/2 J^2, always acts; the symmetric part needs
+    # `tensor`, set for forces with j2 in the force file.
+    CJ0: float = 0.0
+    CJ1: float = 0.0
+    tensor: bool = field(default=False, metadata=dict(static=True))
 
     def __post_init__(self):
         """Calculate derived coefficients after initialization."""
@@ -235,6 +241,18 @@ class Force:
                 f"Force '{name}' has no '{block}:' block; pass v0prot/v0neut "
                 f"explicitly for ipair={ipair}."
             )
+        # J^2 terms: 'central' = those of the Skyrme central force (SLy5, SkP),
+        # or explicit [CJ0, CJ1]
+        j2 = force_params.get('j2')
+        if j2 == 'central':
+            t1, t2 = init_kwargs['t1'], init_kwargs['t2']
+            x1, x2 = init_kwargs['x1'], init_kwargs['x2']
+            init_kwargs['CJ0'] = (t1 - t2) / 16 - (t1 * x1 + t2 * x2) / 8
+            init_kwargs['CJ1'] = (t1 - t2) / 16
+        elif j2 is not None:
+            init_kwargs['CJ0'], init_kwargs['CJ1'] = (float(c) for c in j2)
+        init_kwargs['tensor'] = j2 is not None
+
         # Apply user overrides
         init_kwargs.update(kwargs)
         # A negative strength is a file's "not fitted" placeholder.

@@ -52,6 +52,12 @@ from jax_hfbfft.physics.dynamics import (
     run_tdhf,
     observables,
 )
+from jax_hfbfft.physics.constraints import multipole_operator
+from jax_hfbfft.physics.inertia import cranking_inertia, moment_of_inertia
+from jax_hfbfft.physics.projection import project_particle_number
+from jax_hfbfft.physics.form_factors import form_factors
+from jax_hfbfft.physics.paths import least_action_path, minimum_energy_path
+from jax_hfbfft.physics.blocking import efa_candidates, run_odd
 
 __all__ = [
     # Densities
@@ -80,6 +86,15 @@ __all__ = [
     "SolverConfig",
     "run_hfb",
     "run_constrained_scan",
+    "multipole_operator",
+    "cranking_inertia",
+    "moment_of_inertia",
+    "project_particle_number",
+    "form_factors",
+    "minimum_energy_path",
+    "least_action_path",
+    "efa_candidates",
+    "run_odd",
     "hfb_iteration",
     "create_initial_state",
     # Dynamics

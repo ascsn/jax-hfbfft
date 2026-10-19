@@ -10,6 +10,8 @@
 #   - h2m is ℏ²/2m in MeV·fm²
 #   - zpe selects the centre-of-mass correction: 0 = h2m*(1-1/A), 1 = 17.3/A^0.2,
 #     2 = none, 3 = microscopic <P^2>/2mA on the final state (SkyAx zpe=1)
+#   - j2 adds J^2 (tensor) terms: 'central' for those of the Skyrme central force,
+#     or [CJ0, CJ1] as coefficients of sum J_mu,nu^2 (HFBTHO's CJ)
 
 SLy4:
   description: "Standard Lyon Skyrme parameterization"
@@ -32,7 +34,7 @@ SLy4:
 SLy5:
   description: "Lyon Skyrme parameterization with different spin-orbit"
   reference: "Chabanat et al., Nucl. Phys. A 635 (1998) 231"
-  # fitted with J^2 terms, which are not implemented
+  j2: central  # J^2 terms of the central force, as in the fit
   ex: 1
   zpe: 0
   h2m: [20.73553, 20.73553]
@@ -105,7 +107,7 @@ SkM*:
 SkP:
   description: "Skyrme parameterization with pairing"
   reference: "Dobaczewski et al., Nucl. Phys. A 422 (1984) 103"
-  # fitted with J^2 terms, which are not implemented
+  j2: central  # J^2 terms of the central force, as in the fit
   ex: 1
   zpe: 0
   h2m: [20.73553, 20.73553]
@@ -175,3 +177,23 @@ UNEDF1:
   x3: -0.16249117
   b4p: 71.3165222296
   power: 0.2700180115
+
+UNEDF2:
+  description: "UNEDF2 universal functional"
+  reference: "Kortelainen et al., Phys. Rev. C 89 (2014) 054314"
+  ex: 1
+  zpe: 2  # as HFBTHO's UNE2 (no c.m. correction)
+  h2m: [20.73553, 20.73553]
+  # t, x, b4, b4p, power and the tensor couplings as defined in HFBTHO (UNE2)
+  t0: -1735.45685190850349
+  t1: 262.814456235313969
+  t2: 1183.31263243304011
+  t3: 12293.2432941125371
+  t4: 51.317335461296608  # 2*b4, b4 = 25.6586677306483040
+  x0: 0.172247227624101162
+  x1: -3.76692685046941023
+  x2: -1.38349812677880979
+  x3: 0.0528642727436126059
+  b4p: 77.3003893702710059
+  power: 0.351455132555483607
+  j2: [-54.4333635973721002, -65.9030310445938028]

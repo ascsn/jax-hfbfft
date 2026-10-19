@@ -44,6 +44,11 @@ class Meanfield:
     wlspot: jax.Array    # Spin-orbit potential vector
     dbmass: jax.Array    # Gradient of effective mass
     ecorrp: jax.Array    # Pairing correlation energy correction (scalar)
+    # Symmetric spin-current field W_mu,nu = dE/dJ_mu,nu (2, 6, ...), components as
+    # Densities.jsym; None unless the force has full J^2 terms (Force.tensor)
+    wtens: Optional[jax.Array] = None
+    # Spin-kinetic field F_nu = dE/dT_nu (2, 3, ...) of the s.T partner; None unless Force.tensor
+    fspin: Optional[jax.Array] = None
 
     @classmethod
     def zeros(cls, nx: int, ny: int, nz: int) -> "Meanfield":
@@ -244,6 +249,9 @@ def _compute_skyrme_meanfield_core(
         (b4 + b4p) * grad_rho[0] + b4 * grad_rho[1],
         (b4 + b4p) * grad_rho[1] + b4 * grad_rho[0],
     ], axis=0)
+    # J^2 terms, E_J = 1/2 sum_t CJ_t J_t^2 (J0 = Jn + Jp, J1 = Jp - Jn): W_q += dE_J/dJ_q
+    J0, J1 = sodens[0] + sodens[1], sodens[1] - sodens[0]
+    wlspot = wlspot + jnp.stack([force.CJ0 * J0 - force.CJ1 * J1, force.CJ0 * J0 + force.CJ1 * J1])
 
     # =========================================================================
     # Step 7: Curl of spin density (vectorized)
@@ -302,7 +310,14 @@ def _compute_skyrme_meanfield_core(
         2.0 * c_sDs0 * lap_s_iso - 2.0 * c_sDs1 * lap_s_vec,
     ], axis=0)
 
-    # The s.T coupling is not implemented (as in Sky3D).
+    # s.T, the time-odd partner of the J^2 terms (Galilean invariance pairs s.T - J_mu,nu^2,
+    # so C^T_t = -CJ_t): E = -sum_t CJ_t s_t.T_t, s1 = sp - sn.  dE/ds_q enters spot here,
+    # dE/dT_q is Meanfield.fspin.
+    fspin = None
+    if densities.tspin is not None:
+        T0, T1 = densities.tspin[0] + densities.tspin[1], densities.tspin[1] - densities.tspin[0]
+        spot = spot - jnp.stack([force.CJ0 * T0 - force.CJ1 * T1, force.CJ0 * T0 + force.CJ1 * T1])
+        fspin = -jnp.stack([force.CJ0 * s_iso + force.CJ1 * s_vec, force.CJ0 * s_iso - force.CJ1 * s_vec])
 
     # =========================================================================
     # Step 12: Divergence of A vector (vectorized)
@@ -352,7 +367,17 @@ def _compute_skyrme_meanfield_core(
         wlspot=wlspot,
         dbmass=dbmass,
         ecorrp=jnp.asarray(ecorrp),  # Keep as JAX scalar array
+        wtens=_tensor_field(densities.jsym, force),
+        fspin=fspin,
     )
+
+
+def _tensor_field(jsym, force):
+    """W_q = dE/dJ^S_q of sum_t CJ_t sum_mu,nu (J^S_t,mu,nu)^2, J0 = Jn + Jp, J1 = Jp - Jn."""
+    if jsym is None:
+        return None
+    j0, j1 = jsym[0] + jsym[1], jsym[1] - jsym[0]
+    return 2.0 * jnp.stack([force.CJ0 * j0 - force.CJ1 * j1, force.CJ0 * j0 + force.CJ1 * j1])
 
 
 def compute_skyrme_meanfield(
@@ -438,7 +463,51 @@ def apply_hamiltonian(
     # Step 5: z-derivatives
     pout = _add_derivative_terms_z(pout, psi, meanfield, iq, grid, sigis)
 
+    # Step 6: symmetric spin-current (J^2) term and its s.T partner
+    if meanfield.wtens is not None:
+        pout = pout + _tensor_term(psi, meanfield.wtens[iq], grid)
+    if meanfield.fspin is not None:
+        pout = pout + _spin_kinetic_term(psi, meanfield.fspin[iq], grid)
+
     return pout
+
+
+# (mu, nu) -> component of the symmetric 6-vector (xx, yy, zz, xy, xz, yz)
+_SYM = ((0, 3, 4), (3, 1, 5), (4, 5, 2))
+
+
+def _sigma(nu: int, p: jax.Array) -> jax.Array:
+    """Pauli matrix sigma_nu on a spinor p of shape (2, ...)."""
+    if nu == 0:
+        return jnp.stack([p[1], p[0]])
+    if nu == 1:
+        return jnp.stack([-1j * p[1], 1j * p[0]])
+    return jnp.stack([p[0], -p[1]])
+
+
+def _tensor_term(psi, W, grid):
+    """
+    dE/dpsi^+ of Int sum_mu,nu W_mu,nu J_mu,nu for a symmetric field W (6 components),
+    with J_mu,nu = Im psi^+ sigma_nu d_mu psi:
+        -(i/2) sum_mu,nu [W_mu,nu sigma_nu d_mu psi + d_mu (W_mu,nu sigma_nu psi)].
+    """
+    out = 0.0
+    for mu, (der, spec) in enumerate(((grid.der1x, 'ij,sjkl->sikl'), (grid.der1y, 'ij,skjl->skil'),
+                                      (grid.der1z, 'ij,sklj->skli'))):
+        dpsi = jnp.einsum(spec, der, psi)
+        out = out + sum(W[_SYM[mu][nu]] * _sigma(nu, dpsi) for nu in range(3))
+        out = out + jnp.einsum(spec, der, sum(W[_SYM[mu][nu]] * _sigma(nu, psi) for nu in range(3)))
+    return -0.5j * out
+
+
+def _spin_kinetic_term(psi, F, grid):
+    """dE/dpsi^+ of Int F . T with T_nu = sum_mu (d_mu psi)^+ sigma_nu d_mu psi: -sum_mu d_mu (F.sigma d_mu psi)."""
+    out = 0.0
+    for der, spec in ((grid.der1x, 'ij,sjkl->sikl'), (grid.der1y, 'ij,skjl->skil'),
+                      (grid.der1z, 'ij,sklj->skli')):
+        dpsi = jnp.einsum(spec, der, psi)
+        out = out - jnp.einsum(spec, der, sum(F[nu] * _sigma(nu, dpsi) for nu in range(3)))
+    return out
 
 
 def _kinetic_term(psi, dpsi, der1, der2, bmass, dbmass, spec):

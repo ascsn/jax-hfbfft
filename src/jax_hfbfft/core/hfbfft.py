@@ -187,6 +187,18 @@ class HFBFFTState:
     npmin: Optional[jax.Array] = None         # Starting index per isospin
 
 
+def default_npsi(nucleus: Nucleus, force: Force) -> Tuple[int, int]:
+    """
+    Default basis (npsi_n, npsi_p): exactly N and Z without pairing; with pairing
+    N + 1.65 N^(2/3) (at least 126) and Z + 1.65 Z^(2/3) (at least 82), rounded to
+    even numbers, as in the FORTRAN code.
+    """
+    if force.ipair == 0:
+        return nucleus.neutrons, nucleus.protons
+    pad = lambda n, floor: max(floor, int(2 * round((n + int(1.65 * n ** 0.666667)) / 2)))
+    return pad(nucleus.neutrons, 126), pad(nucleus.protons, 82)
+
+
 @dataclass
 class HFBFFTResults:
     """
@@ -228,6 +240,9 @@ class HFBFFTResults:
     lambda2_n: float = 0.0           # Lipkin-Nogami lambda_2 (0 if LN off)
     lambda2_p: float = 0.0
     ln_energy: float = 0.0           # Lipkin-Nogami energy, included in total_energy
+    temperature: float = 0.0         # MeV
+    entropy: float = 0.0             # quasiparticle entropy (k_B = 1)
+    free_energy: float = 0.0         # F = E - T S (equals total_energy at T = 0)
     zpe: int = 0                     # c.m. treatment (see _forces.yml header)
     fermi_energy_n: float = 0.0
     fermi_energy_p: float = 0.0
@@ -237,6 +252,10 @@ class HFBFFTResults:
     gamma: float = 0.0
     q20: float = 0.0
     q22: float = 0.0
+    q30: float = 0.0                 # along z about the centre of mass
+    q40: float = 0.0
+    beta3: float = 0.0
+    beta4: float = 0.0
 
     # Radii
     rms_radius_n: float = 0.0
@@ -254,12 +273,9 @@ class HFBFFT:
     """
     Main class for Hartree-Fock-Bogoliubov calculations with FFT.
 
-    This class encapsulates all the state and methods needed to perform
-    nuclear structure calculations using the Hartree-Fock-Bogoliubov (HFB)
-    method with Skyrme-type effective interactions.
-
-    Each HFBFFT instance is independent and can be used for parallel
-    calculations with different nuclei, forces, or constraints.
+    Holds the state of one static Skyrme-HFB calculation (nucleus, force, grid,
+    constraint, orbitals and results). Instances are independent, so several
+    nuclei or forces can be solved one after another in one process.
 
     Attributes:
         nucleus (Nucleus): The nuclear system specification
@@ -279,16 +295,6 @@ class HFBFFT:
         ... )
         >>> calc.run(max_iterations=1000)
         >>> print(f"E = {calc.results.total_energy:.3f} MeV")
-
-        >>> # Multiple calculations in parallel
-        >>> nuclei = [
-        ...     Nucleus.from_symbol("Ca", 40),
-        ...     Nucleus.from_symbol("Ca", 48),
-        ...     Nucleus.from_symbol("Sn", 132),
-        ... ]
-        >>> calcs = [HFBFFT(nucleus=n, force=force) for n in nuclei]
-        >>> for calc in calcs:
-        ...     calc.run()
     """
 
     def __init__(
@@ -371,19 +377,7 @@ class HFBFFT:
 
         # Calculate basis size
         if npsi is None:
-            # Check if pairing is disabled
-            if self.force.ipair == 0:
-                # No pairing: only need exactly N and Z states
-                n_basis = nucleus.neutrons
-                p_basis = nucleus.protons
-            else:
-                # With pairing: need extra states for the pairing window
-                # Use formula from original code, round to nearest even integer
-                def round_even(x):
-                    return int(2 * round(x / 2))
-                n_basis = max(126, round_even(nucleus.neutrons + int(1.65 * (nucleus.neutrons ** 0.666667))))
-                p_basis = max(82, round_even(nucleus.protons + int(1.65 * (nucleus.protons ** 0.666667))))
-            self._npsi = (n_basis, p_basis)
+            self._npsi = default_npsi(nucleus, self.force)
         else:
             self._npsi = npsi
             # Warn if npsi is smaller than particle numbers
@@ -420,6 +414,8 @@ class HFBFFT:
         # Lipkin-Nogami correction (SolverConfig.use_ln / ln_passes)
         self.use_ln: bool = False
         self.ln_passes: int = 12
+        # Temperature in MeV (SolverConfig.temperature)
+        self.temperature: float = 0.0
         # HFB preconditioner floor (SolverConfig.precond_floor); ~1e-8 for TDHFB statics
         self.precond_floor: float = 0.1
 
@@ -817,6 +813,7 @@ class HFBFFT:
             pairenhance=self.pairenhance,
             use_ln=self.use_ln,
             ln_passes=self.ln_passes,
+            temperature=self.temperature,
             precond_floor=self.precond_floor,
         )
 
@@ -1249,6 +1246,7 @@ class HFBFFT:
 
         # Store the solver state
         self._solver_state = final_state
+        self._warn_unreached_constraints(final_state)
         if checkpoint_file is not None:
             self._save_solver_state(checkpoint_file, final_state)
 
@@ -1289,6 +1287,10 @@ class HFBFFT:
             lambda2_n=float(final_state.pairing.lambda2[0]),
             lambda2_p=float(final_state.pairing.lambda2[1]),
             ln_energy=float(jnp.sum(final_state.pairing.e_ln)),
+            temperature=self.temperature,
+            entropy=float(jnp.sum(final_state.pairing.entropy)),
+            free_energy=float(final_state.energies.ehf)
+                        - self.temperature * float(jnp.sum(final_state.pairing.entropy)),
             zpe=int(self.force.zpe),
             fermi_energy_n=float(final_state.pairing.eferm[0]),
             fermi_energy_p=float(final_state.pairing.eferm[1]),
@@ -1301,6 +1303,10 @@ class HFBFFT:
             gamma=radii.gamma,
             q20=radii.q20,
             q22=radii.q22,
+            q30=radii.q30,
+            q40=radii.q40,
+            beta3=radii.beta3,
+            beta4=radii.beta4,
         )
 
         # If constrained, report Q20/Q22 and beta2 from constraint expectations
@@ -1545,6 +1551,18 @@ class HFBFFT:
         """The SolverState returned by the last run(), or None before one."""
         return getattr(self, '_solver_state', None)
 
+    def project_particle_number(self, n_gauge: int = 11) -> dict:
+        """
+        Particle-number projection after variation of the last run() (even-even, T = 0):
+        physics.project_particle_number with total_energy, the static total energy with
+        the projection correction in place of the Lipkin-Nogami energy.
+        """
+        from jax_hfbfft.physics.projection import project_particle_number
+        out = project_particle_number(self.solver_state, self.grid, self.solver_force, n_gauge,
+                                      use_coulomb=self.include_coulomb)
+        out['total_energy'] = self.results.total_energy - self.results.ln_energy + out['correction']
+        return out
+
     @property
     def total_energy(self) -> float:
         """Return the current total energy."""
@@ -1568,6 +1586,21 @@ class HFBFFT:
             callback: Function with signature (hfbfft, iteration, fluctuation)
         """
         self._callbacks.append(callback)
+
+    def _warn_unreached_constraints(self, state) -> None:
+        """Warn when a driven (nonzero-goal) constraint ends more than 5% off its goal."""
+        cs = state.constraint_state
+        if cs is None or cs.goal_crank.shape[0] == 0:
+            return
+        from jax_hfbfft.physics.constraints import compute_constraint_expectations
+        got = np.asarray(compute_constraint_expectations(cs, state.densities, self.grid))
+        goal = np.asarray(cs.goal_crank)
+        miss = (goal != 0) & (np.abs(got - goal) > 0.05 * np.abs(goal))
+        if miss.any():
+            pairs = ', '.join(f"{g:.1f} -> {a:.1f}" for g, a in zip(goal[miss], got[miss]))
+            print(f"WARNING: constrained moments not reached (goal -> achieved: {pairs}). The "
+                  f"in-loop multiplier update can stall short of the goal; use "
+                  f"physics.run_constrained_scan for accurate constrained points.")
 
     def _checkpoint_meta(self) -> dict:
         f = self.force

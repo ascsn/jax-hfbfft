@@ -197,3 +197,33 @@ class TestPairCutoff:
         assert abs(h[-1]['E'] - h[0]['E']) < 1e-3
         S, _ = T.relax(td.state, td.grid, td.force, td.cs, n_iter=20)
         assert T.energy(S, td.grid, td.force, td.cs)[0] < h[-1]['E']
+
+
+class TestKicksAndBoosts:
+    """On the coarse 9^3 fixture the c.m. leak (~2e-3 of the dipole response) and the
+    boost velocity error (~2%) are discretisation effects; both shrink on finer grids."""
+
+    def test_isovector_dipole_kick_leaves_cm_at_rest(self, static):
+        td = TDHFB.from_static(static).kick_isovector_dipole(0.02)
+        h = td.run(20)
+        dD = abs(h[-1]['Dz_iv'] - h[0]['Dz_iv'])
+        assert dD > 1e-4
+        assert abs(h[-1]['cm_z'] - h[0]['cm_z']) < 5e-3 * dD
+
+    def test_boost_moves_cm_at_the_set_velocity(self, static):
+        k = 0.05
+        td = TDHFB.from_static(static).boost((0.0, 0.0, k))
+        h = td.run(20)
+        v = 2 * float(td.force.h2m[0]) * k / T.HBARC      # h2m carries the (1 - 1/A) of zpe 0
+        assert (h[-1]['cm_z'] - h[0]['cm_z']) / (h[-1]['time'] - h[0]['time']) == pytest.approx(v, rel=3e-2)
+
+
+@pytest.mark.parametrize("kind, kick", [("monopole", "kick_monopole"),
+                                        ("isovector_dipole", "kick_isovector_dipole")])
+def test_kick_energy_matches_ewsr(static, kind, kick):
+    """A kick exp(i eta Q) raises the energy by eta^2 m1 (dynamics.ewsr)."""
+    td = TDHFB.from_static(static)
+    e0, m1 = td.observables()['E'], td.ewsr(kind)
+    eta = 0.01 if kind == "monopole" else 0.05
+    getattr(td, kick)(eta)
+    assert (td.observables()['E'] - e0) / eta**2 == pytest.approx(m1, rel=2e-2)

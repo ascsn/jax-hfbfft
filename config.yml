@@ -174,12 +174,10 @@ physics:
   # Include Coulomb interaction for protons
   include_coulomb: true
 
-  # Time-reversal symmetry (true = even-even nuclei, standard)
-  time_reversal: true
-
-  # Include time-odd terms in mean field
-  # Usually false for ground states, true for odd-mass or rotating nuclei
-  time_odd: false
+  # Temperature in MeV (0 = ground state). The solver then minimises the free
+  # energy F = E - T S with thermal BCS occupations; needs ipair 5/6, and
+  # v0 = 0 gives finite-temperature Hartree-Fock. Not with use_ln.
+  temperature: 0.0
 
 # ----------------------------------------------------------------------------
 # OUTPUT CONTROL
@@ -214,6 +212,14 @@ output:
   make_plots: false
 
 # ----------------------------------------------------------------------------
+# ANALYSIS OF THE STATIC SOLUTION (optional; printed and written to analysis.res)
+# ----------------------------------------------------------------------------
+analysis:
+  particle_number_projection: false   # projection after variation (even-even, T = 0)
+  n_gauge: 11                         # gauge points (odd)
+  form_factors_q: []                  # momentum transfers (fm^-1), e.g. [0.3978, 0.8733]
+
+# ----------------------------------------------------------------------------
 # TIME-DEPENDENT HARTREE-FOCK (optional)
 # ----------------------------------------------------------------------------
 # After the static calculation, propagate the ground state in real time.
@@ -227,8 +233,9 @@ dynamics:
   diag_interval: 10    # record observables every N steps
   kick:
     type: quadrupole   # none, quadrupole, monopole, isovector_dipole, boost
-                       # (TDHFB: none, quadrupole, monopole)
     eta: 1.0e-3        # kick strength (boost uses k: [kx, ky, kz] in fm^-1)
+  strength_gamma: 1.0 # Lorentzian width (MeV) of the strength function written for a kick
+  strength_emax: 60.0  # its energy range (MeV)
   # TDHFB only. The static should be solved on an ODD grid, with
   # pairing.state_cutoff: [0, 0] (from_static refuses soft state weights) and
   # iteration.precond_floor: 1.0e-8 (converges nearly empty orbitals); see
@@ -369,6 +376,8 @@ advanced:
 #   # c0constr: 0.8       # Q-corrective step parameter
 #   # qepsconstr: 1.0     # Lagrange multiplier update rate
 #   # dampgamma: 1.0      # Damping for masking function
+#   # neck_z: 0.0         # QN (neck) constraint: neck position (fm) and Gaussian
+#   # neck_width: 1.0     # width (fm); give QN under multipoles, e.g. QN: 4.0
 #   # damprad: 16.0       # Damping radius (fm). Default: scales with A and the goal
 #   #                     # deformation (~2.2 R0 along the long axis), capped 3 fm
 #   #                     # inside the shortest box side; set it only to override

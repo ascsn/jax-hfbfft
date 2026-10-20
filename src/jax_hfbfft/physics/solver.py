@@ -26,7 +26,6 @@ from jax_hfbfft.physics.meanfield import Meanfield, compute_skyrme_meanfield, ap
 from jax_hfbfft.physics.energies import Energies, compute_integrated_energy, compute_sp_energy, print_sinfo
 from jax_hfbfft.physics.pairing import Pairing, solve_pairing, compute_pairing_gaps
 from jax_hfbfft.physics.blocking import track_doublet, efa_hf_occupations, time_even
-from jax_hfbfft.physics.gcg import gcg_step
 from jax_hfbfft.physics.coulomb import CoulombSolver, solve_poisson
 from jax_hfbfft.physics.constraints import (
     ConstraintState,
@@ -94,7 +93,6 @@ class SolverState:
     # evolution must use this same force to start from a stationary state.
     force: Optional[Force] = None
     block_ref: Optional[jax.Array] = None   # EFA reference spinor (physics.blocking)
-    psi_prev: Optional[jax.Array] = None    # previous orbitals (GCG conjugate direction)
 
     @property
     def nstates(self) -> int:
@@ -181,12 +179,13 @@ class SolverConfig:
     # nucleon (0/1; -1 = none). The state carries the reference spinor block_ref
     # (physics.blocking; run_odd sets both).
     block_isospin: int = field(default=-1, metadata=dict(static=True))
-    # Orbital update: 'gradient' (damped preconditioned gradient step, the FORTRAN
-    # scheme) or 'gcg' (physics.gcg, Sala and Colo; HF and BCS iterations only, the
-    # HFB iterations of a paired run keep the gradient step; needs odd grid sizes,
-    # where h is exactly Hermitian). gcg_inner: CG steps for its inverse-h direction.
-    orbital_solver: str = field(default='gradient', metadata=dict(static=True))
-    gcg_inner: int = field(default=6, metadata=dict(static=True))
+    # Configuration-space sub-iterations per HFB iteration (Chen et al. 2022, Sec. 3.3), from
+    # iteration subiter_start on; damping delstepbas/(h_nn - h_min + e0bas). The paper uses 100;
+    # on a GPU each costs ~3 ms of launch latency and 30 converge as fast per iteration (Ca44).
+    n_subiter: int = field(default=30, metadata=dict(static=True))
+    subiter_start: int = 40
+    delstepbas: float = 2.0
+    e0bas: float = 10.0
     # Hold the multipliers of driven constraints (nonzero goal) fixed and bound
     # the solve with the full augmented-Lagrangian penalty; used by
     # run_constrained_scan. Symmetry constraints (goal 0) keep their feedback.
@@ -799,7 +798,7 @@ def _compute_sp_energies_vmap(
 
 
 
-@partial(jax.jit,static_argnums=(4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14))
+@partial(jax.jit,static_argnums=(4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15))
 def hfb_iteration(
     state: SolverState,
     grid: Grid,
@@ -816,6 +815,7 @@ def hfb_iteration(
     tdiag: bool = True,
     use_lagrange: bool = True,
     print_sinfo_flag: bool = False,
+    subiterate: bool = False,
 ) -> SolverState:
     """
     Perform one HFB iteration.
@@ -851,34 +851,27 @@ def hfb_iteration(
     old_tau = state.densities.tau
     old_chi = state.densities.chi
 
-    use_gcg = config.orbital_solver == 'gcg' and tbcs
-    if use_gcg:   # Ritz vectors of h: already diagonal, so diagstep only orthonormalises
-        prev = state.psi if state.psi_prev is None else state.psi_prev
-        psi_new, new_sp_energies, hmfpsi_new = gcg_step(state.psi, prev, state.meanfield, grid, npsi_n,
-                                                        config.gcg_inner, force.h2ma)
-        hampsi_old, tdiag = hmfpsi_new, False
-    else:
-        # ── 1. Gradient step ──────────────────────────────────────────────────────
-        psi_new, new_sp_energies, hmfpsi_new, hampsi_old = gradient_step(
-            state.psi,
-            state.meanfield,
-            state.wocc,
-            state.wguv,
-            state.pairwg,
-            state.wstates,
-            state.sp_energy,
-            state.isospin,
-            state.lagrange,         # ← Lagrange multiplier from previous diagstep
-            grid,
-            config.x0dmp,
-            config.e0dmp,
-            force.h2ma,
-            npsi_n,
-            use_pairing=use_pairing,
-            tbcs=tbcs,
-            use_lagrange=use_lagrange,
-            precond_floor=config.precond_floor,
-        )
+    # ── 1. Gradient step ──────────────────────────────────────────────────────
+    psi_new, new_sp_energies, hmfpsi_new, hampsi_old = gradient_step(
+        state.psi,
+        state.meanfield,
+        state.wocc,
+        state.wguv,
+        state.pairwg,
+        state.wstates,
+        state.sp_energy,
+        state.isospin,
+        state.lagrange,         # ← Lagrange multiplier from previous diagstep
+        grid,
+        config.x0dmp,
+        config.e0dmp,
+        force.h2ma,
+        npsi_n,
+        use_pairing=use_pairing,
+        tbcs=tbcs,
+        use_lagrange=use_lagrange,
+        precond_floor=config.precond_floor,
+    )
 
     # ── 2. Diagstep: Löwdin + optional diagonalization ───────────────────────
     # Pass hmfpsi_new (H|psi_new>, recomputed on the post-grstep psi).
@@ -899,15 +892,14 @@ def hfb_iteration(
         tbcs,
         hmfpsi_new,             # H|psi_new> — matches legacy levels.hmfpsi after grstep Step 4
         hampsi_old,             # H|psi_old> — matches legacy levels.hampsi from grstep Step 1
+        config.n_subiter if subiterate else 0,
+        dict(targets=jnp.array([nucleus_n, nucleus_z], dtype=jnp.float64), pair_cutoff=force.pair_cutoff,
+             state_cutoff=force.state_cutoff, softcut_range=force.softcut_range, smallp=force.uv_floor,
+             delstepbas=config.delstepbas, e0bas=config.e0bas,
+             # EFA: the doublet blocked in the previous iteration stays out of the pairing re-solve
+             blocked=None if config.block_isospin < 0 else (lambda m: (m[:npsi_n], m[npsi_n:]))(
+                 ((jnp.abs(state.wocc - 0.5) < 1e-9) & (state.isospin == config.block_isospin)).astype(jnp.float64))),
     )
-    if use_gcg:   # Ritz vectors diagonalise h in their span, so measure |(h - e) phi| instead,
-        # weighted by occupation (empty orbitals do not enter the density; the highest Ritz
-        # vector of a block has no neighbour above it and converges slowly)
-        res = state.wocc * jnp.sqrt(jnp.sum(jnp.abs(hmfpsi_new - new_sp_energies[:, None, None, None, None]
-                                                    * psi_new) ** 2, axis=(1, 2, 3, 4)) * grid.wxyz)
-        blocks = (res[:npsi_n], res[npsi_n:])
-        efluct1q_new = jnp.stack([jnp.max(b) for b in blocks])
-        efluct2q_new = jnp.stack([jnp.sqrt(jnp.mean(b ** 2)) for b in blocks])
 
     blocked = None
     if config.block_isospin >= 0:   # EFA: re-identify the blocked doublet
@@ -1102,7 +1094,6 @@ def hfb_iteration(
         converged=converged,
         efluct=efluct,
         block_ref=state.block_ref,
-        psi_prev=state.psi if use_gcg else None,
     )
 
 
@@ -1194,9 +1185,6 @@ def run_hfb(
                              "(v0 = 0 gives finite-temperature Hartree-Fock)")
 
     tbcs_init = not use_pairing
-    if config.orbital_solver == 'gcg' and min(grid.nx % 2, grid.ny % 2, grid.nz % 2) == 0:
-        raise ValueError("orbital_solver='gcg' needs odd grid sizes: on an even axis the kinetic "
-                         "operator is not Hermitian at the Nyquist mode and the Rayleigh-Ritz step stalls")
 
     # Initialize constraint state
     constraint_state = build_constraint_state(
@@ -1468,6 +1456,7 @@ def run_hfb(
             compute_energy=compute_energy, use_pairing=use_pairing,
             tbcs=tbcs, tdiag=tdiag, use_lagrange=use_lagrange,
             print_sinfo_flag=need_sinfo,
+            subiterate=config.n_subiter > 0 and use_pairing and not tbcs and python_iter > config.subiter_start,
         )
 
         if hook is not None:
@@ -1578,7 +1567,48 @@ def run_hfb(
 
     return dataclasses.replace(state, force=force)
 
-@partial(jax.jit, static_argnums=(4, 5, 10, 11))
+def _subiterate(hmatrix, gapmatrix, sp_energy, deltaf, wocc, wguv, pairwg, wstates, iq: int,
+                n_subiter: int, args):
+    """
+    Configuration-space sub-iterations (Chen et al., CPC 2022, Sec. 3.3; FORTRAN hfb_natural).
+
+    At fixed orbitals and fields, rotate the basis by C to drive the antisymmetric part of
+    the Lagrange matrix to zero, c <- c - delta/(h_nn - h_min + E0) symcond, with C
+    re-orthonormalised (QR) and the pairing occupations re-solved each step.  Only nst x nst
+    algebra: no grid operation.  Returns (C, sp_energy, deltaf, wocc, wguv, pairwg, wstates).
+    """
+    from jax_hfbfft.physics.pairing import solve_pairing_isospin
+    damp = (args['delstepbas'] / (sp_energy - jnp.min(sp_energy) + args['e0bas']))[:, None]
+
+    def lagrange(h, g, w, wuv):
+        lam = w[None, :] * h - wuv[None, :] * g
+        return 0.5 * (lam + jnp.conj(lam.T)), 0.5 * (lam - jnp.conj(lam.T))
+
+    def step(_, st):
+        C, symcond, sp_energy, deltaf, wocc, wguv, pairwg, wstates = st
+        C, _ = jnp.linalg.qr(C - damp * symcond)
+        hC, gC = hmatrix @ C, gapmatrix @ C
+        ht, gt = jnp.conj(C.T) @ hC, jnp.conj(C.T) @ gC
+        sp_energy, deltaf = jnp.real(jnp.diag(ht)), jnp.real(jnp.diag(gt)) * pairwg
+        _, wocc, wguv, pw, ws, _ = solve_pairing_isospin(
+            iq, args['targets'][iq], sp_energy, deltaf, wstates, pairwg,
+            pair_cutoff=args['pair_cutoff'][iq], state_cutoff=args['state_cutoff'][iq],
+            softcut_range=args['softcut_range'], smallp=args['smallp'],
+            blocked=None if args.get('blocked') is None else args['blocked'][iq])
+        pairwg = jnp.where(args['pair_cutoff'][iq] > 0, pw, pairwg)
+        wstates = jnp.where(args['state_cutoff'][iq] > 0, ws, wstates)
+        w, wuv = wocc * wstates, wguv * pairwg * wstates
+        lam_sym, _ = lagrange(ht, gt, w, wuv)
+        return C, w[None, :] * hC - wuv[None, :] * gC - C @ lam_sym, sp_energy, deltaf, wocc, wguv, pairwg, wstates
+
+    _, symcond = lagrange(hmatrix, gapmatrix, wocc * wstates, wguv * pairwg * wstates)
+    C = jnp.eye(hmatrix.shape[0], dtype=hmatrix.dtype)
+    C, _, *rest = jax.lax.fori_loop(0, n_subiter, step,
+                                    (C, symcond, sp_energy, deltaf, wocc, wguv, pairwg, wstates))
+    return (C, *rest)
+
+
+@partial(jax.jit, static_argnums=(4, 5, 10, 11, 14))
 def diagstep(
     psi: jax.Array,          # (nstates, 2, nx, ny, nz)
     meanfield: Meanfield,
@@ -1594,6 +1624,8 @@ def diagstep(
     tbcs: bool,              # static
     hampsi: jax.Array = None,      # (nstates, 2, nx, ny, nz) H_mf*psi_NEW from grstep step 4 (legacy hmfpsi)
     hampsi_old: jax.Array = None,  # (nstates, 2, nx, ny, nz) H_mf*psi_OLD from grstep step 1 (legacy hampsi)
+    n_subiter: int = 0,            # static: configuration-space sub-iterations (see _subiterate)
+    subiter_args=None,             # dict for _subiterate (targets, cutoffs, damping)
 ) -> Tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
     """
     Matches FORTRAN diagstep: Löwdin orthonormalization + optional H diagonalization.
@@ -1701,6 +1733,14 @@ def diagstep(
             G_raw     = jnp.dot(jnp.conj(psi_2d.T), delpsi_2d) * wxyz  # (nst, nst)
             gapmatrix = jnp.dot(jnp.conj(U.T), jnp.dot(G_raw, U))
             deltaf_block = jnp.real(jnp.diag(gapmatrix)) * pairwg_block
+            if n_subiter > 0:   # rotate within the span at fixed fields, then fold the rotation in
+                C, sp_energy_block, deltaf_block, wocc_block, wguv_block, pairwg_block, wstates_block = \
+                    _subiterate(hmatrix, gapmatrix, sp_energy_block, deltaf_block, wocc_block, wguv_block,
+                                pairwg_block, wstates_block, iq, n_subiter, subiter_args)
+                psi_new_2d = jnp.dot(psi_new_2d, C)
+                psi_new_block = to_block(psi_new_2d)
+                hmatrix = jnp.dot(jnp.conj(C.T), jnp.dot(hmatrix, C))
+                gapmatrix = jnp.dot(jnp.conj(C.T), jnp.dot(gapmatrix, C))
         else:
             gapmatrix    = jnp.zeros((nst, nst), dtype=H_raw.dtype)
             deltaf_block = jnp.zeros(nst, dtype=jnp.float64)

@@ -15,36 +15,36 @@ def main():
     print("=" * 60)
     print("Quick Test: jax-hfbfft OOP API")
     print("=" * 60)
-    
+
     # Create a simple nucleus calculation - O-16
     nucleus = Nucleus(protons=8, neutrons=8)
     print(f"Nucleus: O-16 (Z={nucleus.protons}, N={nucleus.neutrons})")
-    
+
     # Use SLy4 force with no pairing (simpler/faster)
     force = Force.from_name("SLy4").with_pairing(ipair=0)
     print(f"Force: {force.name} (no pairing)")
-    
+
     # Small grid for speed
     grid = Grid.create(nx=32, ny=32, nz=32, dx=0.8, dy=0.8, dz=0.8)
     print(f"Grid: {grid.nx}x{grid.ny}x{grid.nz}, spacing={grid.dx} fm")
-    
+
     # Create HFBFFT calculation
     # With ipair=0 (no pairing), npsi is automatically set to (N, Z)
     calc = HFBFFT(
         nucleus=nucleus,
         force=force,
         grid=grid,
-        include_coulomb=True,  
+        include_coulomb=True,
     )
     print(f"Basis: {calc._npsi[0]} neutron states, {calc._npsi[1]} proton states")
-    
+
     # Initialize wavefunctions
     print("\nInitializing wavefunctions...")
     calc.initialize_wavefunctions(
         method="harmonic_oscillator",
         radinx=3.0, radiny=3.0, radinz=3.0
     )
-    
+
     # Run a few iterations (not to convergence)
     print("\nStarting HFB iteration (500 iterations)...")
     try:
@@ -53,14 +53,14 @@ def main():
             convergence_threshold=1e-6,
             print_interval=50,
         )
-        
+
         print("\n" + "=" * 60)
         print("RESULTS")
         print("=" * 60)
         print(f"Converged: {results.converged}")
         print(f"Iterations: {results.iterations}")
         print(f"Total energy: {results.total_energy:.3f} MeV")
-        
+
         # Print detailed energy breakdown
         print("\n" + "=" * 60)
         print("ENERGY BREAKDOWN - INTERACTION TERMS")
@@ -79,7 +79,7 @@ def main():
         print(f"  epair (pairing):   {float(final_state.pairing.epair.sum()):12.3f} MeV")
         print(f"  ---------------------------------")
         print(f"  ehfint (total):    {float(energies.ehfint):12.3f} MeV")
-        
+
         # Print EDF coupling constant contributions
         print("\n" + "=" * 60)
         print("ENERGY BREAKDOWN - EDF COUPLING CONSTANTS")
@@ -94,7 +94,7 @@ def main():
         print(f"  CdJ1 (isovector spin-orb): {float(energies.ehfCdJ1):12.3f} MeV")
         print(f"  Cj0 (isoscalar current):   {float(energies.ehfCj0):12.3f} MeV")
         print(f"  Cj1 (isovector current):   {float(energies.ehfCj1):12.3f} MeV")
-        
+
         # Additional useful energy information
         print("\n" + "=" * 60)
         print("ADDITIONAL ENERGY INFO")
@@ -103,7 +103,7 @@ def main():
         print(f"  Exchange correlation: {float(energies.ecorc):12.3f} MeV")
         print(f"  Total kinetic (tke):  {float(energies.tke):12.3f} MeV")
         print(f"  From s.p. levels:     {float(energies.ehf):12.3f} MeV")
-        
+
         # Also print densities for sanity check
         print("\n" + "=" * 60)
         print("DENSITY INTEGRALS")
@@ -116,7 +116,7 @@ def main():
         print(f"  Neutrons: {n_integral:.3f} (target: {nucleus.neutrons})")
         print(f"  Protons:  {p_integral:.3f} (target: {nucleus.protons})")
         print(f"  Total:    {n_integral + p_integral:.3f} (target: {nucleus.mass_number})")
-        
+
         # Print radii and deformation
         print("\n" + "=" * 60)
         print("RADII AND DEFORMATION")
@@ -129,7 +129,7 @@ def main():
         print(f"  gamma:          {results.gamma:.1f} deg")
         print(f"  Q20:            {results.q20:.3f} fm^2")
         print(f"  Q22:            {results.q22:.3f} fm^2")
-        
+
         # Print single-particle spectrum
         print("\n" + "=" * 60)
         print("SINGLE-PARTICLE SPECTRUM")
@@ -137,20 +137,20 @@ def main():
         sp_energies = final_state.sp_energy
         sp_occ = final_state.wocc
         isospin = final_state.isospin
-        
+
         # Separate neutron and proton states
         neutron_mask = isospin == 0
         proton_mask = isospin == 1
-        
+
         neutron_energies = sp_energies[neutron_mask]
         proton_energies = sp_energies[proton_mask]
         neutron_occ = sp_occ[neutron_mask]
         proton_occ = sp_occ[proton_mask]
-        
+
         # Sort by energy
         n_sorted_idx = jnp.argsort(neutron_energies)
         p_sorted_idx = jnp.argsort(proton_energies)
-        
+
         print("\nNeutron states:")
         print("  State    Energy (MeV)    Occupation")
         print("  " + "-" * 40)
@@ -160,7 +160,7 @@ def main():
             elif i == 20:
                 print(f"  ...  (showing first 20 of {len(neutron_energies)} states)")
                 break
-        
+
         print("\nProton states:")
         print("  State    Energy (MeV)    Occupation")
         print("  " + "-" * 40)
@@ -170,14 +170,14 @@ def main():
             elif i == 20:
                 print(f"  ...  (showing first 20 of {len(proton_energies)} states)")
                 break
-        
+
         # Print Fermi energies
         print("\n" + "=" * 60)
         print("FERMI ENERGIES")
         print("=" * 60)
         print(f"  Neutron lambda: {float(final_state.pairing.eferm[0]):10.4f} MeV")
         print(f"  Proton lambda:  {float(final_state.pairing.eferm[1]):10.4f} MeV")
-        
+
         # Print pairing gaps
         print("\n" + "=" * 60)
         print("PAIRING PROPERTIES")
@@ -190,15 +190,15 @@ def main():
         print(f"  Proton epair:          {float(final_state.pairing.epair[1]):10.4f} MeV")
         print(f"  Neutron avg force:     {float(final_state.pairing.avg[0]):10.4f} MeV")
         print(f"  Proton avg force:      {float(final_state.pairing.avg[1]):10.4f} MeV")
-        
+
         print("\nTest PASSED! The OOP API is working.")
-        
+
     except Exception as e:
         print(f"\nError during calculation: {e}")
         import traceback
         traceback.print_exc()
         return 1
-    
+
     return 0
 
 

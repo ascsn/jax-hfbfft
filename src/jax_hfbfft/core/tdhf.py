@@ -27,6 +27,7 @@ import numpy as np
 from jax_hfbfft.core.force import Force
 from jax_hfbfft.core.grid import Grid
 from jax_hfbfft.physics import dynamics as D
+from jax_hfbfft.physics.solver import statics_only_terms
 
 
 class TDHF:
@@ -45,6 +46,7 @@ class TDHF:
         self.force = force
         self.config = config or D.TDConfig()
         self.history: List[dict] = []
+        self._kick = None        # (kind, eta) of the last kick_*, sign as exp(-i eta Q)
         self._E0: Optional[float] = None
 
     @classmethod
@@ -70,6 +72,9 @@ class TDHF:
             static = static.solver_state
         if grid is None:
             raise ValueError("grid is required when starting from a SolverState.")
+        import warnings
+        for msg in statics_only_terms(static, force):
+            warnings.warn("TDHF.from_static: " + msg, stacklevel=2)
         config = config or D.TDConfig()
         prepare_kwargs.setdefault("use_coulomb", config.use_coulomb)
         prepare_kwargs.setdefault("density_chunk", config.density_chunk)
@@ -111,23 +116,46 @@ class TDHF:
 
     def kick(self, operator: jax.Array, eta: float) -> "TDHF":
         """Apply exp(-i eta Q) for a one-body operator Q given on the grid."""
+        self._kick = None
         self._set_psi(D.apply_multipole_boost(self.state.psi, self.grid, operator, eta))
         return self
 
     def kick_quadrupole(self, eta: float) -> "TDHF":
         """Isoscalar quadrupole kick, Q = 2z^2 - x^2 - y^2."""
         X, Y, Z = self.grid.get_meshgrid()
-        return self.kick(2 * Z**2 - X**2 - Y**2, eta)
+        self.kick(2 * Z**2 - X**2 - Y**2, eta)
+        self._kick = ('quadrupole', eta)
+        return self
 
     def kick_monopole(self, eta: float) -> "TDHF":
         """Isoscalar monopole (breathing) kick, Q = r^2."""
         X, Y, Z = self.grid.get_meshgrid()
-        return self.kick(X**2 + Y**2 + Z**2, eta)
+        self.kick(X**2 + Y**2 + Z**2, eta)
+        self._kick = ('monopole', eta)
+        return self
+
+    def ewsr(self, kind: str) -> float:
+        """Energy-weighted sum rule (MeV fm^2l) of a kick operator; see dynamics.ewsr."""
+        return D.ewsr(self.state.densities, self.force, self.grid,
+                      *D.response_operator(self.grid, kind, self.N, self.Z))
+
+    def strength(self, minus=None, **kw):
+        """
+        S(E) of the last kick_monopole/kick_quadrupole/kick_isovector_dipole from the history
+        (dynamics.kick_strength; kw as dynamics.strength_function, e.g. gamma=1.0); minus is
+        the same run kicked with -eta. Returns (energies in MeV, strength in fm^2l / MeV).
+        """
+        if self._kick is None:
+            raise ValueError("strength() needs a kick_monopole/kick_quadrupole/kick_isovector_dipole")
+        kind, eta = self._kick
+        return D.kick_strength(self.history_arrays(), kind, eta,
+                               None if minus is None else minus.history_arrays(), **kw)
 
     def kick_isovector_dipole(self, eta: float) -> "TDHF":
         """Isovector dipole kick along z (centre of mass not excited)."""
         self._set_psi(D.apply_isovector_dipole_boost(
             self.state.psi, self.state.isospin, self.grid, eta, self.Z, self.N))
+        self._kick = ('isovector_dipole', eta)
         return self
 
     # ── Propagation ─────────────────────────────────────────────────────────

@@ -1,27 +1,28 @@
 # HFBFFT: Coordinate Space Nuclear DFT with JAX
 
-`HFBFFT` (Hartree-Fock-Bogoliubov with Fast Fourier Transforms) is a high-performance nuclear density functional theory (DFT) code implemented in Python using [JAX](https://github.com/google/jax). It solves the HFB equations in coordinate space on a 3D Cartesian grid, utilizing a natural orbital representation for efficient treatment of pairing correlations.
+`HFBFFT` (Hartree-Fock-Bogoliubov with Fast Fourier Transforms) is a nuclear density functional theory (DFT) code written in Python with [JAX](https://github.com/google/jax). It solves the Skyrme HFB equations on a 3D Cartesian grid in coordinate space, with pairing treated in the natural-orbital (canonical) basis, and propagates the solutions in time with TDHF and TDHFB.
 
 ## Key Features
 
-- **HFB with Natural Orbitals**: Implements a robust HFB scheme using natural orbitals to handle pairing correlations in nuclear systems.
-- **Coordinate Space Solver**: Performs calculations on a 3D Cartesian grid, avoiding basis set expansion errors and enabling flexible boundary conditions.
-- **FFT-Accelerated Operators**: Uses Fast Fourier Transforms for highly accurate and efficient numerical derivatives and kinetic energy operations.
-- **Powered by JAX**: 
-  - **Performance**: Just-In-Time (JIT) compilation via XLA for near-native performance.
-  - **Portability**: Runs seamlessly on CPUs, GPUs, and TPUs without code changes.
-  - **Differentiability**: Ready for future applications involving automatic differentiation.
+- **3D coordinate space**: no spatial symmetry is imposed and the orbitals live on the grid, with no oscillator basis; derivatives and the kinetic energy are evaluated spectrally with FFTs.
+- **HFB in the natural-orbital basis**: pairing correlations are carried by the occupations and pair amplitudes of the canonical orbitals.
+- **JAX**: the solver is jit-compiled with XLA and runs on CPUs and NVIDIA GPUs (Apple Metal is experimental), in 64-bit by default.
+- **Skyrme functionals**: SLy4/5/6, SkM, SkM*, SkP, SIII and UNEDF0/1/2, with J² (tensor) terms where fitted (see [Functionals](#functionals)), with the centre-of-mass treatment each was fitted with, up to the microscopic ⟨P²⟩/2mA. Skyrme forces can also be given by their coupling constants (C^ρ, C^τ, ...), and other local functionals are defined by their energy density alone (automatic-differentiation mean fields; Fayans FyDr/FyStd/FyDrHFB built in).
+- **Pairing**: volume and density-dependent delta pairing (VDI/DDDI), the Lipkin-Nogami particle-number correction, and finite temperature (thermal BCS).
 - **Time-Dependent Hartree-Fock (TDHF)**: Real-time propagation of converged static states for collective modes, linear response and heavy-ion collisions (see `examples/tdhf`).
-- **Constrained Calculations**: Multipole constraints (Q10 to Q40) and deformation scans with an outer/inner augmented-Lagrangian solver.
-- **Flexible Configuration**: Easily configure nuclei, forces, and grid parameters using YAML files.
-- **Extensible Architecture**: Designed to be modular, allowing for easy integration of new functionals or physical observables.
+- **Time-Dependent HFB (TDHFB)**: Real-time propagation of paired states (global in-span scheme) for collective modes, collisions and fission (see [TDHFB](#time-dependent-hfb) and `examples/tdhfb`).
+- **Checkpoints**: static runs save and restart from `.npz` files, which also seed TDHFB.
+- **Linear response**: QRPA strength functions, static polarizabilities, and exact derivatives of the ground state and of polarizabilities with respect to the force parameters (automatic differentiation; see [Linear response](#linear-response-qrpa-strength-polarizabilities-and-parameter-derivatives)).
+- **Constrained Calculations**: multipole (Q10 to Q40) and neck (QN) constraints, and deformation scans with an outer/inner augmented-Lagrangian solver (with the two-basis solver, Newton steps from the exact static response).
+- **Chains of nuclei**: isotopic chains with warm starts and two-nucleon separation energies (`run_chain`).
+- **Configuration files**: a commented `config.yml` covers every option of the `hfbfft` CLI.
 
 ## Project Structure
 
 ```
 jax-hfbfft/
 ├── src/jax_hfbfft/       # Modern OOP implementation (use this)
-│   ├── core/             # Core classes (HFBFFT, TDHF, Force, Nucleus, Grid, Constraint)
+│   ├── core/             # Core classes (HFBFFT, TDHF, TDHFB, Force, Nucleus, Grid, Constraint)
 │   ├── physics/          # Physics modules (densities, meanfield, pairing, dynamics, etc.)
 │   ├── viz/              # Optional plotting (TDHF renders)
 │   ├── forces/           # Force presets
@@ -34,10 +35,11 @@ jax-hfbfft/
 ├── gui-frontend/         # Web GUI frontend (built during pip install)
 ├── gui-desktop/          # Electron desktop app
 ├── legacy/               # Archived legacy implementation
-├── tests/                # Test suite (75 tests)
-├── examples/             # Example scripts (TDHF examples in examples/tdhf)
+├── tests/                # Test suite (pytest)
+├── examples/             # Example scripts (examples/tdhf, examples/tdhfb)
 ├── run_hfb.py            # Classic config-file driver
 ├── config.yml            # Fully commented configuration template
+├── CHANGELOG.md          # Corrections and new features by release
 └── pyproject.toml        # Package configuration
 ```
 
@@ -47,13 +49,21 @@ jax-hfbfft/
 - `src/jax_hfbfft/physics/solver.py`: HFB iteration solver
 - `src/jax_hfbfft/physics/meanfield.py`: Skyrme mean-field potentials
 - `src/jax_hfbfft/physics/densities.py`: Nuclear density computations
-- `src/jax_hfbfft/physics/pairing.py`: BCS/HFB pairing
+- `src/jax_hfbfft/physics/pairing.py`: BCS/HFB pairing and Lipkin-Nogami
+- `src/jax_hfbfft/physics/cm_correction.py`: microscopic centre-of-mass correction
 - `src/jax_hfbfft/physics/coulomb.py`: Coulomb potential (FFT-based)
 - `src/jax_hfbfft/physics/energies.py`: Energy functional calculations
 - `src/jax_hfbfft/physics/constraints.py`: Multipole constraints (augmented Lagrangian)
 - `src/jax_hfbfft/physics/dynamics.py`: TDHF time propagation
 - `src/jax_hfbfft/physics/collisions.py`: Initial states for heavy-ion collisions
 - `src/jax_hfbfft/core/tdhf.py`: TDHF class - entry point for time-dependent runs
+- `src/jax_hfbfft/physics/tdhfb.py`, `src/jax_hfbfft/core/tdhfb.py`: TDHFB (global in-span scheme) and its class
+- `src/jax_hfbfft/physics/gcg.py`: two-basis HFB (GCG eigensolver, HFB in the HF basis)
+- `src/jax_hfbfft/physics/response.py`: QRPA response, polarizabilities and parameter derivatives
+- `src/jax_hfbfft/physics/second_order.py`: Thouless-coordinate Hessian, second-order (2n+1) adjoint
+- `src/jax_hfbfft/physics/second_order_hfb.py`: the same for paired (two-basis HFB) states, moving pairing window
+- `src/jax_hfbfft/physics/edf.py`: functionals from their energy density (automatic-differentiation mean fields), Fayans
+- `docs/VALIDATION.md`: the checks behind the accuracy statements (HFBTHO, SkyAx, finite differences, TDHF)
 
 ## Installation
 
@@ -80,7 +90,7 @@ Other extras: `viz` (matplotlib, for TDHF renders), `dev` (pytest and linters), 
 
 ## Quick Start
 
-### Command-Line Interface (Recommended for beginners)
+### Command-Line Interface
 
 ```bash
 # 1. Generate a sample configuration file
@@ -133,12 +143,11 @@ python run_hfb.py
 This provides the classic HFB code workflow:
 - Edit input file with all parameters
 - Run executable
-- Output written to directory with comprehensive result files
+- Output written to a directory of result files (energies, radii, moments, pairing, spectra, densities)
 - Easy benchmarking against other codes (HFBTHO, Sky3D, etc.)
 - **Multipole constraints** (Q20, Q22, Q30, Q32, Q40 and the centre of mass, Q10)
-- **Optional TDHF run** after the static solve (`dynamics:` section)
 
-The commented `config.yml` in the repository root documents every option.
+`run_hfb.py` reads the same `config.yml` as `hfbfft run` but performs the static solve only: the `dynamics:` section (TDHF/TDHFB) and the `use_ln`, `precond_floor` and `uv_floor` settings are read by `hfbfft run`.
 
 **Example config.yml:**
 ```yaml
@@ -232,7 +241,7 @@ constraint = Constraint.from_beta_gamma(
 
 `from_beta_gamma` converts to Q20, Q22, Q30 and Q40 targets for the solver's operators (Q20 = 2z² − x² − y², Q22 = x² − y², ...). β₂ < 0 gives an oblate shape about the z axis; β₂ > 0 with γ = 60° is also oblate, but about the y axis. A single constrained solve only fixes the lab-frame moments, so a deformed nucleus can satisfy them by rotating; pass `principal_axes=True` to lock the orientation, or use `run_constrained_scan` (below), which does this automatically.
 
-**Damping radius.** The multipole operators grow like r^λ, so they are damped beyond `damprad` (default 6 fm). That default only suits light nuclei; for heavy or strongly deformed nuclei it cuts into the nucleus itself and the constraint pulls on the wrong shape. Set `damprad` well past the nuclear surface, up to about half the box length minus 3 fm (the box must extend beyond it). `run_constrained_scan` (below) chooses it automatically.
+**Damping radius.** The multipole operators grow like r^λ, so they are damped beyond `damprad`. By default it is chosen from the nucleus and the requested deformation (about 2.2 R₀ along the long axis, e.g. 9 fm for spherical ⁴⁰Ca and 16 fm for ²³⁸U) and kept 3 fm inside the shortest box side; a warning is printed when the box is too small for the requested shape. The density must stay inside the mask for the moment to be controlled, so enlarge the grid rather than shrink `damprad`. Passing `damprad` overrides the default.
 
 Config file format:
 ```yaml
@@ -241,10 +250,22 @@ constraints:
     beta2: 0.25
     gamma: 0     # Prolate
     beta3: 0.05  # Optional octupole
-  damprad: 16.0  # Damping radius (fm); the 6 fm default is for light nuclei
+  damprad: 16.0  # Damping radius (fm); optional, the default scales with A and beta2
 ```
 
-Supported multipoles: Q10 (the centre of mass, `<z>`), Q20, Q22, Q30, Q32 and Q40, plus the optional principal-axes constraints. Multipoles can also be given as (λ, μ) tuples. See `examples/constrained_calculation.py`.
+Supported multipoles: Q10 (the centre of mass, `<z>`), Q20, Q22, Q30, Q32 and Q40, plus the optional principal-axes constraints.
+
+**Collective inertia.** `physics.cranking_inertia(state, grid, [multipole_operator(grid, 'Q20')])` gives the ATDHFB perturbative-cranking mass tensor, the GCM metric and the zero-point energy of a constrained solution, as HFBTHO defines them (masses in ħ² MeV⁻¹ per unit of Q²; multiply by 10⁴ for b⁻² with Q20 in fm²). The unoccupied states, mostly box continuum, are summed implicitly by linear solves with h, so the result does not depend on the number of orbitals. For SLy4 ²⁴Mg at Q20 = 1 b it agrees with HFBTHO to 3% (mass 0.198 vs 0.2035 MeV⁻¹ b⁻²). `physics.moment_of_inertia(state, grid, 'x')` gives the Inglis-Belyaev rotational moment of inertia (ħ² MeV⁻¹) the same way, with the rigid-body value for comparison.
+
+**Fission paths.** On a surface from a multi-dimensional `run_constrained_scan`, `physics.minimum_energy_path(E, start, end)` finds the path whose highest point is lowest (the saddle and the barrier), and `physics.least_action_path(E, coords, start, end, mass=...)` the WKB least-action path with the cranking mass tensor, its action and penetrability. Unconverged points (NaN) are walls.
+
+**Particle-number projection.** `calc.project_particle_number()` (or `physics.project_particle_number(state, grid, force)`) projects a converged even-even solution on its neutron and proton numbers after variation, with the mixed-density prescription (HFBTHO's `PNP_is_on = 1`) on Fomenko gauge points. It returns the projected total energy, the correction, and the particle-number distributions |⟨N'|Φ⟩|². The density-dependent terms are not free of the self-interaction poles at v² = ½, so check the result against `n_gauge`.
+
+**Form factors.** `physics.form_factors(state.densities, grid, q)` gives the orientation-averaged point, charge and weak form factors at momentum transfers `q` (fm⁻¹), folded with nucleon form factors consistent with the reported charge radius, and the weak radius and weak skin R_W − R_ch (as measured by PREX at q = 0.3978 fm⁻¹ in ²⁰⁸Pb and CREX at q = 0.8733 fm⁻¹ in ⁴⁸Ca).
+
+From the CLI, the `analysis:` block of `config.yml` runs the projection and the form factors after the static solve (`analysis.res`), and a kicked dynamics run writes its strength function (`strength.dat`).
+
+**Neck.** `QN` constrains the number of nucleons near the plane z = `neck_z` (default 0, the centre of mass when Q10 is fixed), Q_N = ∫ρ exp(−((z − neck_z)/neck_width)²) with `neck_width` = 1 fm as in HFBTHO; a small Q_N means a thin neck, near scission. Combine it with Q20 along a fission path, e.g. `Constraint.from_multipoles({'Q20': 3000.0, 'QN': 4.0})`, or drive it with `run_constrained_scan(..., multipole='QN')`. For asymmetric shapes set `neck_z` to the density minimum between the fragments. Multipoles can also be given as (λ, μ) tuples. See `examples/constrained_calculation.py`.
 
 #### Deformation Scans
 
@@ -263,7 +284,135 @@ for r in results:
     print(r['target'], r['achieved'], r['E'])
 ```
 
-Each target warm-starts from the previous one, so keep the steps small (here about β₂ = 0.05). The scan prints each point as `[hit]` or `[short]` and ends with a check that dE/dQ between neighbouring points matches λ (ratio ≈ 1); treat `[short]` points, or a ratio far from 1, as unconverged.
+Each target warm-starts from the previous one, so keep the steps small (here about β₂ = 0.05). Several multipoles can be driven at once for a deformation surface: pass `multipole=('Q20', 'Q30')` and targets as tuples, ordered so each point is next to the previous one, e.g. `[(q20, q30) for i, q20 in enumerate(q20s) for q30 in (q30s if i % 2 == 0 else q30s[::-1])]`. The scan prints each point as `[hit]` or `[short]` and ends with a check that dE/dQ between neighbouring points matches λ (ratio ≈ 1); treat `[short]` points, or a ratio far from 1, as unconverged.
+
+## Functionals
+
+| Name | Reference | c.m. correction (`zpe`) | Notes |
+|---|---|---|---|
+| SLy4 | Chabanat et al., NPA 635, 231 (1998) | 0 | |
+| SLy5 | Chabanat et al. (1998) | 0 | With the J² terms of its central force (`j2: central`) |
+| SLy6 | Chabanat et al. (1998) | 3 | Fitted with the full (two-body) c.m. correction |
+| SkM | Krivine et al., NPA 336, 155 (1980) | 0 | |
+| SkM* | Bartel et al., NPA 386, 79 (1982) | 0 | |
+| SkP | Dobaczewski et al., NPA 422, 103 (1984) | 0 | With the J² terms of its central force (`j2: central`) |
+| SIII | Beiner et al., NPA 238, 29 (1975) | 0 | |
+| UNEDF0 | Kortelainen et al., PRC 82, 024313 (2010) | 0 | Parameters from HFBTHO's UNE0; fitted with Lipkin-Nogami |
+| UNEDF1 | Kortelainen et al., PRC 85, 024304 (2012) | 2 | Parameters from HFBTHO's UNE1; fitted with Lipkin-Nogami |
+| UNEDF2 | Kortelainen et al., PRC 89, 054314 (2014) | 2 | Parameters and tensor couplings from HFBTHO's UNE2; fitted with Lipkin-Nogami |
+
+`tests/test_forces.py` checks every entry against its published parameters (and the UNEDF coupling constants against HFBTHO). Several entries were corrected in October 2026; see [CHANGELOG.md](CHANGELOG.md) before reusing results from earlier versions.
+
+**J² (tensor) terms** (`j2:` in the force file) enter as Σ_t CJ_t (Σ_μν J_t,μν² − s_t·T_t): the full spin-current tensor, with CJ as in HFBTHO, and its time-odd partner s·T, which keeps the functional Galilean invariant. They act on statics, TDHF and TDHFB. Against HFBTHO with UNEDF2 the total energies agree to 1 keV for deformed ²⁴Mg and ²⁸Si and to 25 keV for ⁴⁰,⁴⁸Ca.
+
+**Coupling-constant input.** A Skyrme functional can be given by its coupling constants (Bender, Heenen, Reinhard, RMP 75, 121 (2003)) instead of t, x: `Force.from_couplings(name, {'Crho0': ..., 'Crho1': ..., 'Crho0D': ..., 'Crho1D': ..., 'Ctau0': ..., 'Ctau1': ..., 'Cdrho0': ..., 'Cdrho1': ..., 'CdJ0': ..., 'CdJ1': ...}, power)` (optional `CJ0`, `CJ1` for J² terms), or a `couplings:` block in the force file. The time-odd partners follow from Galilean invariance. `force.to_couplings()` converts any Skyrme force, and the response and second-order derivatives accept the C names as parameters (`response.C_PARAMS_DEFAULT`).
+
+**Other functionals.** `physics/edf.py` builds the mean fields of any local functional from its energy density by automatic differentiation: every field is ∂E/∂(density) (U ← ρ, B ← τ, W ← J, A ← j, S ← s, the pair potential ← χ), and the Koopmans rearrangement follows from the same derivatives. A new functional is one function returning its energy density, registered with `@edf.register('name')` and selected with `functional: name` in the force file (extra parameters in `Force.extra`). Two are built in: `skyrme_ad` (the Skyrme functional through this route; its fields equal the hand-coded ones to 10⁻⁹) and `fayans` (FyDr, FyStd, FyDrHFB; SkyAx's fyfunc, including its non-variational `pairstab` gap scaling). Fayans total energies agree with SkyAx to 4-13 keV ([validation](docs/VALIDATION.md#functionals)); use a mesh of 0.7 fm or finer. Derivatives with respect to Fayans parameters use the names `fy.<parameter>` (`response.FAYANS_PARAMS`). `tests/test_edf.py`.
+
+The centre-of-mass treatment is set per force by `zpe`:
+
+| `zpe` | Correction |
+|---|---|
+| 0 | ħ²/2m scaled by (1 − 1/A) (one-body) |
+| 1 | constant 17.3/A^0.2 MeV |
+| 2 | none |
+| 3 | microscopic ⟨P²⟩/2mA on the final state (the 17.3/A^0.2 estimate during the iterations, as in SkyAx) |
+
+**Lipkin-Nogami.** Set `use_ln: true` under `iteration:` in `config.yml` (or `calc.use_ln = True`, or `SolverConfig(use_ln=True)`). The UNEDF functionals were fitted with it, and it costs about five times a plain HFB iteration. λ₂ and E_LN are printed with the results; E_LN is included in the total energy. Validated against HFBTHO+LN on the calcium chain.
+
+**Temperature.** `calc.temperature = T` (MeV), or `physics: temperature:` in `config.yml`, occupies each quasiparticle thermally, f = 1/(1 + e^{E/T}), and the solver minimises the free energy F = E − TS. The results report the entropy and F. It needs the pairing solver (`ipair` 5/6); a zero pairing strength gives finite-temperature Hartree-Fock. For ²⁰O (SLy4, Δₙ = 1.48 MeV at T = 0) the neutron gap vanishes near T = 0.75 MeV, close to the BCS value 0.57 Δ(0).
+
+**Charge radius** is r²_ch = r²_p + 0.8409² − 0.1155·N/Z + 0.0332 fm² (proton, neutron and Darwin-Foldy terms; no spin-orbit term).
+
+## Chains of nuclei
+
+`run_chain` solves a list of (Z, N) in order with one shared basis, starting each nucleus from its neighbour's orbitals, and `separation_energies` adds B, S2n and S2p:
+
+```python
+from jax_hfbfft import Force, Grid, run_chain, separation_energies
+
+force = Force.from_name("SLy4").with_pairing(ipair=6, v0neut=362.0, v0prot=362.0)
+points = run_chain([(20, n) for n in range(20, 32, 2)], force, Grid.create_cubic(n=32, d=0.8))
+for row in separation_energies(points):
+    print(row['N'], row['B'], row['S2n'])
+```
+
+`examples/isotopic_chain.py` does the same from the command line and writes a CSV.
+
+## Two-basis HFB solver
+
+`two_basis_config()` switches the static solver from gradient steps on canonical orbitals to the two-basis method: each iteration refines the HF basis (the lowest eigenvectors of h, by a GCG eigensolver) and solves the HFB problem exactly in it. It reaches a true fixed point, typically in 150-400 iterations (a Ca isotope in ~2 minutes on an A100), and converges by an energy rule (`etol`, 1 keV over 100 iterations, checked every iteration).
+
+```python
+from jax_hfbfft.physics.solver import run_hfb, two_basis_config
+
+force = Force.from_name("UNEDF1").with_pairing(ipair=6, v0neut=266.33, v0prot=295.68, rho0pr=0.32, state_cutoff=(8.0, 8.0))
+state = run_hfb(Grid.create_cubic(n=33, d=0.8), force, nucleus_z=20, nucleus_n=24, npsi_n=140, config=two_basis_config())
+```
+
+Rules: odd grid sizes; pairing acts in a soft window of `state_cutoff` MeV (~8) above the Fermi energy on the HF energies, which must lie well inside the basis (the HF basis should reach ~1.7 windows above it; the solver warns otherwise), and its pairing strengths are not those of a 60 MeV quasiparticle cutoff, so tune `v0` to a reference gap. Density mixing 0.15 is safe for SLy4 and UNEDF0-2 (SLy4 tolerates ~0.4, UNEDF1 runs away above ~0.2). For deformed states use `run_constrained_scan` (its outer steps are Newton steps from the exact static response; in-loop constraint feedback is refused), or start unconstrained from stretched orbitals (`initial_beta2`) with `axial_symmetry=True`. Odd nuclei work through `run_odd` (EFA). `examples/two_basis_benchmark/` compares Ca, Sn and Dy chains (UNEDF1, UNEDF2, SLy4) with HFBTHO: energies within tens of keV along a chain up to a constant offset, gaps to 1% ([validation](docs/VALIDATION.md#two-basis-hfb-solver)).
+
+## Linear response: QRPA strength, polarizabilities and parameter derivatives
+
+`physics.response.Response` linearises a converged two-basis state: one QRPA operator gives strength functions, static polarizabilities and exact derivatives of the ground state with respect to the parameters of the functional. The residual interaction is the forward-mode derivative (`jax.jvp`) of the mean field, so every term of the functional (J², Coulomb, density-dependent pairing) enters without hand-written formulas, and orbital amplitudes on the grid cover the continuum above the HF basis.
+
+```python
+import jax.numpy as jnp, numpy as np
+from jax_hfbfft.physics.response import Response, energy_gradient
+
+R = Response(state, force, grid)                      # state: a converged two_basis run
+X, Y, Z = grid.get_meshgrid(); r2 = X**2 + Y**2 + Z**2
+chain = R.lanczos(jnp.stack([r2, r2]), steps=3000, parity=1)          # isoscalar monopole
+S = Response.spectrum(chain, np.linspace(0, 40, 801), gamma=1.0)      # fm^4/MeV, Lorentzians of width 1 MeV
+m, _ = R.polarizability(jnp.stack([-(20/48) * Z, (28/48) * Z]),       # isovector dipole of 48Ca, c.m. fixed:
+                        constraints=(jnp.stack([Z, Z]),))             # alpha_D = 2 e^2 m
+d = R.sensitivities({'r_p': o})       # d<o rho>/d(t0..x3, t4, b4p, alpha, v0): one solve for all parameters
+g = energy_gradient(state, force, grid)                                # dE/dtheta (Hellmann-Feynman)
+```
+
+`examples/response/run.py` does all four for ⁴⁸Ca (~15 min on one GPU). The monopole strength equals TDHF's to 0.85% of the peak and the derivatives equal finite differences of re-converged states to 5-6 digits ([validation](docs/VALIDATION.md#linear-response-physicsresponsepy)).
+
+For a constrained state (`run_constrained_scan`), pass `constraint_potential='auto'` and hold the constrained moments with `derivatives(..., constraints=[...])` to get derivatives at fixed deformation.
+
+**Paired states.** The solver's pairing window follows the HF energies and the Fermi energy, so its fixed point is not the stationary point of one energy. `Response(..., window='moving')`, the default, differentiates the window too, and paired derivatives then equal finite differences of the solver; `window='frozen'` (the QRPA proper, used for strength functions) is off by 0.5–2.6%. Solve paired states with `uv_floor=0` for derivative work: the default floor makes the state slightly non-stationary.
+
+Limits: Lanczos chains need `parity` (the grid's translational mode is slightly unstable in the opposite parity sector). Odd (blocked) states are not supported.
+
+### Second order: derivatives of polarizabilities
+
+`physics.second_order.HFHessian` writes the energy of a converged HF state as a function of Thouless coordinates of the occupied orbitals (exactly orthonormal, particle numbers conserved, no eigenvectors to differentiate), so automatic differentiation gives its Hessian (the QRPA stability matrix) and third derivatives. Constraints (e.g. the c.m.) enter through a Lagrangian. By the 2n+1 theorem, `polarizability_gradient` returns P = 2m₋₁ and dP/dθ for every parameter from two linear solves; `observable_gradient` is the first-order adjoint for any observable, and `constrained_energy` gives E₋₁ = √(m₁/m₋₁) and its gradient.
+
+```python
+from jax_hfbfft.physics.second_order import HFHessian
+
+H = HFHessian(state, force, grid, constraints=(zcm,))   # zcm: (2, nx, ny, nz) c.m. coordinate per isospin
+P, dP, info = H.polarizability_gradient(D)             # alpha_D = e^2 P; dP: {parameter: derivative}
+mono = H.constrained_energy(R2, m1_weight=W1)          # W1 = (hbar^2/2m_q) |grad r^2|^2: analytic m1 (see below)
+```
+
+dα_D/dθ equals finite differences of re-converged α_D to 10⁻⁸–4×10⁻⁵ for all ten Skyrme parameters (⁴⁸Ca, 237 s for all ten; [validation](docs/VALIDATION.md#second-order-physicssecond_orderpy-second_order_hfbpy)). For fields that grow towards the box edge (r²) pass `m1_weight`: the autodiff m₁ is off by 10⁻³ there because F²ψ is not periodic. On a 1 fm grid the centred HF state is a translation saddle (the egg-box effect): cap the solver's iterations and expect ~0.5% grid error in second-order sensitivities.
+
+**Paired states.** `physics.second_order_hfb.HFBHessian` is the Bogoliubov version (the quasiparticle vacuum as an antisymmetric Thouless map, N and Z held by multipliers); its Hessian is the frozen-window QRPA matrix. Pass the moving-window response to get the derivative of the QRPA polarizability of the solver's own states (one forward solve per parameter); without it the variational 2n+1 adjoint is returned, off by 0.4–1.8% for the solver's states.
+
+```python
+from jax_hfbfft.physics.second_order_hfb import HFBHessian
+
+H = HFBHessian(Response(state, force, grid, window='frozen'))
+P, dP, info = H.polarizability_gradient(R2, moving=Response(state, force, grid, window='moving'))
+```
+
+
+## Checkpoints and restarts
+
+```python
+calc.run(max_iterations=3000, checkpoint_file="ca48.npz", checkpoint_interval=500)
+
+calc2 = HFBFFT(nucleus, force, grid)                     # same grid, nucleus and basis
+calc2.initialize_wavefunctions(method="restart", filename="ca48.npz")
+calc2.run(max_iterations=2000)                           # continues from the checkpoint
+```
+
+`save_checkpoint` / `load_checkpoint` do the same by hand. The file is the static format TDHFB reads, so `TDHFB.from_static("ca48.npz")` also works.
 
 ## Time-Dependent Hartree-Fock
 
@@ -283,13 +432,36 @@ for rec in td.iterate(1500):          # time, energy drift, moments, ...
     print(rec['time'], rec['Q20'], rec['dE_rel'])
 ```
 
-The relative energy drift `dE_rel` is the main accuracy check. `examples/tdhf` has heavy-ion collisions, collective modes and rendering (`pip install -e ".[viz]"`); the CLI runs TDHF after the static solve when `dynamics: enabled: true` is set in `config.yml`.
+After `kick_monopole`, `kick_quadrupole` or `kick_isovector_dipole` and a run, `E, S = td.strength(gamma=1.0)` gives the strength function in fm^2l/MeV (from the recorded `r2`, `Q20` or `Dz_iv`; `minus=` a second run kicked with −η cancels the offset from nucleons the kick emits). `td.ewsr(kind)` gives the energy-weighted sum rule m1 that its first moment should reach (including the TRK enhancement for the dipole); `dynamics.strength_function` transforms any other signal. The relative energy drift `dE_rel` is the main accuracy check. `examples/tdhf` has heavy-ion collisions, collective modes and rendering (`pip install -e ".[viz]"`); the CLI runs TDHF after the static solve when `dynamics: enabled: true` is set in `config.yml`.
+
+## Time-Dependent HFB
+
+`TDHFB` propagates a paired static state. It uses the global in-span scheme: one block per isospin, with the generalized density and pairing tensor of the orbital space evolved as full matrices; particle number and the purity of the generalized density are conserved to round-off (²⁰O: N drifts ~5×10⁻⁹ over 60 fm/c, impurity below 10⁻¹²).
+
+```python
+from jax_hfbfft import TDHFB
+
+td = TDHFB.from_static(calc)          # an HFBFFT after run(), or a static .npz
+td.relax(2000)                        # move into the TDHFB functional's minimum first
+td.kick_quadrupole(0.005)
+for rec in td.iterate(1200, record_every=20):
+    print(rec['time'], rec['E'], rec['N'], rec['Epair_n'], rec['Q20'])
+print(td.continuity())                # local continuity defect vs its floor
+```
+
+From the CLI, `dynamics: method: tdhfb` (or `auto`, which picks TDHFB for a paired static) with the options in the `tdhfb:` block of `config.yml`.
+
+The static has to follow a recipe, explained in `examples/tdhfb/README.md`: an **odd** grid (no Nyquist mode), `state_cutoff: [0, 0]` (`from_static` refuses soft state weights), `uv_floor: 0`, a well-converged solve (Kramers partners with equal occupations), and a relax before propagating. An unrelaxed static drifts at rest. A static solved with Lipkin-Nogami or `zpe: 3` contains terms the propagation does not, and `from_static` warns.
+
+**Known limits.**
+- *Pairing in heavy nuclei.* With bare contact pairing the gap follows the size of the orbital space. Use the regularised coupling (`Force.pair_reg_ecut`, `relax.py --pair-reg auto`): it is local, so local continuity stays at its floor, and the gap no longer depends on the basis. The older momentum cutoff (`pair_kcut`) also tames the gap but makes the pair source nonlocal (local continuity ~10⁴ times its floor; N and E still conserved). See `examples/tdhfb/README.md` and [validation](docs/VALIDATION.md#tdhfb).
+- *Pairing collapse in collisions.* After the pairing collapses in contact it revives and grows without bound while N drifts (~10⁻³), at any dt: results past a collapse are not valid. `collide.py --guard-dE` stops a run once its energy drifts, before it overwrites its checkpoint.
 
 ## Object-Oriented API
 
-The package provides a modern object-oriented API with fully encapsulated, independent calculation instances.
+Each calculation is an independent `HFBFFT` object holding its own grid, force, orbitals and results.
 
-### Multiple Parallel Calculations
+### Several Nuclei in One Script
 
 ```python
 from jax_hfbfft import HFBFFT, Nucleus, Force
@@ -303,10 +475,10 @@ nuclei = [
 
 force = Force.from_name("SLy4")
 
-# Create independent calculations - each instance is fully isolated
+# Each instance holds its own state, so they do not interfere
 calculations = [HFBFFT(nucleus=n, force=force) for n in nuclei]
 
-# Run all calculations
+# Solve them one after another
 for calc in calculations:
     calc.run()
     print(f"{calc.nucleus}: E = {calc.results.total_energy:.3f} MeV")
@@ -358,8 +530,8 @@ pytest tests/ -v
 ## Development Status
 
 `HFBFFT` is currently under active development. Planned features include:
-- Support for a wider range of Skyrme functionals.
-- Advanced constraint options for multi-dimensional potential energy surfaces.
+- Odd-A nuclei (equal-filling blocking).
+- Fayans functionals.
 
 ## Graphical User Interface
 

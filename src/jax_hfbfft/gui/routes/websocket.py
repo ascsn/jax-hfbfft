@@ -19,55 +19,55 @@ router = APIRouter()
 
 class ConnectionManager:
     """Manages WebSocket connections and subscriptions."""
-    
+
     def __init__(self):
         self.active_connections: Set[WebSocket] = set()
         self.subscriptions: Dict[str, Set[WebSocket]] = {}  # calc_id -> connections
-    
+
     async def connect(self, websocket: WebSocket):
         """Accept a new WebSocket connection."""
         await websocket.accept()
         self.active_connections.add(websocket)
-    
+
     def disconnect(self, websocket: WebSocket):
         """Remove a WebSocket connection."""
         self.active_connections.discard(websocket)
         # Remove from all subscriptions
         for subscribers in self.subscriptions.values():
             subscribers.discard(websocket)
-    
+
     def subscribe(self, websocket: WebSocket, calc_id: str):
         """Subscribe a connection to calculation updates."""
         if calc_id not in self.subscriptions:
             self.subscriptions[calc_id] = set()
         self.subscriptions[calc_id].add(websocket)
-    
+
     def unsubscribe(self, websocket: WebSocket, calc_id: str):
         """Unsubscribe from calculation updates."""
         if calc_id in self.subscriptions:
             self.subscriptions[calc_id].discard(websocket)
-    
+
     async def broadcast_progress(self, calc_id: str, progress: CalculationProgress):
         """Broadcast progress update to all subscribers."""
         if calc_id not in self.subscriptions:
             return
-        
+
         message = {
             "type": "progress",
             "data": progress.model_dump(),
         }
-        
+
         dead_connections = []
         for websocket in self.subscriptions[calc_id]:
             try:
                 await websocket.send_json(message)
             except Exception:
                 dead_connections.append(websocket)
-        
+
         # Clean up dead connections
         for ws in dead_connections:
             self.disconnect(ws)
-    
+
     async def send_to_all(self, message: dict):
         """Send a message to all connected clients."""
         dead_connections = []
@@ -76,7 +76,7 @@ class ConnectionManager:
                 await websocket.send_json(message)
             except Exception:
                 dead_connections.append(websocket)
-        
+
         for ws in dead_connections:
             self.disconnect(ws)
 
@@ -89,22 +89,22 @@ manager = ConnectionManager()
 async def websocket_endpoint(websocket: WebSocket):
     """
     Main WebSocket endpoint for GUI communication.
-    
+
     Messages from client:
         {"type": "subscribe", "calculation_id": "uuid"}
         {"type": "unsubscribe", "calculation_id": "uuid"}
         {"type": "get_warmup_status"}
-    
+
     Messages to client:
         {"type": "progress", "data": {...}}
         {"type": "warmup_status", "data": {...}}
         {"type": "error", "message": "..."}
     """
     await manager.connect(websocket)
-    
+
     # Start background task to send warmup status updates
     warmup_task = asyncio.create_task(send_warmup_updates(websocket))
-    
+
     try:
         while True:
             try:
@@ -115,22 +115,22 @@ async def websocket_endpoint(websocket: WebSocket):
                     "message": "Invalid JSON message",
                 })
                 continue
-            
+
             msg_type = data.get("type")
-            
+
             if msg_type == "subscribe":
                 calc_id = data.get("calculation_id")
                 if calc_id:
                     manager.subscribe(websocket, calc_id)
-                    
+
                     # Register callback for this calculation
                     service = get_hfb_service()
-                    
+
                     async def progress_callback(progress: CalculationProgress):
                         await manager.broadcast_progress(progress.calculation_id, progress)
-                    
+
                     await service.add_progress_callback(calc_id, progress_callback)
-                    
+
                     # Send current status immediately
                     status = await service.get_calculation(calc_id)
                     if status:
@@ -138,12 +138,12 @@ async def websocket_endpoint(websocket: WebSocket):
                             "type": "status",
                             "data": status.model_dump(mode="json"),
                         })
-                    
+
                     await websocket.send_json({
                         "type": "subscribed",
                         "calculation_id": calc_id,
                     })
-            
+
             elif msg_type == "unsubscribe":
                 calc_id = data.get("calculation_id")
                 if calc_id:
@@ -152,23 +152,23 @@ async def websocket_endpoint(websocket: WebSocket):
                         "type": "unsubscribed",
                         "calculation_id": calc_id,
                     })
-            
+
             elif msg_type == "get_warmup_status":
                 warmup_manager = get_warmup_manager()
                 await websocket.send_json({
                     "type": "warmup_status",
                     "data": warmup_manager.get_status(),
                 })
-            
+
             elif msg_type == "ping":
                 await websocket.send_json({"type": "pong"})
-            
+
             else:
                 await websocket.send_json({
                     "type": "error",
                     "message": f"Unknown message type: {msg_type}",
                 })
-    
+
     except WebSocketDisconnect:
         pass
     finally:
@@ -179,11 +179,11 @@ async def websocket_endpoint(websocket: WebSocket):
 async def send_warmup_updates(websocket: WebSocket):
     """Send periodic warmup status updates during warmup."""
     warmup_manager = get_warmup_manager()
-    
+
     try:
         while not warmup_manager.is_ready:
             await asyncio.sleep(1.0)
-            
+
             try:
                 await websocket.send_json({
                     "type": "warmup_status",
@@ -191,7 +191,7 @@ async def send_warmup_updates(websocket: WebSocket):
                 })
             except Exception:
                 break
-        
+
         # Send final status
         try:
             await websocket.send_json({
@@ -200,6 +200,6 @@ async def send_warmup_updates(websocket: WebSocket):
             })
         except Exception:
             pass
-    
+
     except asyncio.CancelledError:
         pass

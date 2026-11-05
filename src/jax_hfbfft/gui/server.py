@@ -26,16 +26,16 @@ async def lifespan(app: FastAPI):
     """Application lifespan handler."""
     # Startup
     print("Starting HFBFFT GUI server...")
-    
+
     # Initialize storage
     storage = await get_storage()
-    
+
     # Start JIT warmup in background (don't block startup)
     warmup_manager = get_warmup_manager()
     warmup_manager.start_background_warmup()
-    
+
     yield
-    
+
     # Shutdown
     print("Shutting down HFBFFT GUI server...")
     await storage.close()
@@ -47,11 +47,11 @@ def create_app(
 ) -> FastAPI:
     """
     Create the FastAPI application.
-    
+
     Args:
         title: Application title.
         debug: Enable debug mode.
-        
+
     Returns:
         Configured FastAPI application.
     """
@@ -62,7 +62,7 @@ def create_app(
         lifespan=lifespan,
         debug=debug,
     )
-    
+
     # CORS middleware for development
     app.add_middleware(
         CORSMiddleware,
@@ -71,32 +71,32 @@ def create_app(
         allow_methods=["*"],
         allow_headers=["*"],
     )
-    
+
     # Include API routes
     app.include_router(calculations.router, prefix="/api", tags=["calculations"])
     app.include_router(history.router, prefix="/api", tags=["history"])
     app.include_router(system.router, prefix="/api", tags=["system"])
     app.include_router(surfaces.router, prefix="/api", tags=["surfaces"])
     app.include_router(websocket.router, tags=["websocket"])
-    
+
     # Serve static frontend files
     frontend_dir = Path(__file__).parent / "frontend"
     assets_dir = frontend_dir / "assets"
     index_path = frontend_dir / "index.html"
-    
+
     # Only mount static files if frontend is actually built
     if assets_dir.exists() and index_path.exists():
         app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
-        
+
         @app.get("/")
         async def serve_index():
             """Serve the frontend index.html."""
             return FileResponse(str(index_path))
-        
+
         @app.get("/{path:path}")
         async def serve_spa(path: str):
             """Serve SPA routes (fallback to index.html).
-            
+
             Note: API routes (/api/*) are handled by their routers,
             not this catch-all.
             """
@@ -104,7 +104,7 @@ def create_app(
             if path.startswith("api/") or path.startswith("ws") or path == "docs" or path == "openapi.json":
                 from fastapi import HTTPException
                 raise HTTPException(status_code=404, detail="Not found")
-            
+
             file_path = frontend_dir / path
             if file_path.exists() and file_path.is_file():
                 return FileResponse(str(file_path))
@@ -119,7 +119,7 @@ def create_app(
                 "api_docs": "/docs",
                 "note": "Visit /docs to explore the API directly",
             }
-    
+
     return app
 
 
@@ -131,7 +131,7 @@ def start_server(
 ):
     """
     Start the GUI server.
-    
+
     Args:
         host: Host to bind to.
         port: Port to bind to.
@@ -139,9 +139,9 @@ def start_server(
         debug: Enable debug mode.
     """
     import uvicorn
-    
+
     app = create_app(debug=debug)
-    
+
     if open_browser:
         # Open browser after a short delay
         async def open_browser_delayed():
@@ -149,15 +149,15 @@ def start_server(
             url = f"http://{host}:{port}"
             print(f"\nOpening browser at {url}")
             webbrowser.open(url)
-        
+
         @app.on_event("startup")
         async def startup_open_browser():
             asyncio.create_task(open_browser_delayed())
-    
+
     print(f"\nStarting HFBFFT GUI server at http://{host}:{port}")
     print("API documentation available at /docs")
     print("\nPress Ctrl+C to stop the server\n")
-    
+
     uvicorn.run(
         app,
         host=host,

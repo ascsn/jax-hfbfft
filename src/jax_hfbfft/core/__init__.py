@@ -18,7 +18,7 @@ from jax_hfbfft.core.grid import Grid
 __all__ = [
     "HFBFFT",
     "Nucleus",
-    "Force", 
+    "Force",
     "Constraint",
     "Grid",
 ]

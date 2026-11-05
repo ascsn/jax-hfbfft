@@ -120,7 +120,7 @@ def run(args):
         field = rho[0] - rho[1] if args.mode == 'gdr' else rho[0] + rho[1]
         frames.append(field[:, mid, :].T)                   # x-z plane
         times.append(rec['time'])
-        moments.append(rec['r2'] if args.mode == 'monopole' else rec['Q20'])
+        moments.append({'monopole': rec['r2'], 'gdr': rec['Dz_iv']}.get(args.mode, rec['Q20']))
         drifts.append(rec['dE_rel'])
         print(f"  t = {rec['time']:7.1f} fm/c   moment = {moments[-1]:10.3f}   "
               f"dE/E = {rec['dE_rel']:+.2e}", flush=True)

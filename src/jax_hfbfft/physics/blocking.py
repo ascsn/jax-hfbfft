@@ -47,12 +47,14 @@ def time_reverse(phi):
     return jnp.stack([-jnp.conj(phi[1]), jnp.conj(phi[0])])
 
 
-def track_doublet(psi, sp_energy, deltaf, lagrange, isospin, ref, q: int, wxyz, tol: float = 1e-4):
+def track_doublet(psi, sp_energy, deltaf, lagrange, isospin, ref, q: int, wxyz, tol: float = 1e-4,
+                  return_rotation: bool = False):
     """
     One tracking step (see the module docstring) for the blocked isospin q.
 
     Returns (psi, sp_energy, deltaf, lagrange, blocked): the arrays with the shell
-    containing the doublet rotated, and the (nstates,) 0/1 mask of the blocked pair.
+    containing the doublet rotated (the states within tol MeV of it), and the (nstates,)
+    0/1 mask of the blocked pair; with return_rotation also R, psi_i' = sum_j R_ji psi_j.
     """
     n = psi.shape[0]
     v = jnp.stack([ref, time_reverse(ref)])
@@ -83,7 +85,8 @@ def track_doublet(psi, sp_energy, deltaf, lagrange, isospin, ref, q: int, wxyz, 
     w = jnp.where(inq, jnp.sum(jnp.abs(o) ** 2, axis=1), -2.0)
     pool = jnp.where(jnp.sum(shell) >= 2, shell, inq)        # no degenerate partner: best two overall
     top = jnp.argsort(-jnp.where(pool, w, -1.0))[:2]
-    return psi, sp_energy, deltaf, lagrange, jnp.zeros(n).at[top].set(1.0)
+    blocked = jnp.zeros(n).at[top].set(1.0)
+    return (psi, sp_energy, deltaf, lagrange, blocked, R) if return_rotation else (psi, sp_energy, deltaf, lagrange, blocked)
 
 
 def time_even(dens):
@@ -155,6 +158,8 @@ def run_odd(grid, force, nucleus_z: int, nucleus_n: int, npsi_n: int, config=Non
     q = 0 if nucleus_n % 2 else 1
     cz, cn = (nucleus_z, nucleus_n - 1) if q == 0 else (nucleus_z - 1, nucleus_n)
     config = config or SolverConfig()
+    if axial and config.orbital_solver == 'two_basis':   # constraints do not hold there: average instead
+        config, axial = dataclasses.replace(config, axial_symmetry=True), False
     constraint = Constraint.from_multipoles({'Q22': 0.0}, principal_axes=True) if axial else None
     if core is None:
         core = run_hfb(grid, force, nucleus_z=cz, nucleus_n=cn, npsi_n=npsi_n, config=config,

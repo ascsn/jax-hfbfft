@@ -7,6 +7,7 @@ effective nuclear interactions for HFB calculations.
 
 import jax
 import jax.numpy as jnp
+import dataclasses
 from dataclasses import dataclass, field
 from typing import Optional, Dict, Any, Tuple
 from pathlib import Path
@@ -14,6 +15,10 @@ import yaml
 
 # Nuclear saturation density (fm^-3), the reference for surface/mixed pairing.
 RHO_SAT = 0.16
+
+# EDF coupling constants accepted as primary parameters (parametrization 'C'); see Force
+C_PARAMS = ('Crho0', 'Crho1', 'Crho0D', 'Crho1D', 'Ctau0', 'Ctau1', 'Cdrho0', 'Cdrho1', 'CdJ0', 'CdJ1',
+            'CJ0', 'CJ1')
 
 
 @jax.tree_util.register_dataclass
@@ -25,6 +30,19 @@ class Force:
     This class encapsulates the parameters of a Skyrme interaction including
     the standard Skyrme parameters (t0, t1, t2, t3, x0, x1, x2, x3) and
     derived coefficients (b0, b1, b2, b3, etc.).
+
+    Two independent choices (both static):
+
+    parametrization  'tx' (default): t0..t4, x0..x3, b4p are the inputs and the C couplings are derived.
+                     'C': the EDF coupling constants are the inputs (Bender, Heenen & Reinhard, RMP 75, 121):
+                     C^rho_t[rho0] = Crho_t + CrhoD_t rho0^power, C^tau_t = Ctau_t, C^Delta rho_t = Cdrho_t,
+                     C^nabla J_t = CdJ_t, C^J_t = CJ_t (t = 0 isoscalar, 1 isovector). b and t/x follow from them;
+                     derivatives (response.params_of) are then taken with respect to the C's. Time-odd partners
+                     follow Galilean invariance (C^j = -C^tau, C^nabla j = C^nabla J, C^T = -C^J); the s-channel
+                     couplings c_s*, c_ds*, c_sDs* stay independent. Force.from_couplings, Force.to_couplings.
+    functional       'skyrme' (default): hand-coded Skyrme fields (meanfield.py) and energy (energies.py).
+                     'skyrme_ad' or 'fayans': the functional is an energy density in physics/edf.py and every
+                     mean field is its derivative by automatic differentiation.
 
     Attributes:
         name (str): Name of the force parameterization
@@ -86,6 +104,14 @@ class Force:
     # min(uv_floor, 1e-10) (FORTRAN smal). Statics for TDHFB want 0: the floored
     # uv is inconsistent with v2 for nearly empty states.
     uv_floor: float = 1.0e-6
+    # Regularised contact pairing (Bulgac & Yu, PRL 88, 042504): the coupling v = v0 g(rho) becomes
+    # v_eff = v / (1 + v K), K = k_c/(4 pi^2 B) [1 - (k_F/2k_c) ln((k_c + k_F)/(k_c - k_F))], with the local
+    # k_F = (3 pi^2 rho_q)^(1/3), k_c^2 = k_F^2 + E_c / B_q and B_q = dE/dtau_q: a local function of the
+    # densities, so the pair field stays local (TDHFB local continuity) and the gap no longer depends on
+    # the cutoff E_c (MeV above the Fermi surface) of the pairing space. E_c must be large against the local
+    # Fermi energy: where k_F/k_c > 0.83, K < 0 and the coupling is enhanced (SLy4 DDDI at E_c = 26 MeV: by at
+    # most 3%, at rho_n ~ 0.13). 0: bare coupling. Autodiff functionals only (Force.functional, e.g. 'skyrme_ad').
+    pair_reg_ecut: float = field(default=0.0, metadata=dict(static=True))
     # Momentum cutoff of the TDHFB pair channel (physics/tdhfb.py): pairing acts on
     # the orbital components below |k| = pair_kcut (fm^-1), smoothed over
     # pair_kwidth. Regularises zero-range pairing, whose gap otherwise grows into
@@ -138,6 +164,15 @@ class Force:
     CJ0: float = 0.0
     CJ1: float = 0.0
     tensor: bool = field(default=False, metadata=dict(static=True))
+
+    # Which parameters are primary ('tx' or 'C', see the class docstring) and which code builds the
+    # energy and fields ('skyrme' hand-coded, or an autodiff functional of physics/edf.py)
+    parametrization: str = field(default='tx', metadata=dict(static=True))
+    functional: str = field(default='skyrme', metadata=dict(static=True))
+    # Fayans parameters (physics/edf.py, FY_KEYS order), functional 'fayans'
+    fy: Optional[jax.Array] = None
+    # Parameters of a user-defined functional (physics/edf.register): name -> value, differentiable as 'extra.<name>'
+    extra: Optional[Dict[str, Any]] = None
 
     def __post_init__(self):
         """Calculate derived coefficients after initialization."""
@@ -226,6 +261,7 @@ class Force:
             'c_ds1': force_params.get('c_ds1', 0.0),
             'c_sDs0': force_params.get('c_sDs0', 0.0),
             'c_sDs1': force_params.get('c_sDs1', 0.0),
+            'pair_reg_ecut': float(force_params.get('pair_reg_ecut', 0.0)),
         }
         # Pairing: an optional 'vdi:' / 'dddi:' block in the force file supplies
         # default strengths for ipair=5/6.  Explicit kwargs always win.
@@ -253,6 +289,27 @@ class Force:
             init_kwargs['CJ0'], init_kwargs['CJ1'] = (float(c) for c in j2)
         init_kwargs['tensor'] = j2 is not None
 
+        # EDF coupling constants as the primary parameters (parametrization 'C')
+        cblock = force_params.get('couplings')
+        if cblock is not None:
+            unknown = set(cblock) - set(C_PARAMS)
+            if unknown:
+                raise ValueError(f"Force '{name}': unknown couplings {sorted(unknown)}; expected {C_PARAMS}")
+            for k in ('t0', 't1', 't2', 't3', 't4', 'x0', 'x1', 'x2', 'x3', 'b4p'):
+                init_kwargs.pop(k, None)
+            init_kwargs.update({k: float(v) for k, v in cblock.items()}, parametrization='C')
+            if abs(float(cblock.get('CJ0', 0.0))) + abs(float(cblock.get('CJ1', 0.0))) > 0.0:
+                init_kwargs['tensor'] = True
+        # Fayans functional (physics/edf.py): volume/surface and pairing terms from a 'fayans:' block,
+        # spin-orbit on t4/b4p, no effective mass
+        fy_block = force_params.get('fayans')
+        if fy_block is not None:
+            from jax_hfbfft.physics import edf as _edf
+            fy, t4, b4p = _edf.fayans_parameters(fy_block, init_kwargs['h2m'])
+            init_kwargs.update(functional='fayans', fy=fy, t4=t4, b4p=b4p)
+        if 'functional' in force_params:
+            init_kwargs['functional'] = force_params['functional']
+
         # Apply user overrides
         init_kwargs.update(kwargs)
         # A negative strength is a file's "not fitted" placeholder.
@@ -269,7 +326,8 @@ class Force:
 
     def _calculate_derived_coefficients(self) -> "Force":
         """Calculate derived Skyrme coefficients from primary parameters."""
-        import dataclasses
+        if self.parametrization == 'C':
+            return self._from_C()
 
         # Calculate b coefficients from t and x parameters
         b0 = self.t0 * (1 + 0.5 * self.x0)
@@ -325,6 +383,65 @@ class Force:
             CdJ0=CdJ0, CdJ1=CdJ1,
         )
 
+    def _from_C(self) -> "Force":
+        """b coefficients (used by the hand-coded fields) and t/x (informational) from the C couplings."""
+        b0p = -4.0 * self.Crho1
+        b0 = 2.0 * self.Crho0 + 0.5 * b0p
+        b3p = -6.0 * self.Crho1D
+        b3 = 3.0 * self.Crho0D + 0.5 * b3p
+        b2p = 4.0 * self.Cdrho1
+        b2 = 0.5 * b2p - 2.0 * self.Cdrho0
+        b1p = -2.0 * self.Ctau1
+        b1 = self.Ctau0 + 0.5 * b1p
+        b4p = -2.0 * self.CdJ1
+        b4 = -self.CdJ0 - 0.5 * b4p
+        # the equivalent Skyrme force (b -> t, x), for reference only
+        safe = lambda t: jnp.where(t == 0.0, 1.0, t)
+        t0 = 4.0 / 3.0 * (b0 - 0.5 * b0p)
+        t3 = 16.0 / 3.0 * (b3 - 0.5 * b3p)
+        A1, A2 = b1 + 2.0 * b2, 3.0 * b1 - 2.0 * b2          # t_i (1 + x_i/2)
+        B1, B2 = b1p + 2.0 * b2p, 2.0 * b2p - 3.0 * b1p      # t_i (1/2 + x_i)
+        t1, t2 = 4.0 / 3.0 * (A1 - 0.5 * B1), 4.0 / 3.0 * (A2 - 0.5 * B2)
+        x = lambda b, t: jnp.where(t == 0.0, 0.0, b / safe(t) - 0.5)
+        e2 = 1.4399784085965135
+        return dataclasses.replace(
+            self, b0=b0, b0p=b0p, b1=b1, b1p=b1p, b2=b2, b2p=b2p, b3=b3, b3p=b3p, b4=b4, b4p=b4p,
+            t0=t0, t1=t1, t2=t2, t3=t3, t4=2.0 * b4,
+            x0=x(b0p, t0), x1=x(B1, t1), x2=x(B2, t2), x3=x(4.0 * b3p, t3),
+            slate=(3.0 / jnp.pi) ** (1.0 / 3.0) * e2)
+
+    @classmethod
+    def from_couplings(cls, name: str, couplings: Dict[str, float], power: float,
+                       h2m=(20.73553, 20.73553), **kwargs) -> "Force":
+        """
+        A force defined by its EDF coupling constants (parametrization 'C').
+
+        couplings: any of C_PARAMS (missing ones are zero), e.g. {'Crho0': -933.3, 'Crho1': 830.0, ...}.
+        power: the density exponent alpha of C^rho_t[rho0] = Crho_t + CrhoD_t rho0^alpha.
+        kwargs: other Force fields (ex, zpe, pairing, c_s*, functional, ...).
+        """
+        unknown = set(couplings) - set(C_PARAMS)
+        if unknown:
+            raise ValueError(f"unknown couplings {sorted(unknown)}; expected {C_PARAMS}")
+        tensor = abs(float(couplings.get('CJ0', 0.0))) + abs(float(couplings.get('CJ1', 0.0))) > 0.0
+        kw = dict(name=name, ex=kwargs.pop('ex', 1), h2m=jnp.asarray(h2m), power=power,
+                  parametrization='C', tensor=kwargs.pop('tensor', tensor))
+        kw.update({k: float(v) for k, v in couplings.items()})
+        kw.update(kwargs)
+        return cls(**kw)._calculate_derived_coefficients()
+
+    def to_couplings(self) -> "Force":
+        """The same force with the C couplings as primary parameters (derivatives then by C)."""
+        return dataclasses.replace(self, parametrization='C')._calculate_derived_coefficients()
+
+    def with_functional(self, functional: str) -> "Force":
+        """The same parameters evaluated by another implementation ('skyrme', 'skyrme_ad', 'fayans')."""
+        return dataclasses.replace(self, functional=functional)
+
+    def couplings(self) -> Dict[str, float]:
+        """The EDF coupling constants of this force (C_PARAMS), whichever parametrization is primary."""
+        return {k: float(getattr(self, k)) for k in C_PARAMS}
+
     def with_pairing(
         self,
         ipair: Optional[int] = None,
@@ -355,7 +472,6 @@ class Force:
         Returns:
             New Force with updated pairing parameters
         """
-        import dataclasses
 
         updates = {}
         if ipair is not None:
@@ -391,7 +507,6 @@ class Force:
         Returns:
             New Force with ipair=6 (DDDI) and the requested rho0pr.
         """
-        import dataclasses
         kind = kind.lower()
         if kind == 'volume':
             rho0pr = 1.0e30  # makes 1 - rho/rho0pr equal to 1 everywhere
@@ -427,7 +542,6 @@ class Force:
         Returns:
             New Force with all six couplings set (unspecified ones to zero).
         """
-        import dataclasses
 
         return dataclasses.replace(
             self, c_s0=c_s0, c_s1=c_s1, c_ds0=c_ds0, c_ds1=c_ds1,
@@ -442,7 +556,6 @@ class Force:
         Returns:
             New Force with c_s0, c_s1, c_ds0, c_ds1, c_sDs0, c_sDs1 set.
         """
-        import dataclasses
 
         cs0 = -(1.0 / 4.0) * self.t0 * (0.5 - self.x0)
         cs1 = -(1.0 / 8.0) * self.t0

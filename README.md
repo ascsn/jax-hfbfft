@@ -7,12 +7,13 @@
 - **3D coordinate space**: no spatial symmetry is imposed and the orbitals live on the grid, with no oscillator basis; derivatives and the kinetic energy are evaluated spectrally with FFTs.
 - **HFB in the natural-orbital basis**: pairing correlations are carried by the occupations and pair amplitudes of the canonical orbitals.
 - **JAX**: the solver is jit-compiled with XLA and runs on CPUs and NVIDIA GPUs (Apple Metal is experimental), in 64-bit by default.
-- **Skyrme functionals**: SLy4/5/6, SkM, SkM*, SkP, SIII and UNEDF0/1/2, with J² (tensor) terms where fitted (see [Functionals](#functionals)), with the centre-of-mass treatment each was fitted with, up to the microscopic ⟨P²⟩/2mA.
+- **Skyrme functionals**: SLy4/5/6, SkM, SkM*, SkP, SIII and UNEDF0/1/2, with J² (tensor) terms where fitted (see [Functionals](#functionals)), with the centre-of-mass treatment each was fitted with, up to the microscopic ⟨P²⟩/2mA. Skyrme forces can also be given by their coupling constants (C^ρ, C^τ, ...), and other local functionals are defined by their energy density alone (automatic-differentiation mean fields; Fayans FyDr/FyStd/FyDrHFB built in).
 - **Pairing**: volume and density-dependent delta pairing (VDI/DDDI), the Lipkin-Nogami particle-number correction, and finite temperature (thermal BCS).
 - **Time-Dependent Hartree-Fock (TDHF)**: Real-time propagation of converged static states for collective modes, linear response and heavy-ion collisions (see `examples/tdhf`).
 - **Time-Dependent HFB (TDHFB)**: Real-time propagation of paired states (global in-span scheme) for collective modes, collisions and fission (see [TDHFB](#time-dependent-hfb) and `examples/tdhfb`).
 - **Checkpoints**: static runs save and restart from `.npz` files, which also seed TDHFB.
-- **Constrained Calculations**: multipole (Q10 to Q40) and neck (QN) constraints, and deformation scans with an outer/inner augmented-Lagrangian solver.
+- **Linear response**: QRPA strength functions, static polarizabilities, and exact derivatives of the ground state and of polarizabilities with respect to the force parameters (automatic differentiation; see [Linear response](#linear-response-qrpa-strength-polarizabilities-and-parameter-derivatives)).
+- **Constrained Calculations**: multipole (Q10 to Q40) and neck (QN) constraints, and deformation scans with an outer/inner augmented-Lagrangian solver (with the two-basis solver, Newton steps from the exact static response).
 - **Chains of nuclei**: isotopic chains with warm starts and two-nucleon separation energies (`run_chain`).
 - **Configuration files**: a commented `config.yml` covers every option of the `hfbfft` CLI.
 
@@ -57,6 +58,12 @@ jax-hfbfft/
 - `src/jax_hfbfft/physics/collisions.py`: Initial states for heavy-ion collisions
 - `src/jax_hfbfft/core/tdhf.py`: TDHF class - entry point for time-dependent runs
 - `src/jax_hfbfft/physics/tdhfb.py`, `src/jax_hfbfft/core/tdhfb.py`: TDHFB (global in-span scheme) and its class
+- `src/jax_hfbfft/physics/gcg.py`: two-basis HFB (GCG eigensolver, HFB in the HF basis)
+- `src/jax_hfbfft/physics/response.py`: QRPA response, polarizabilities and parameter derivatives
+- `src/jax_hfbfft/physics/second_order.py`: Thouless-coordinate Hessian, second-order (2n+1) adjoint
+- `src/jax_hfbfft/physics/second_order_hfb.py`: the same for paired (two-basis HFB) states, moving pairing window
+- `src/jax_hfbfft/physics/edf.py`: functionals from their energy density (automatic-differentiation mean fields), Fayans
+- `docs/VALIDATION.md`: the checks behind the accuracy statements (HFBTHO, SkyAx, finite differences, TDHF)
 
 ## Installation
 
@@ -298,6 +305,10 @@ Each target warm-starts from the previous one, so keep the steps small (here abo
 
 **J² (tensor) terms** (`j2:` in the force file) enter as Σ_t CJ_t (Σ_μν J_t,μν² − s_t·T_t): the full spin-current tensor, with CJ as in HFBTHO, and its time-odd partner s·T, which keeps the functional Galilean invariant. They act on statics, TDHF and TDHFB. Against HFBTHO with UNEDF2 the total energies agree to 1 keV for deformed ²⁴Mg and ²⁸Si and to 25 keV for ⁴⁰,⁴⁸Ca.
 
+**Coupling-constant input.** A Skyrme functional can be given by its coupling constants (Bender, Heenen, Reinhard, RMP 75, 121 (2003)) instead of t, x: `Force.from_couplings(name, {'Crho0': ..., 'Crho1': ..., 'Crho0D': ..., 'Crho1D': ..., 'Ctau0': ..., 'Ctau1': ..., 'Cdrho0': ..., 'Cdrho1': ..., 'CdJ0': ..., 'CdJ1': ...}, power)` (optional `CJ0`, `CJ1` for J² terms), or a `couplings:` block in the force file. The time-odd partners follow from Galilean invariance. `force.to_couplings()` converts any Skyrme force, and the response and second-order derivatives accept the C names as parameters (`response.C_PARAMS_DEFAULT`).
+
+**Other functionals.** `physics/edf.py` builds the mean fields of any local functional from its energy density by automatic differentiation: every field is ∂E/∂(density) (U ← ρ, B ← τ, W ← J, A ← j, S ← s, the pair potential ← χ), and the Koopmans rearrangement follows from the same derivatives. A new functional is one function returning its energy density, registered with `@edf.register('name')` and selected with `functional: name` in the force file (extra parameters in `Force.extra`). Two are built in: `skyrme_ad` (the Skyrme functional through this route; its fields equal the hand-coded ones to 10⁻⁹) and `fayans` (FyDr, FyStd, FyDrHFB; SkyAx's fyfunc, including its non-variational `pairstab` gap scaling). Fayans total energies agree with SkyAx to 4-13 keV ([validation](docs/VALIDATION.md#functionals)); use a mesh of 0.7 fm or finer. Derivatives with respect to Fayans parameters use the names `fy.<parameter>` (`response.FAYANS_PARAMS`). `tests/test_edf.py`.
+
 The centre-of-mass treatment is set per force by `zpe`:
 
 | `zpe` | Correction |
@@ -327,6 +338,69 @@ for row in separation_energies(points):
 ```
 
 `examples/isotopic_chain.py` does the same from the command line and writes a CSV.
+
+## Two-basis HFB solver
+
+`two_basis_config()` switches the static solver from gradient steps on canonical orbitals to the two-basis method: each iteration refines the HF basis (the lowest eigenvectors of h, by a GCG eigensolver) and solves the HFB problem exactly in it. It reaches a true fixed point, typically in 150-400 iterations (a Ca isotope in ~2 minutes on an A100), and converges by an energy rule (`etol`, 1 keV over 100 iterations, checked every iteration).
+
+```python
+from jax_hfbfft.physics.solver import run_hfb, two_basis_config
+
+force = Force.from_name("UNEDF1").with_pairing(ipair=6, v0neut=266.33, v0prot=295.68, rho0pr=0.32, state_cutoff=(8.0, 8.0))
+state = run_hfb(Grid.create_cubic(n=33, d=0.8), force, nucleus_z=20, nucleus_n=24, npsi_n=140, config=two_basis_config())
+```
+
+Rules: odd grid sizes; pairing acts in a soft window of `state_cutoff` MeV (~8) above the Fermi energy on the HF energies, which must lie well inside the basis (the HF basis should reach ~1.7 windows above it; the solver warns otherwise), and its pairing strengths are not those of a 60 MeV quasiparticle cutoff, so tune `v0` to a reference gap. Density mixing 0.15 is safe for SLy4 and UNEDF0-2 (SLy4 tolerates ~0.4, UNEDF1 runs away above ~0.2). For deformed states use `run_constrained_scan` (its outer steps are Newton steps from the exact static response; in-loop constraint feedback is refused), or start unconstrained from stretched orbitals (`initial_beta2`) with `axial_symmetry=True`. Odd nuclei work through `run_odd` (EFA). `examples/two_basis_benchmark/` compares Ca, Sn and Dy chains (UNEDF1, UNEDF2, SLy4) with HFBTHO: energies within tens of keV along a chain up to a constant offset, gaps to 1% ([validation](docs/VALIDATION.md#two-basis-hfb-solver)).
+
+## Linear response: QRPA strength, polarizabilities and parameter derivatives
+
+`physics.response.Response` linearises a converged two-basis state: one QRPA operator gives strength functions, static polarizabilities and exact derivatives of the ground state with respect to the parameters of the functional. The residual interaction is the forward-mode derivative (`jax.jvp`) of the mean field, so every term of the functional (J², Coulomb, density-dependent pairing) enters without hand-written formulas, and orbital amplitudes on the grid cover the continuum above the HF basis.
+
+```python
+import jax.numpy as jnp, numpy as np
+from jax_hfbfft.physics.response import Response, energy_gradient
+
+R = Response(state, force, grid)                      # state: a converged two_basis run
+X, Y, Z = grid.get_meshgrid(); r2 = X**2 + Y**2 + Z**2
+chain = R.lanczos(jnp.stack([r2, r2]), steps=3000, parity=1)          # isoscalar monopole
+S = Response.spectrum(chain, np.linspace(0, 40, 801), gamma=1.0)      # fm^4/MeV, Lorentzians of width 1 MeV
+m, _ = R.polarizability(jnp.stack([-(20/48) * Z, (28/48) * Z]),       # isovector dipole of 48Ca, c.m. fixed:
+                        constraints=(jnp.stack([Z, Z]),))             # alpha_D = 2 e^2 m
+d = R.sensitivities({'r_p': o})       # d<o rho>/d(t0..x3, t4, b4p, alpha, v0): one solve for all parameters
+g = energy_gradient(state, force, grid)                                # dE/dtheta (Hellmann-Feynman)
+```
+
+`examples/response/run.py` does all four for ⁴⁸Ca (~15 min on one GPU). The monopole strength equals TDHF's to 0.85% of the peak and the derivatives equal finite differences of re-converged states to 5-6 digits ([validation](docs/VALIDATION.md#linear-response-physicsresponsepy)).
+
+For a constrained state (`run_constrained_scan`), pass `constraint_potential='auto'` and hold the constrained moments with `derivatives(..., constraints=[...])` to get derivatives at fixed deformation.
+
+**Paired states.** The solver's pairing window follows the HF energies and the Fermi energy, so its fixed point is not the stationary point of one energy. `Response(..., window='moving')`, the default, differentiates the window too, and paired derivatives then equal finite differences of the solver; `window='frozen'` (the QRPA proper, used for strength functions) is off by 0.5–2.6%. Solve paired states with `uv_floor=0` for derivative work: the default floor makes the state slightly non-stationary.
+
+Limits: Lanczos chains need `parity` (the grid's translational mode is slightly unstable in the opposite parity sector). Odd (blocked) states are not supported.
+
+### Second order: derivatives of polarizabilities
+
+`physics.second_order.HFHessian` writes the energy of a converged HF state as a function of Thouless coordinates of the occupied orbitals (exactly orthonormal, particle numbers conserved, no eigenvectors to differentiate), so automatic differentiation gives its Hessian (the QRPA stability matrix) and third derivatives. Constraints (e.g. the c.m.) enter through a Lagrangian. By the 2n+1 theorem, `polarizability_gradient` returns P = 2m₋₁ and dP/dθ for every parameter from two linear solves; `observable_gradient` is the first-order adjoint for any observable, and `constrained_energy` gives E₋₁ = √(m₁/m₋₁) and its gradient.
+
+```python
+from jax_hfbfft.physics.second_order import HFHessian
+
+H = HFHessian(state, force, grid, constraints=(zcm,))   # zcm: (2, nx, ny, nz) c.m. coordinate per isospin
+P, dP, info = H.polarizability_gradient(D)             # alpha_D = e^2 P; dP: {parameter: derivative}
+mono = H.constrained_energy(R2, m1_weight=W1)          # W1 = (hbar^2/2m_q) |grad r^2|^2: analytic m1 (see below)
+```
+
+dα_D/dθ equals finite differences of re-converged α_D to 10⁻⁸–4×10⁻⁵ for all ten Skyrme parameters (⁴⁸Ca, 237 s for all ten; [validation](docs/VALIDATION.md#second-order-physicssecond_orderpy-second_order_hfbpy)). For fields that grow towards the box edge (r²) pass `m1_weight`: the autodiff m₁ is off by 10⁻³ there because F²ψ is not periodic. On a 1 fm grid the centred HF state is a translation saddle (the egg-box effect): cap the solver's iterations and expect ~0.5% grid error in second-order sensitivities.
+
+**Paired states.** `physics.second_order_hfb.HFBHessian` is the Bogoliubov version (the quasiparticle vacuum as an antisymmetric Thouless map, N and Z held by multipliers); its Hessian is the frozen-window QRPA matrix. Pass the moving-window response to get the derivative of the QRPA polarizability of the solver's own states (one forward solve per parameter); without it the variational 2n+1 adjoint is returned, off by 0.4–1.8% for the solver's states.
+
+```python
+from jax_hfbfft.physics.second_order_hfb import HFBHessian
+
+H = HFBHessian(Response(state, force, grid, window='frozen'))
+P, dP, info = H.polarizability_gradient(R2, moving=Response(state, force, grid, window='moving'))
+```
+
 
 ## Checkpoints and restarts
 
@@ -380,8 +454,8 @@ From the CLI, `dynamics: method: tdhfb` (or `auto`, which picks TDHFB for a pair
 The static has to follow a recipe, explained in `examples/tdhfb/README.md`: an **odd** grid (no Nyquist mode), `state_cutoff: [0, 0]` (`from_static` refuses soft state weights), `uv_floor: 0`, a well-converged solve (Kramers partners with equal occupations), and a relax before propagating. An unrelaxed static drifts at rest. A static solved with Lipkin-Nogami or `zpe: 3` contains terms the propagation does not, and `from_static` warns.
 
 **Known limits.**
-- *Local continuity* holds at its numerical floor with zero-range (contact) pairing. With the momentum-cutoff pair channel needed for heavy nuclei (`pair_kcut`), the pair source is nonlocal, and dρ/dt is no longer balanced by the local current (²³⁸U at k_c = 3 fm⁻¹: about 10⁴ times the floor), while N and E remain conserved. A toy model traces the defect to pairing each orbital with its time-reversed partner. Treat local currents and fragment fluxes from cutoff runs with care.
-- Collisions beyond ~300 fm/c, after the pairing collapses, have not been validated; check them against dt/2.
+- *Pairing in heavy nuclei.* With bare contact pairing the gap follows the size of the orbital space. Use the regularised coupling (`Force.pair_reg_ecut`, `relax.py --pair-reg auto`): it is local, so local continuity stays at its floor, and the gap no longer depends on the basis. The older momentum cutoff (`pair_kcut`) also tames the gap but makes the pair source nonlocal (local continuity ~10⁴ times its floor; N and E still conserved). See `examples/tdhfb/README.md` and [validation](docs/VALIDATION.md#tdhfb).
+- *Pairing collapse in collisions.* After the pairing collapses in contact it revives and grows without bound while N drifts (~10⁻³), at any dt: results past a collapse are not valid. `collide.py --guard-dE` stops a run once its energy drifts, before it overwrites its checkpoint.
 
 ## Object-Oriented API
 

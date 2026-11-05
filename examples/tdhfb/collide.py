@@ -19,13 +19,17 @@ density and of the neutron pairing density xi_n. --check-at measures local
 continuity against its floor.
 
 Long runs: --ckpt FILE --resume restarts from the last save (every
---save-every fm/c). Beyond ~300 fm/c, when the pairing has collapsed, check
-the energy against a run with dt/2.
+--save-every fm/c); --keep-every also keeps frozen copies of the checkpoint.
+After the pairing collapses in contact it revives and grows without bound
+while N drifts (~1e-3), at any dt: results past a collapse are not valid.
+--guard-dE stops a run once its energy drifts, before the drifting state
+overwrites the checkpoint.
 """
 
 import argparse
 import json
 import os
+import shutil
 import time
 
 import jax_hfbfft  # noqa: F401  (enables 64-bit JAX before jax is imported)
@@ -75,6 +79,10 @@ def main():
     p.add_argument('--save-every', type=float, default=20.0)
     p.add_argument('--ckpt', default=None)
     p.add_argument('--resume', action='store_true')
+    p.add_argument('--guard-dE', type=float, default=0.0,
+                   help='stop (without overwriting the checkpoint) once |E - E0| exceeds this (MeV); 0 = off')
+    p.add_argument('--keep-every', type=float, default=0.0,
+                   help='also keep a frozen copy of the checkpoint every this many fm/c (FILE_t<time>.npz)')
     p.add_argument('--out', required=True)
     p.add_argument('--absorb-width', type=float, default=0.0,
                    help='absorbing boundary layer at the box faces (fm); 0 = reflecting box')
@@ -135,6 +143,7 @@ def main():
     n_steps = int(round((a.T - td.time) / a.dt))
     pending = sorted(t for t in a.check_at if t >= td.time - 1e-9 and not any(abs(c['time'] - t) < 1e-9 for c in checks))
     next_save = td.time + a.save_every
+    next_keep = (np.floor(td.time / a.keep_every + 1e-9) + 1) * a.keep_every if a.keep_every > 0 else np.inf
     t0 = time.time()
     for k, rec in enumerate(td.iterate(n_steps, record_every=every, extra=extra)):
         t, E0 = rec['time'], td.history[0]['E']
@@ -150,9 +159,18 @@ def main():
             c = dict(time=t, **td.continuity())
             checks.append(c)
             print(f"    continuity t = {t:.1f}: n {c['n']:.3e} (floor {c['floor_n']:.3e})", flush=True)
+        if a.guard_dE > 0 and abs(rec['E'] - E0) > a.guard_dE:
+            # keep the last good checkpoint: write the history only, under a separate name
+            a.ckpt, a.out = None, a.out.replace('.npz', '_guard.npz')
+            save()
+            raise SystemExit(f"  t = {t:.2f}: |E - E0| = {abs(rec['E'] - E0):.3e} MeV > --guard-dE {a.guard_dE:g}; "
+                             f"stopped, last good checkpoint kept; history in {a.out}")
         if t >= next_save - 1e-9:
             save()
             next_save += a.save_every
+            if a.ckpt and a.keep_every > 0 and t >= next_keep - 1e-9:
+                shutil.copyfile(a.ckpt, a.ckpt.replace('.npz', f'_t{t:.0f}.npz'))
+                next_keep += a.keep_every
     save()
     print(f"  wrote {a.out}")
 

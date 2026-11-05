@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+- Two-basis HFB solver (`two_basis_config()`, `orbital_solver='two_basis'`, `physics/gcg.py`): GCG eigensolver
+  for the HF basis and exact HFB in it with a soft pairing window on the HF energies; EFA blocking with the
+  blocked doublet tracked as an Omega-pure pair; energy-rule convergence (`etol`); `axial_symmetry` and
+  `initial_beta2`. Benchmark against HFBTHO in `examples/two_basis_benchmark/`.
+- `run_constrained_scan` with the two-basis solver: Newton outer steps from the exact static response
+  (`response_newton`, default on there); paired inner solves count as converged by their energy rule or once
+  E and the moments stop moving (the multiplier never updated before); the inner-iteration cap no longer
+  undercuts `inner_iters`.
+- Skyrme forces in coupling-constant form: `Force.from_couplings`, `couplings:` blocks in the force file,
+  `Force.to_couplings`; the C names are accepted as derivative parameters.
+- Functionals from their energy density (`physics/edf.py`): mean fields and rearrangement by automatic
+  differentiation, a registry for new functionals (`@edf.register`, `functional:` in the force file),
+  `skyrme_ad`, and the Fayans functionals FyDr, FyStd, FyDrHFB.
+- Linear response of two-basis states (`physics/response.py`, `Response`): QRPA strength functions (Lanczos,
+  or GMRES per energy), static polarizabilities, exact ground-state derivatives with respect to the force
+  parameters (forward and adjoint) and `energy_gradient`. Paired derivatives follow the solver's moving pairing
+  window (`window='moving'`, the default). Constrained states: `constraint_potential='auto'` and
+  `derivatives(constraints=...)` give derivatives at fixed deformation.
+- Second-order sensitivities (`physics/second_order.py`, `HFHessian`; paired: `physics/second_order_hfb.py`,
+  `HFBHessian`): Thouless-coordinate Hessians, dP/dθ of polarizabilities by the 2n+1 theorem, first-order adjoint
+  of any observable, E₋₁ = √(m₁/m₋₁) with gradients. Third derivatives are forward-over-forward and densities
+  are chunked, which cut the memory of the paired case by more than half.
+- Regularised contact pairing (Bulgac-Yu, `Force.pair_reg_ecut`, autodiff functionals): the gap no longer
+  depends on the size of the pairing space and, being local, keeps TDHFB local continuity at its floor
+  (`relax.py --pair-reg auto`).
+- `collide.py --guard-dE` (stop before a drifting state overwrites the checkpoint) and `--keep-every`
+  (frozen checkpoint copies).
+- The spin-current tensor J_mu,nu of J^2 functionals is mixed like the other densities.
+- Configuration-space sub-iterations orthonormalise by Cholesky QR (same result, ~25% faster per iteration on a
+  GPU).
+- `JAX_ENABLE_X64=False` now selects single precision (it was overridden at import).
+- Validation details moved to `docs/VALIDATION.md`.
 - Finite temperature: thermal BCS occupations, entropy and free energy
   (`temperature`; zero pairing strength gives finite-temperature HF).
 - Neck constraint `QN` (Gaussian slab of width `neck_width` at `neck_z`).

@@ -242,6 +242,7 @@ def _compute_densities_vectorized(
             c = jax.vmap(single_state_densities)(p, w, wuv)
             return tuple(t + per_isospin(x, iq) for t, x in zip(carry, c)), None
 
-        dens, _ = jax.lax.scan(_body, zeros, (psi_c, w_c, wuv_c, iso_c))
+        # rematerialised under reverse-mode AD: memory per chunk, not per state (second-order energies)
+        dens, _ = jax.lax.scan(jax.checkpoint(_body), zeros, (psi_c, w_c, wuv_c, iso_c))
 
     return Densities(*dens[:6], *(dens[6:] if tensor else (None, None)))

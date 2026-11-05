@@ -227,3 +227,34 @@ def test_kick_energy_matches_ewsr(static, kind, kick):
     eta = 0.01 if kind == "monopole" else 0.05
     getattr(td, kick)(eta)
     assert (td.observables()['E'] - e0) / eta**2 == pytest.approx(m1, rel=2e-2)
+
+
+class TestRegularizedPairing:
+    """Force.pair_reg_ecut: a local, real coupling, so the pair field adds no continuity source."""
+
+    @pytest.fixture(scope="class")
+    def reg(self, static):
+        force = dataclasses.replace(static.solver_force.with_functional('skyrme_ad'), pair_reg_ecut=20.0)
+        td = TDHFB.from_static(static, force=force)
+        td.kick_quadrupole(0.01)
+        return td, td.run(4)
+
+    def test_weaker_than_bare(self, reg, static):
+        td, h = reg
+        Ebare = T.energy(td.state, td.grid, static.solver_force, td.cs)[1][0]
+        assert 0 < h[-1]['Epair_n'] < Ebare
+
+    def test_conserves(self, reg):
+        td, h = reg
+        assert abs(h[-1]['N'] - h[0]['N']) < 1e-9
+        assert abs(h[-1]['E'] - h[0]['E']) < 1e-3
+
+    def test_local_continuity_at_floor(self, reg):
+        c = reg[0].continuity()
+        assert c['n'] < 3 * c['floor_n'] and c['p'] < 3 * c['floor_p']
+
+    def test_hand_coded_skyrme_refused(self, static):
+        force = dataclasses.replace(static.solver_force, pair_reg_ecut=20.0)
+        with pytest.raises(NotImplementedError, match="pair_reg_ecut"):
+            TDHFB.from_static(static, force=force).run(1)
+

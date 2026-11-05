@@ -78,8 +78,9 @@ class DTypes:
             raise ValueError(f"Unsupported precision: {precision}. Use 32 or 64.")
 
 
-# Detect default precision based on backend
-_default_precision = 32 if _use_metal else 64
+# Default precision: single on Metal or when JAX_ENABLE_X64 is explicitly off, else double
+_want64 = (not _use_metal) and os.environ.get('JAX_ENABLE_X64', 'True').strip().lower() not in ('false', '0', 'no')
+_default_precision = 64 if _want64 else 32
 
 # Default dtypes
 _dtypes = DTypes.from_precision(_default_precision)
@@ -176,7 +177,7 @@ def arange(*args, dtype=None, **kwargs):
 
 
 # Verify precision settings on import
-if not _use_metal and not jax.config.x64_enabled:
+if _want64 and not jax.config.x64_enabled:
     try:
         jax.config.update("jax_enable_x64", True)
     except Exception:

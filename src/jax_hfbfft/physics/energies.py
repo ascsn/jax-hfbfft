@@ -164,6 +164,11 @@ def compute_integrated_energy(
         Energies object with all contributions.
         ehf and tke are correctly populated when wocc/wstates/sp_kinetic are given.
     """
+    if getattr(force, 'functional', 'skyrme') != 'skyrme':
+        # an autodiff functional (physics/edf.py): energy and Koopman rearrangement from its energy density
+        from jax_hfbfft.physics import edf
+        return edf.integrated_energy(densities, force, grid, coulomb_potential, mass_number, use_coulomb,
+                                     wocc, wstates, sp_kinetic, sp_energy, e_ln)
     rho_floor = 1.0e-25  # keeps rho^alpha differentiable where rho = 0
     # complex (gauge-rotated) densities of the number projection take the principal branch
     pos = (lambda x, floor: x) if jnp.iscomplexobj(densities.rho) else jnp.maximum

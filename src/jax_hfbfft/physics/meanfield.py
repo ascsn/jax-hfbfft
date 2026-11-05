@@ -404,6 +404,8 @@ def compute_skyrme_meanfield(
     Returns:
         Meanfield object with all potentials
     """
+    if force.pair_reg_ecut and force.functional == 'skyrme':
+        raise NotImplementedError("Force.pair_reg_ecut needs an autodiff functional (functional='skyrme_ad')")
     dtypes = get_dtypes()
 
     if coulomb_potential is None:
@@ -411,6 +413,11 @@ def compute_skyrme_meanfield(
 
     if constraint_potential is None:
         constraint_potential = jnp.zeros((2, grid.nx, grid.ny, grid.nz), dtype=dtypes.float)
+
+    if getattr(force, 'functional', 'skyrme') != 'skyrme':
+        # an autodiff functional (physics/edf.py): every field is a derivative of its energy density
+        from jax_hfbfft.physics import edf
+        return edf.meanfield(densities, coulomb_potential, constraint_potential, force, grid, use_coulomb)
 
     return _compute_skyrme_meanfield_core(
         densities, coulomb_potential, constraint_potential, force, grid, use_coulomb,

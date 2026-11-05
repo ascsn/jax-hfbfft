@@ -20,6 +20,7 @@ BCS-type state in a Kramers basis.
 """
 
 import argparse
+import dataclasses
 import os
 import time
 
@@ -45,6 +46,10 @@ def main():
                    help='momentum cutoff of the pair channel (fm^-1; 0 = bare contact pairing). Heavy nuclei need one: '
                         'with bare pairing the relaxed gap either vanishes or grows into grid-scale states')
     p.add_argument('--pair-kwidth', type=float, default=None)
+    p.add_argument('--pair-reg', default=None,
+                   help="regularised (Bulgac-Yu, local) pairing with this cutoff E_c in MeV above lambda_n, or 'auto' for "
+                        "the top of the static's neutron basis: keeps the TDHFB pair field local (local continuity) "
+                        "unlike --pair-kcut, and the gap independent of the orbital space")
     p.add_argument('--out', default=None)
     a = p.parse_args()
     out = a.out or (a.static if a.static.endswith('_relaxed.npz') else a.static.replace('.npz', '_relaxed.npz'))
@@ -55,6 +60,18 @@ def main():
         d['pair_kwidth'] = a.pair_kwidth if a.pair_kwidth is not None else float(d.get('pair_kwidth', 0.1))
         force = force.with_pairing(pair_kcut=d['pair_kcut'], pair_kwidth=d['pair_kwidth'])
         print(f"  pair channel momentum cutoff {d['pair_kcut']:g} fm^-1 (width {d['pair_kwidth']:g})", flush=True)
+    if a.pair_reg is not None:
+        if a.pair_reg == 'auto':
+            sp, occ, iso = np.asarray(d['sp_energy']), np.asarray(d['wocc']), np.asarray(d['isospin'])
+            spn, occn = sp[iso == 0], occ[iso == 0]
+            lam_n = spn[np.argmin(np.abs(occn - 0.5))]           # nearest level to half filling
+            ecut = float(spn.max() - lam_n)
+        else:
+            ecut = float(a.pair_reg)
+        d['pair_reg_ecut'] = ecut
+        force = dataclasses.replace(force.with_functional('skyrme_ad') if force.functional == 'skyrme' else force,
+                                    pair_reg_ecut=ecut)
+        print(f"  regularised pairing, E_c = {ecut:.1f} MeV above lambda_n", flush=True)
     if a.v0 is not None or a.v0p is not None:      # pairing-strength scan: same start, new force
         d['v0'] = a.v0 if a.v0 is not None else float(d['v0'])
         d['v0p'] = a.v0p if a.v0p is not None else float(d.get('v0p', d['v0']))

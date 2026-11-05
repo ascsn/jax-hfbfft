@@ -61,21 +61,34 @@ print(td.continuity())          # local continuity defect vs its floor
 | `uv_floor = 0` (default) | Rebuilds κ = √(v²(1−v²)) instead of the static solver's floored value, which gave nearly empty orbitals κ/ρ ~ 10⁶. |
 | Relax the static (`relax.py`) | The canonical solver's result is not the TDHFB functional's minimum (diagonal gaps only, nearly empty orbitals unconverged); TDHFB at rest then drifts toward it. 20O at rest: E_pair +0.02% over 60 fm/c relaxed, +5.9% unrelaxed. Fit v0 on relaxed states (pairing grows a few % at fixed v0). |
 | Purify after setup (default) | Removes the static's ~1e-6 impurity, which the out-of-span force amplifies in nearly empty orbitals. |
-| Second-order step (`strang`, `midpoint`, n_comp 1; the defaults), eps 1e-7, pred_n_comp 1 | Energy error falls 4.0x per halving of dt. dt 0.1 in general; dt 0.2 on 1.0 fm grids is validated for U238 fission (10 fm/c against dt 0.025: density 6e-7, E_pair 2 keV, 1.4x faster than the old first-order dt 0.1, which was off by 35 keV). Check dt/2 when pairing collapses in a collision (fast regrowth near 300 fm/c). The 20O, Sn120 and LISE results used the first-order step (`--no-strang --no-midpoint`, dt 0.05, n_comp 4). |
+| Second-order step (`strang`, `midpoint`, n_comp 1; the defaults), eps 1e-7, pred_n_comp 1 | Energy error falls 4.0x per halving of dt. dt 0.1 in general; dt 0.2 on 1.0 fm grids is validated for U238 fission (10 fm/c against dt 0.025: density 6e-7, E_pair 2 keV, 1.4x faster than the old first-order dt 0.1, which was off by 35 keV). After the pairing collapses in a collision it revives without bound while N drifts (~1e-3), at dt 0.1 and 0.05 alike: results past a collapse are not valid (open problem). The 20O, Sn120 and LISE results used the first-order step (`--no-strang --no-midpoint`, dt 0.05, n_comp 4). |
 
-## Pairing in heavy nuclei: use the momentum cutoff
+## Pairing in heavy nuclei: regularise it
 
-With bare zero-range pairing, once the orbitals are free (in `relax`, and in
-the dynamics) the gap of a heavy nucleus either vanishes or grows into
-grid-scale states: U238 on 37x37x61 at dx = 1 fm has gap 0.2 MeV at v0 = 280
-and 7.6 MeV at v0 = 320. `relax.py --pair-kcut 2.0` builds the pair channel
-from orbital components below |k| = 2 fm^-1 (a single functional, shared by
-statics and dynamics). The gap is then a smooth function of v0; fit v0 on
-relaxed states. U238 at k_c = 2.0: v0 = 360 (n) / 415 (p) gives mean gaps
-0.56 / 0.66 MeV (experiment, 3-point: 0.54 / 0.67), and the relaxed state sits
-still at rest (E_pair +0.17% over 60 fm/c; unrelaxed bare pairing: +23.6% in 40).
-The cutoff makes pairing slightly nonlocal (range ~1/k_c), so local continuity
-is no longer exact by construction; N and E stay exactly conserved.
+With bare zero-range pairing the orbital space is the pairing cutoff, and once
+the orbitals are free (in `relax`, and in the dynamics) the gap follows the
+size of that space: 20O on 13^3 @ 1.2 fm, v0 = 300, mean neutron gap 1.16 /
+1.38 / 1.63 MeV with the basis reaching 9 / 34 / 40 MeV above lambda; U238 on
+37x37x61 @ 1 fm goes from 0.2 MeV at v0 = 280 to 7.6 MeV at v0 = 320.
+
+`relax.py --pair-reg auto` switches to the regularised coupling of Bulgac and
+Yu (Force.pair_reg_ecut, physics/edf.regularized_coupling): v_eff = v /
+(1 + v K) with K from the local Fermi momentum (3 pi^2 rho_q)^(1/3) and the
+cutoff E_c (auto: the top of the static's neutron basis above lambda_n). The
+coupling is a local function of the densities, so (i) the pair field stays
+local and real and adds no source to the local continuity equation, and (ii)
+it is part of the energy functional, so the mean field carries its
+rearrangement and the energy is conserved. 20O, n = 30, quadrupole kick, 20
+fm/c: continuity defect 4.5e-7 / 3.1e-7 against floors 4.1e-7 / 2.3e-7,
+energy drift 7e-8 MeV; mean gap 1.23 / 1.08 / 1.18 MeV for the three basis
+sizes above (bare: +40%). Regularised pairing is weaker at the same v0:
+refit v0 on relaxed states.
+
+`relax.py --pair-kcut` (a momentum filter on the pair channel) is the older
+alternative. It also tames the gap, but the filtered pair field is nonlocal
+and breaks local continuity by ~1e4 times its floor (20O as above: 4.3e-3 /
+8.8e-3); N and E stay conserved. U238 at k_c = 2.0: v0 = 360 (n) / 415 (p)
+gives mean gaps 0.56 / 0.66 MeV (experiment, 3-point: 0.54 / 0.67).
 
 ## Known limits
 

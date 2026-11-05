@@ -80,11 +80,15 @@ def load_static(path: str, nz: Optional[int] = None):
 def _force_of(d) -> Force:
     """The pairing force a static file was solved with, without the c.m. correction."""
     v0 = float(d.get('v0', 362.0))
-    return Force.from_name(str(d.get('functional', 'SLy4'))).with_pairing(
+    f = Force.from_name(str(d.get('functional', 'SLy4'))).with_pairing(
         ipair=int(d.get('ipair', 6)), v0neut=v0, v0prot=float(d.get('v0p', v0)),
         rho0pr=float(d.get('rho0pr', 0.32)), tbcs=False, pair_cutoff=(0.0, 0.0),
         state_cutoff=(0.0, 0.0), pair_kcut=float(d.get('pair_kcut', 0.0)),
         pair_kwidth=float(d.get('pair_kwidth', 0.1)))
+    reg = float(d.get('pair_reg_ecut', 0.0))
+    if reg > 0:          # regularised pairing lives in the autodiff functional (physics/edf.py)
+        f = dataclasses.replace(f.with_functional('skyrme_ad') if f.functional == 'skyrme' else f, pair_reg_ecut=reg)
+    return f
 
 
 def _static_arrays(static):

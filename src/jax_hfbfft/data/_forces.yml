@@ -197,3 +197,70 @@ UNEDF2:
   b4p: 77.3003893702710059
   power: 0.351455132555483607
   j2: [-54.4333635973721002, -65.9030310445938028]
+
+# Fayans functionals (physics/edf.py, functional "fayans"); ported from the OOPrefactorblocking branch
+FyDr:
+  description: "Fayans Fy(Delta r) (SkyAx Fy(Dr))"
+  reference: "Reinhard & Nazarewicz, PRC 95, 064328 (2017)"
+  ex: 1
+  zpe: 3  # microscopic <P^2>/2mA on the final state (SkyAx zpe=1)
+  h2m: [20.72126, 20.74982]
+  fayans:
+    avp: -9.5428938
+    h1vp: 0.63232251
+    h2vp: 0.13437859
+    avm: 4.1821876
+    h1vm: 0.25377619
+    h2vm: 1.2150152
+    asp: 0.60472662
+    hgradp: 0.66562684
+    c0nabj: 0.18786616
+    c1nabj: -0.022723712
+    fxi: -4.5211808
+    h1xi: 4.2679434
+    hgradxi: 3.6711261
+    delfxi: 0.0
+
+FyStd:
+  description: "Fayans Fy(std) (SkyAx Fy(std))"
+  reference: "Reinhard & Nazarewicz, PRC 95, 064328 (2017)"
+  ex: 1
+  zpe: 3  # microscopic <P^2>/2mA on the final state (SkyAx zpe=1)
+  h2m: [20.72126, 20.74982]
+  fayans:
+    avp: -9.4959222
+    h1vp: 0.62710556
+    h2vp: 0.14523339
+    avm: 12.474118
+    h1vm: -1.38753746
+    h2vm: 19.37945593
+    asp: 0.52416146
+    hgradp: 0.099219924
+    c0nabj: 0.18963992
+    c1nabj: 0.0249668
+    fxi: -1.6361265
+    h1xi: 1.1362983
+    hgradxi: 0.013020834
+    delfxi: 0.0
+
+FyDrHFB:
+  description: "Fayans Fy(Delta r, HFB), SkyAx convention (skyax/SkyAx/source_f90/for005_0)"
+  reference: "Miller et al., Nature Phys. 15, 432 (2019)"
+  ex: 1
+  zpe: 3  # microscopic <P^2>/2mA on the final state (SkyAx zpe=1)
+  h2m: [20.72126, 20.74982]
+  fayans:
+    avp: -9.809519866
+    h1vp: 0.6174527519
+    h2vp: 0.2142736685
+    avm: 23.41886322
+    h1vm: -0.2861245253
+    h2vm: 22.80909400
+    asp: 0.5654841300
+    hgradp: 0.4579587200
+    c0nabj: 0.1983338500
+    c1nabj: 0.044008347
+    fxi: -4.455644500
+    h1xi: 4.243982800
+    hgradxi: 3.112633900
+    delfxi: 0.0

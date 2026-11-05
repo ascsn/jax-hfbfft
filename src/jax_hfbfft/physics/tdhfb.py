@@ -76,6 +76,7 @@ from jax_hfbfft.core.force import Force
 from jax_hfbfft.core.grid import Grid
 from jax_hfbfft.physics.coulomb import CoulombSolver, solve_poisson
 from jax_hfbfft.physics.densities import Densities, compute_densities
+from jax_hfbfft.physics.edf import regularized_coupling
 from jax_hfbfft.physics.dynamics import HBARC, propagate_taylor
 from jax_hfbfft.physics.energies import compute_integrated_energy
 from jax_hfbfft.physics.meanfield import apply_hamiltonian, compute_skyrme_meanfield
@@ -145,12 +146,16 @@ def pair_density_canonical(psi, kappa, isospin):
     return _by_isospin(0.5 * kappa[:, None, None, None] * dens, isospin)
 
 
-def pair_field(xi, rho_tot, force: Force):
-    """Complex pair field Delta_q(r): v0_q xi_q, times 1 - rho/rho0pr for DDDI (ipair 6)."""
+def pair_field(xi, rho_q, force: Force):
+    """Complex pair field Delta_q(r) = v_q(r) xi_q(r): v0_q, times 1 - rho/rho0pr for DDDI (ipair 6), regularised
+    (Force.pair_reg_ecut, physics/edf.regularized_coupling) when set. rho_q: (2, ...) neutron and proton densities.
+    v_q is real and local, so Im(Delta* xi) = 0 pointwise: pairing adds no source to the local continuity."""
+    rho_tot = rho_q[0] + rho_q[1]
     density_factor = jnp.where(force.ipair == 6, 1.0 - rho_tot / force.rho0pr, 1.0)
     v0 = jnp.stack([jnp.full_like(rho_tot, force.v0neut), jnp.full_like(rho_tot, force.v0prot)])
     active = jnp.where((force.ipair == 5) | (force.ipair == 6), 1.0, 0.0)
-    return active * v0 * xi * density_factor[None, ...]
+    v = regularized_coupling(v0 * density_factor[None, ...], jnp.real(rho_q), force)
+    return active * v * xi
 
 
 def pair_view(psi, grid: Grid, force: Force):
@@ -228,7 +233,7 @@ def _complete_fields(dens, xi, grid, force, cs, use_coulomb, external=None):
                                   coulomb_potential=wcoul if use_coulomb else None,
                                   constraint_potential=None if external is None else external(dens),
                                   use_coulomb=use_coulomb)
-    delta = pair_field(xi, dens.rho[0] + dens.rho[1], force)
+    delta = pair_field(xi, dens.rho, force)
     return dens, mf, wcoul, delta
 
 
@@ -531,9 +536,9 @@ def make_step(S: GState, grid: Grid, force: Force, cs: CoulombSolver, eps: float
         dens, mf, _, delta = _complete_fields(dens, pair_density(pv(psi), kap, iso), grid, force, cs, use_coulomb)
         return dens, mf, delta
 
-    def Dt_of(psi, kap, rho_tot):
+    def Dt_of(psi, kap, rho_q):
         p = pv(psi)
-        delta = pair_field(pair_density(p, kap, iso), rho_tot, force)
+        delta = pair_field(pair_density(p, kap, iso), rho_q, force)
         return -anomalous_matrix(p, delta, iso, grid)
 
     def complement(psi, rho, kap, delta, dt, nc):
@@ -548,19 +553,19 @@ def make_step(S: GState, grid: Grid, force: Force, cs: CoulombSolver, eps: float
                 psi = _complement_rotate(psi, B(psi), same, grid)
         return psi
 
-    def pair_update(psi, rho, kap, rho_tot, h):
+    def pair_update(psi, rho, kap, rho_q, h):
         # in-span pairing: exact unitary with a self-consistent midpoint pair field
-        _, kh = _exp_update(rho, kap, Dt_of(psi, kap, rho_tot), 0.5 * h)
-        return _exp_update(rho, kap, Dt_of(psi, kh, rho_tot), h)
+        _, kh = _exp_update(rho, kap, Dt_of(psi, kap, rho_q), 0.5 * h)
+        return _exp_update(rho, kap, Dt_of(psi, kh, rho_q), h)
 
-    def substep(psi, rho, kap, mf, delta, rho_tot, dt, nc):
+    def substep(psi, rho, kap, mf, delta, rho_q, dt, nc):
         psi = complement(psi, rho, kap, delta, dt, nc)
         if strang:
-            rho, kap = pair_update(psi, rho, kap, rho_tot, 0.5 * dt)
+            rho, kap = pair_update(psi, rho, kap, rho_q, 0.5 * dt)
             psi = propagate_taylor(psi, mf, iso, grid, dt, taylor_order)
-            rho, kap = pair_update(psi, rho, kap, rho_tot, 0.5 * dt)
+            rho, kap = pair_update(psi, rho, kap, rho_q, 0.5 * dt)
         else:
-            rho, kap = pair_update(psi, rho, kap, rho_tot, dt)
+            rho, kap = pair_update(psi, rho, kap, rho_q, dt)
             psi = propagate_taylor(psi, mf, iso, grid, dt, taylor_order)
         psi = complement(psi, rho, kap, delta, dt, nc)
         return psi, rho, kap
@@ -568,12 +573,12 @@ def make_step(S: GState, grid: Grid, force: Force, cs: CoulombSolver, eps: float
     @jax.jit
     def core(psi, rho, kap, dt):
         dn0, mf0, d0 = flds(psi, rho, kap)
-        rt0 = dn0.rho[0] + dn0.rho[1]
+        rt0 = dn0.rho
         pp, rp, kp = substep(psi, rho, kap, mf0, d0, rt0, dt, pnc)
         dn1, mf1, d1 = flds(pp, rp, kp)
         mfm = jax.tree_util.tree_map(lambda a, b: 0.5 * (a + b), mf0, mf1)
         psi, rho, kap = substep(psi, rho, kap, mfm, 0.5 * (d0 + d1),
-                                0.5 * (rt0 + dn1.rho[0] + dn1.rho[1]), dt, n_comp)
+                                0.5 * (rt0 + dn1.rho), dt, n_comp)
         return _recanon(_lowdin(psi, same, grid), rho, kap, iso, perm)
 
     if absorb is not None:

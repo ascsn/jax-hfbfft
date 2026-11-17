@@ -12,11 +12,11 @@ import jax.numpy as jnp
 def rpsnorm(ps: jax.Array, wxyz: float) -> jax.Array:
     """
     Calculate the squared norm of a wavefunction.
-    
+
     Args:
         ps: Wavefunction array
         wxyz: Integration weight (volume element)
-        
+
     Returns:
         Squared norm of the wavefunction
     """
@@ -27,12 +27,12 @@ def rpsnorm(ps: jax.Array, wxyz: float) -> jax.Array:
 def overlap(pl: jax.Array, pr: jax.Array, wxyz: float) -> jax.Array:
     """
     Calculate the overlap between two wavefunctions.
-    
+
     Args:
         pl: Left wavefunction (will be conjugated)
         pr: Right wavefunction
         wxyz: Integration weight (volume element)
-        
+
     Returns:
         Complex overlap integral <pl|pr>
     """
@@ -43,11 +43,11 @@ def overlap(pl: jax.Array, pr: jax.Array, wxyz: float) -> jax.Array:
 def normalize(psi: jax.Array, wxyz: float) -> jax.Array:
     """
     Normalize a wavefunction.
-    
+
     Args:
         psi: Wavefunction to normalize
         wxyz: Integration weight
-        
+
     Returns:
         Normalized wavefunction
     """
@@ -58,24 +58,24 @@ def normalize(psi: jax.Array, wxyz: float) -> jax.Array:
 def gram_schmidt(psi_array: jax.Array, wxyz: float) -> jax.Array:
     """
     Orthonormalize a set of wavefunctions using Gram-Schmidt.
-    
+
     Args:
         psi_array: Array of wavefunctions with shape (nstates, ...)
         wxyz: Integration weight
-        
+
     Returns:
         Orthonormalized wavefunctions
     """
     nstates = psi_array.shape[0]
     result = psi_array.copy()
-    
+
     for i in range(nstates):
         # Normalize the current vector
         result = result.at[i].set(normalize(result[i], wxyz))
-        
+
         # Orthogonalize remaining vectors
         for j in range(i + 1, nstates):
             proj = overlap(result[i], result[j], wxyz)
             result = result.at[j].add(-proj * result[i])
-    
+
     return result

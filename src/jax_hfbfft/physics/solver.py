@@ -3,16 +3,19 @@ HFB solver module.
 
 This module implements the iterative HFB solver including:
 - Gradient descent steps
-- Diagonalization steps  
+- Diagonalization steps
 - Density mixing
 - Convergence checking
 """
 
 import jax
 import jax.numpy as jnp
+import jax.scipy.linalg
+import numpy as np
 from dataclasses import dataclass, field
-from typing import Tuple, Optional, Callable
+from typing import Tuple, Optional, Callable, List
 import time
+import warnings
 import dataclasses
 from functools import partial
 
@@ -24,6 +27,8 @@ from jax_hfbfft.physics.densities import Densities, compute_densities
 from jax_hfbfft.physics.meanfield import Meanfield, compute_skyrme_meanfield, apply_hfb_hamiltonian
 from jax_hfbfft.physics.energies import Energies, compute_integrated_energy, compute_sp_energy, print_sinfo
 from jax_hfbfft.physics.pairing import Pairing, solve_pairing, compute_pairing_gaps
+from jax_hfbfft.physics.blocking import track_doublet, efa_hf_occupations, time_even
+from jax_hfbfft.physics.gcg import gcg_step, two_basis_hfb
 from jax_hfbfft.physics.coulomb import CoulombSolver, solve_poisson
 from jax_hfbfft.physics.constraints import (
     ConstraintState,
@@ -40,48 +45,48 @@ from jax_hfbfft.physics.constraints import (
 class SolverState:
     """
     State of the HFB solver.
-    
+
     Contains all arrays that are updated during iteration.
     """
     # Wavefunctions
     psi: jax.Array         # Shape: (nstates, 2, nx, ny, nz)
     lagrange: jax.Array    # Shape: (nstates, 2, nx, ny, nz) — off-diagonal H term
-    
+
     # Single-particle properties
     sp_energy: jax.Array   # Single-particle energies (nstates,)
     sp_kinetic: jax.Array  # Kinetic energies (nstates,)
     deltaf: jax.Array      # Pairing gaps (nstates,)
-    
+
     # Quantum numbers
     sp_n: jax.Array        # Radial quantum number (nstates,)
     sp_l: jax.Array        # Orbital angular momentum (nstates,)
     sp_j: jax.Array        # Total angular momentum (nstates,)
-    
+
     # Occupation factors
     wocc: jax.Array        # BCS occupation v^2 (nstates,)
     wguv: jax.Array        # BCS uv factor (nstates,)
     wstates: jax.Array     # State weights (nstates,)
     pairwg: jax.Array      # Pairing cutoff weights (nstates,)
-    
+
     # State metadata
     isospin: jax.Array     # 0=neutron, 1=proton (nstates,)
     sp_parity: jax.Array   # Parity (-1)^l (nstates,)
-    
+
     # Densities and potentials
     densities: Densities
     meanfield: Meanfield
-    
+
     # Coulomb
     coulomb_solver: CoulombSolver
     wcoul: jax.Array       # Coulomb potential
-    
+
     # Energies
     energies: Energies
     pairing: Pairing
 
     # Constraints
     constraint_state: ConstraintState
-    
+
     # Convergence
     iteration: int
     converged: bool
@@ -90,29 +95,31 @@ class SolverState:
     # The Hamiltonian the state was relaxed in (set by run_hfb on return). Time
     # evolution must use this same force to start from a stationary state.
     force: Optional[Force] = None
-    
+    block_ref: Optional[jax.Array] = None   # EFA reference spinor (physics.blocking)
+    psi_prev: Optional[jax.Array] = None    # previous orbitals (two_basis: GCG conjugate direction)
+
     @property
     def nstates(self) -> int:
         return self.psi.shape[0]
-    
+
     @property
     def nneut(self) -> jax.Array:
         return jnp.sum(self.isospin == 0)
-    
+
     @property
     def nprot(self) -> jax.Array:
         return jnp.sum(self.isospin == 1)
-    
+
     def get_spectroscopic_labels(self) -> list:
         """
         Generate spectroscopic labels from quantum numbers.
-        
+
         Returns:
             List of spectroscopic labels (e.g., '1s1/2', '1p3/2')
         """
         # Import locally to avoid circular dependency
         from jax_hfbfft.core.hfbfft import make_spectroscopic_label
-        
+
         labels = []
         for i in range(self.nstates):
             n = int(self.sp_n[i])
@@ -147,6 +154,18 @@ class SolverConfig:
     iteranneal: int = 0
     pairenhance: float = 0.0
 
+    # Lipkin-Nogami approximate particle-number projection (pairing.py).  UNEDF
+    # functionals were fitted with it (HFBTHO type_of_calculation = -1).
+    # ln_passes = Illinois iterations for lambda_2; each re-solves the LN BCS
+    # problem, so LN runs cost ~5x plain HFB per iteration.
+    use_ln: bool = field(default=False, metadata=dict(static=True))
+    ln_passes: int = field(default=12, metadata=dict(static=True))
+
+    # Temperature (MeV): thermal BCS occupations, so the solver minimises the free
+    # energy F = E - T S (pairing.py). With zero pairing strength this is
+    # finite-temperature Hartree-Fock. Requires ipair != 0 (v0 = 0 for FT-HF).
+    temperature: float = 0.0
+
     # Adaptive step (tvaryx_0): triple x0dmp before main loop, adapt each iteration
     # Matches legacy static.tvaryx_0 behavior
     tvaryx_0: bool = field(default=False, metadata=dict(static=True))
@@ -160,10 +179,44 @@ class SolverConfig:
     # Do not stop on convergence before this many iterations (a warm-started
     # solve can otherwise stop at iteration 1, before a changed constraint acts).
     min_iterations: int = field(default=0, metadata=dict(static=True))
+    # Odd nucleus in the equal-filling approximation: the isospin of the blocked
+    # nucleon (0/1; -1 = none). The state carries the reference spinor block_ref
+    # (physics.blocking; run_odd sets both).
+    block_isospin: int = field(default=-1, metadata=dict(static=True))
+    # Configuration-space sub-iterations per HFB iteration (Chen et al. 2022, Sec. 3.3), from
+    # iteration subiter_start on; damping delstepbas/(h_nn - h_min + e0bas). The paper uses 100;
+    # on a GPU each costs ~3 ms of launch latency and 30 converge as fast per iteration (Ca44).
+    n_subiter: int = field(default=30, metadata=dict(static=True))
+    subiter_start: int = 40
+    delstepbas: float = 2.0
+    e0bas: float = 10.0
+    # Orbital update: 'gradient' (damped preconditioned gradient step on the canonical orbitals, the
+    # FORTRAN scheme) or 'two_basis' (physics.gcg: the HF basis by GCG, HFB solved exactly in it; odd
+    # grid sizes, a pairing window Force.state_cutoff, time-even densities). See two_basis_config.
+    orbital_solver: str = field(default='gradient', metadata=dict(static=True))
+    gcg_inner: int = field(default=2, metadata=dict(static=True))   # CG steps of the GCG inverse-h direction
+    # Axial symmetry about z: the densities are averaged over the four 90-degree rotations each
+    # iteration (exact on a grid symmetric in x and y), so gamma = 0 without a constraint multiplier.
+    axial_symmetry: bool = field(default=False, metadata=dict(static=True))
+    # Start from the initial orbitals stretched volume-preservingly to this beta2 (deformed start
+    # without a constraint).
+    initial_beta2: float = 0.0
+    # Energy convergence (MeV, 0 = off): stop once, over the last etol_window iterations, the energy
+    # moved less than etol and both gaps less than etol / 2. Sampled every iteration, so a period-2
+    # oscillation cannot pass. The convergence measure of the two-basis solver.
+    etol: float = 0.0
+    etol_window: int = field(default=100, metadata=dict(static=True))
     # Hold the multipliers of driven constraints (nonzero goal) fixed and bound
     # the solve with the full augmented-Lagrangian penalty; used by
     # run_constrained_scan. Symmetry constraints (goal 0) keep their feedback.
     freeze_constraint: bool = field(default=False, metadata=dict(static=True))
+
+    # Floor on the occupation weights in the HFB preconditioner (FORTRAN: 0.1).
+    # The gradient of a canonical state scales with its occupation, so with the
+    # floor a state with v2 << 0.1 moves ~v2/0.1 of its natural step and nearly
+    # empty states never converge. Their unconverged tails make the static
+    # non-stationary under TDHFB; statics for TDHFB use ~1e-8.
+    precond_floor: float = 0.1
 
     # Reduce densities over states in chunks of this size (0 = all at once).
     # Lowers peak memory for large bases at a small cost in speed.
@@ -304,6 +357,53 @@ def initialize_wavefunctions(
 
     return psi, isospin, sp_n, sp_l, sp_j, sp_parity, wocc, wguv
 
+def two_basis_config(**overrides) -> "SolverConfig":
+    """
+    Recommended settings for the two-basis solver (validated on Ca, Sn, Pb, Sm, Zr and Dy against
+    HFBTHO): GCG with 2 inner steps, density mixing 0.15 (stable for SLy4 and UNEDF0-2; SLy4
+    tolerates ~0.4, UNEDF1 runs away above ~0.2), the 1 keV energy-convergence rule, no
+    sub-iterations. Use with odd grid sizes and Force.state_cutoff ~8 MeV (the pairing window),
+    and enough orbitals for the HF basis to reach ~1.7 window widths above the Fermi energy.
+    """
+    base = dict(orbital_solver='two_basis', gcg_inner=2, n_subiter=0, density_mixing=0.15, etol=1e-3,
+                convergence_criterion=0.0, max_iterations=1500, diag_start=30, bcs_start=30, iteranneal=30,
+                pairenhance=0.5, verbose=False)
+    return SolverConfig(**{**base, **overrides})
+
+
+def _c4_average(d: Densities) -> Densities:
+    """Densities averaged over the rotations by 0, 90, 180, 270 degrees about z (SolverConfig.axial_symmetry)."""
+    rot = lambda a: jnp.flip(jnp.swapaxes(a, -3, -2), axis=-3)      # (R f)(r) = f(R^-1 r), R r = (-y, x, z)
+    def vec(V):                                                     # vectors (2, 3, ...): V' = R V
+        x, y, z = (rot(V[:, i]) for i in range(3))
+        return jnp.stack([-y, x, z], axis=1)
+    def sym(T):                                                     # (xx, yy, zz, xy, xz, yz): T' = R T R^T
+        c = [rot(T[:, i]) for i in range(6)]
+        return jnp.stack([c[1], c[0], c[2], -c[3], -c[5], c[4]], axis=1)
+    def avg(a, r):
+        if a is None:
+            return None
+        out = cur = a
+        for _ in range(3):
+            cur = r(cur)
+            out = out + cur
+        return 0.25 * out
+    return dataclasses.replace(d, rho=avg(d.rho, rot), tau=avg(d.tau, rot), chi=avg(d.chi, rot),
+                               current=avg(d.current, vec), sdens=avg(d.sdens, vec), sodens=avg(d.sodens, vec),
+                               jsym=avg(d.jsym, sym), tspin=avg(d.tspin, vec))
+
+
+def _stretch_orbitals(psi, grid: Grid, beta2: float):
+    """Orbitals stretched volume-preservingly to R_z / R_perp ~ 1 + 0.95 beta2 (SolverConfig.initial_beta2)."""
+    from jax.scipy.ndimage import map_coordinates
+    c = (1.0 + 0.95 * beta2) ** (2.0 / 3.0)
+    a = c ** -0.5
+    X, Y, Z = np.meshgrid(np.asarray(grid.x), np.asarray(grid.y), np.asarray(grid.z), indexing='ij')
+    idx = jnp.asarray(np.stack([(X / a - grid.x[0]) / grid.dx, (Y / a - grid.y[0]) / grid.dy, (Z / c - grid.z[0]) / grid.dz]))
+    warp = lambda f: map_coordinates(f.real, idx, order=1) + 1j * map_coordinates(f.imag, idx, order=1)
+    return jax.jit(jax.vmap(jax.vmap(warp)))(psi) / np.sqrt(a * a * c)
+
+
 def create_initial_state(
     grid: Grid,
     npsi_n: int,
@@ -315,26 +415,26 @@ def create_initial_state(
 ) -> SolverState:
     """
     Create initial HFB state.
-    
+
     Args:
         grid: Spatial grid
         npsi_n, npsi_p: Number of states per isospin
         target_n, target_p: Target particle numbers
         constraint_state: Constraint configuration
         seed: Random seed for reproducibility (default: 42)
-        
+
     Returns:
         Initial solver state
     """
     dtypes = get_dtypes()
     nstates = npsi_n + npsi_p
     A = target_n + target_p
-    
+
     # Initialize wavefunctions
     psi, isospin, sp_n, sp_l, sp_j, sp_parity, wocc, wguv = initialize_wavefunctions(
         grid, target_n, target_p, npsi_n, npsi_p, seed=seed
     )
-    
+
     # FORTRAN statichf Step 3: sp_energy zeroed before initial grstep
     # grstep will compute the real values; don't prefill with HO estimates.
     sp_energy  = jnp.zeros(nstates, dtype=dtypes.float)
@@ -350,7 +450,7 @@ def create_initial_state(
     meanfield      = Meanfield.zeros(grid.nx, grid.ny, grid.nz)
     coulomb_solver = CoulombSolver.create(grid)
     wcoul          = jnp.zeros((grid.nx, grid.ny, grid.nz), dtype=dtypes.float)
-    
+
     lagrange = jnp.zeros_like(psi)
 
     if constraint_state is None:
@@ -414,7 +514,8 @@ def _apply_constraint(constraint_state, densities, grid: Grid, config: SolverCon
     return constraint_state, compute_constraint_potential(effective, grid)
 
 
-def compute_densities_from_state(state: SolverState, grid: Grid, chunk: int = 0) -> Densities:
+def compute_densities_from_state(state: SolverState, grid: Grid, chunk: int = 0,
+                                 tensor: bool = False) -> Densities:
     """Compute densities from current wavefunctions and occupations."""
     return compute_densities(
         state.psi,
@@ -425,6 +526,7 @@ def compute_densities_from_state(state: SolverState, grid: Grid, chunk: int = 0)
         state.isospin,
         grid,
         chunk=chunk,
+        tensor=tensor,
     )
 
 
@@ -446,11 +548,12 @@ def gradient_step(
     use_pairing: bool = True,
     tbcs: bool = True,
     use_lagrange: bool = False,
+    precond_floor: float = 0.1,
 ) -> Tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
     return _gradient_step_jit(
         psi, meanfield, wocc, wguv, pairwg, wstates, sp_energy,
         isospin, lagrange, grid, x0dmp, e0dmp, h2ma,
-        npsi_n, use_pairing, tbcs, use_lagrange,
+        npsi_n, use_pairing, tbcs, use_lagrange, precond_floor,
     )
 
 
@@ -473,6 +576,7 @@ def _gradient_step_jit(
     use_pairing: bool,      # static 13
     tbcs: bool,             # static 14
     use_lagrange: bool,     # static 15
+    precond_floor: float = 0.1,
 ) -> Tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
     """JIT-compiled preconditioned gradient step."""
     nstates = psi.shape[0]
@@ -514,10 +618,11 @@ def _gradient_step_jit(
     else:
         # Full HFB denominator: weight*(e0dmp + h2ma*k²) + 0.5*weightuv*v_pairmax
         # Legacy laplace (levels.py:399-401) floors BOTH weights at 0.1, so the
-        # denominator is at least 0.1*e0dmp even for empty states.
+        # denominator is at least 0.1*e0dmp even for empty states
+        # (SolverConfig.precond_floor; see there).
         # v_pairmax is the SIGNED maximum (FORTRAN MAXVAL), not max(abs).
-        weight      = jnp.maximum(wocc,          0.1)           # (nstates,) — no wstates, matches FORTRAN
-        weightuv    = jnp.maximum(wguv * pairwg, 0.1)           # (nstates,)
+        weight      = jnp.maximum(wocc,          precond_floor)   # (nstates,) — no wstates, matches FORTRAN
+        weightuv    = jnp.maximum(wguv * pairwg, precond_floor)   # (nstates,)
         v_pairmax   = jnp.array([
             jnp.max(meanfield.v_pair[0]),
             jnp.max(meanfield.v_pair[1]),
@@ -551,15 +656,11 @@ def _gradient_step_jit(
     # ── 6. Recompute H|psi_new> — matches legacy grstep Step 4 ──────────────────
     # Legacy grstep_helper (static.py lines 194-208): after the gradient update,
     # recomputes H on the NEW psi and stores it in levels.hmfpsi.  diagstep reads
-    # levels.hmfpsi, so it uses H|psi_new>, NOT H|psi_old>.  The earlier
-    # hmfpsi_before approach was wrong: it fed <psi_new|H|psi_old> into the H matrix
-    # instead of the correct <psi_new|H|psi_new>.
+    # levels.hmfpsi, so the H matrix is <psi_new|H|psi_new>, not <psi_new|H|psi_old>.
     def apply_h_on_new(p, iq):
         # Return plain H_MF * p (second return), matching legacy levels.hmfpsi
         # which is the 2nd return value of hpsi01 regardless of tbcs/HFB weights.
-        # For BCS (w_rho=1, w_uv=0) the old code was accidentally correct since
-        # hpsi == hpsi_mf.  For HFB (w_rho=wstates*wocc) hpsi ≠ hpsi_mf, causing
-        # the 35 MeV sp_diff in the proton block.
+        # The weighted hpsi equals hpsi_mf only for BCS (w_rho=1, w_uv=0).
         _, hpsi_mf, _ = apply_hfb_hamiltonian(p, meanfield, iq, 1.0, 0.0, grid)
         return hpsi_mf
     hmfpsi_after = jax.vmap(apply_h_on_new)(psi_new, isospin)
@@ -574,39 +675,39 @@ def orthonormalize_states(psi: jax.Array, npsi_n: int, wxyz: float) -> jax.Array
     """
     psi_n = psi[:npsi_n]
     psi_p = psi[npsi_n:]
-    
+
     def loewdin_block(block):
         if block.shape[0] == 0:
             return block
-            
+
         nst = block.shape[0]
-        
+
         # Flatten spatial and spin dimensions to shape (2*nx*ny*nz, nst)
         psi_2d = jnp.reshape(
             jnp.transpose(block, axes=(2, 3, 4, 1, 0)),
             shape=(-1, nst),
             order='F'
         )
-        
+
         # Calculate the overlap matrix S = psi_dagger * psi
         rhomatr_lin = jnp.dot(jnp.conjugate(psi_2d.T), psi_2d) * wxyz
-        
+
         # Eigendecomposition: S * v = w * v
         w, v = jnp.linalg.eigh(rhomatr_lin, symmetrize_input=False)
-        
+
         # Regularize small eigenvalues to prevent division by zero instability
         machine_epsilon = jnp.finfo(jnp.float64).eps
         eigenvalue_threshold = jnp.maximum(1e-12, machine_epsilon * jnp.max(w) * nst)
         w_safe = jnp.maximum(w, eigenvalue_threshold)
-        
+
         # Construct the transformation matrix U = V * W^(-1/2) * V_dagger
         w_inv_sqrt = 1.0 / jnp.sqrt(w_safe)
         v_scaled = v * w_inv_sqrt[None, :]
         unitary_rho = jnp.dot(v, jnp.conjugate(v_scaled.T))
-        
+
         # Apply the symmetric transformation
         transformed_psi = jnp.dot(psi_2d, unitary_rho)
-        
+
         # Reshape back to the original 5D block shape: (nst, 2, nx, ny, nz)
         ortho_block = jnp.transpose(
             jnp.reshape(
@@ -616,12 +717,12 @@ def orthonormalize_states(psi: jax.Array, npsi_n: int, wxyz: float) -> jax.Array
             ),
             axes=(4, 3, 0, 1, 2)
         )
-        
+
         return ortho_block
 
     psi_n_ortho = loewdin_block(psi_n)
     psi_p_ortho = loewdin_block(psi_p)
-    
+
     return jnp.concatenate([psi_n_ortho, psi_p_ortho], axis=0)
 
 def apply_preconditioner(
@@ -678,26 +779,26 @@ def orthonormalize_block_cpu(psi_block: jax.Array, wxyz: float) -> jax.Array:
     Uses scan for the outer loop.
     """
     n = psi_block.shape[0]
-    
+
     def gs_step(carry, i):
         psi_ortho = carry
         vec = psi_block[i]
-        
+
         # Subtract projections on all previous orthonormalized vectors
         def subtract_proj(j, v):
             overlap = jnp.sum(jnp.conjugate(psi_ortho[j]) * v) * wxyz
             return jnp.where(j < i, v - overlap * psi_ortho[j], v)
-        
+
         vec = jax.lax.fori_loop(0, n, subtract_proj, vec)
-        
+
         # Normalize
         norm = jnp.sqrt(jnp.sum(jnp.abs(vec)**2) * wxyz)
         norm = jnp.maximum(norm, 1e-30)
         vec = vec / norm
-        
+
         psi_ortho = psi_ortho.at[i].set(vec)
         return psi_ortho, None
-    
+
     psi_ortho, _ = jax.lax.scan(gs_step, jnp.zeros_like(psi_block), jnp.arange(n))
     return psi_ortho
 
@@ -711,13 +812,13 @@ def compute_sp_energies(
 ) -> Tuple[jax.Array, jax.Array]:
     """
     Compute single-particle and kinetic energies using vectorized operations.
-    
+
     Args:
         psi: Wavefunctions (nstates, 2, nx, ny, nz)
         meanfield: Mean-field potentials
         isospin: Isospin labels
         grid: Spatial grid
-        
+
     Returns:
         (sp_energy, sp_kinetic) arrays
     """
@@ -764,7 +865,7 @@ def _compute_sp_energies_vmap(
 
 
 
-@partial(jax.jit,static_argnums=(4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14))
+@partial(jax.jit,static_argnums=(4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15))
 def hfb_iteration(
     state: SolverState,
     grid: Grid,
@@ -781,10 +882,11 @@ def hfb_iteration(
     tdiag: bool = True,
     use_lagrange: bool = True,
     print_sinfo_flag: bool = False,
+    subiterate: bool = False,
 ) -> SolverState:
     """
     Perform one HFB iteration.
-    
+
     Steps:
     1. Gradient step on wavefunctions
     2. Solve pairing
@@ -792,7 +894,7 @@ def hfb_iteration(
     4. Compute mean-field potentials
     5. Compute energies (optional - skip for speed when not needed)
     6. Check convergence
-    
+
     Args:
         state: Current solver state
         grid: Spatial grid
@@ -804,7 +906,7 @@ def hfb_iteration(
         nucleus_z: Target proton number
         use_coulomb: Whether to include Coulomb
         compute_energy: Whether to compute integrated energy (expensive)
-        
+
     Returns:
         Updated solver state
     """
@@ -815,27 +917,36 @@ def hfb_iteration(
     old_rho = state.densities.rho
     old_tau = state.densities.tau
     old_chi = state.densities.chi
+    old_jsym = state.densities.jsym
 
-    # ── 1. Gradient step ──────────────────────────────────────────────────────
-    psi_new, new_sp_energies, hmfpsi_new, hampsi_old = gradient_step(
-        state.psi,
-        state.meanfield,
-        state.wocc,
-        state.wguv,
-        state.pairwg,
-        state.wstates,
-        state.sp_energy,
-        state.isospin,
-        state.lagrange,         # ← Lagrange multiplier from previous diagstep
-        grid,
-        config.x0dmp,
-        config.e0dmp,
-        force.h2ma,
-        npsi_n,
-        use_pairing=use_pairing,
-        tbcs=tbcs,
-        use_lagrange=use_lagrange,
-    )
+    use_gcg = config.orbital_solver == 'two_basis'
+    two_basis = use_gcg and use_pairing and not tbcs   # HFB iterations: HFB solved in the GCG (HF) basis
+    if use_gcg:   # 1. HF basis: Ritz vectors of h, already diagonal, so diagstep only orthonormalises
+        prev = state.psi if state.psi_prev is None else state.psi_prev
+        psi_new, new_sp_energies, hmfpsi_new = gcg_step(state.psi, prev, state.meanfield, grid, npsi_n,
+                                                        config.gcg_inner, force.h2ma)
+        hampsi_old, tdiag = hmfpsi_new, False
+    else:   # 1. gradient step on the canonical orbitals
+        psi_new, new_sp_energies, hmfpsi_new, hampsi_old = gradient_step(
+            state.psi,
+            state.meanfield,
+            state.wocc,
+            state.wguv,
+            state.pairwg,
+            state.wstates,
+            state.sp_energy,
+            state.isospin,
+            state.lagrange,         # ← Lagrange multiplier from previous diagstep
+            grid,
+            config.x0dmp,
+            config.e0dmp,
+            force.h2ma,
+            npsi_n,
+            use_pairing=use_pairing,
+            tbcs=tbcs,
+            use_lagrange=use_lagrange,
+            precond_floor=config.precond_floor,
+        )
 
     # ── 2. Diagstep: Löwdin + optional diagonalization ───────────────────────
     # Pass hmfpsi_new (H|psi_new>, recomputed on the post-grstep psi).
@@ -856,14 +967,56 @@ def hfb_iteration(
         tbcs,
         hmfpsi_new,             # H|psi_new> — matches legacy levels.hmfpsi after grstep Step 4
         hampsi_old,             # H|psi_old> — matches legacy levels.hampsi from grstep Step 1
+        config.n_subiter if subiterate else 0,
+        dict(targets=jnp.array([nucleus_n, nucleus_z], dtype=jnp.float64), pair_cutoff=force.pair_cutoff,
+             state_cutoff=force.state_cutoff, softcut_range=force.softcut_range, smallp=force.uv_floor,
+             delstepbas=config.delstepbas, e0bas=config.e0bas,
+             # EFA: the doublet blocked in the previous iteration stays out of the pairing re-solve
+             blocked=None if config.block_isospin < 0 else (lambda m: (m[:npsi_n], m[npsi_n:]))(
+                 ((jnp.abs(state.wocc - 0.5) < 1e-9) & (state.isospin == config.block_isospin)).astype(jnp.float64))),
     )
+
+    if use_gcg:   # residual |(h - e) phi| of the Ritz vectors, weighted by occupation (HF) or rho + |kappa| (HFB)
+        res = jnp.sqrt(jnp.sum(jnp.abs(hmfpsi_new - new_sp_energies[:, None, None, None, None] * psi_new) ** 2,
+                               axis=(1, 2, 3, 4)) * grid.wxyz)
+        weight = state.wocc
+        if two_basis:
+            blocked_hf, hmat = None, None
+            if config.block_isospin >= 0:
+                # EFA: the cubic grid couples Omega with Omega +- 4, so in a near-degenerate shell the Ritz
+                # vectors mix them; rotate within 0.2 MeV to the Omega-pure pair, h then a matrix there
+                e_ritz = new_sp_energies
+                psi_new, new_sp_energies, _, lagrange_new, blocked_hf, R = track_doublet(
+                    psi_new, e_ritz, jnp.zeros_like(e_ritz), lagrange_new, state.isospin, state.block_ref,
+                    config.block_isospin, grid.wxyz, tol=0.2, return_rotation=True)
+                hmat = jnp.conj(R.T) @ (e_ritz[:, None] * R)
+            (psi_new, sp_energy_for_pairing, deltaf_from_diag, wocc_tb, wguv_tb, stats_tb, weight,
+             psi_pair) = two_basis_hfb(psi_new, new_sp_energies, state.meanfield.v_pair, grid, npsi_n,
+                                       jnp.array([nucleus_n, nucleus_z], dtype=jnp.float64), state.pairing.eferm,
+                                       force.uv_floor, force.state_cutoff, force.softcut_range, blocked_hf, hmat)
+            lagrange_new = jnp.zeros_like(lagrange_new)
+        res = weight * res
+        efluct1q_new = jnp.stack([jnp.max(res[:npsi_n]), jnp.max(res[npsi_n:])])
+        efluct2q_new = jnp.stack([jnp.sqrt(jnp.mean(res[:npsi_n] ** 2)), jnp.sqrt(jnp.mean(res[npsi_n:] ** 2))])
+
+    blocked = None
+    if config.block_isospin >= 0 and not two_basis:   # EFA: re-identify the blocked doublet
+        psi_new, sp_energy_for_pairing, deltaf_from_diag, lagrange_new, blocked = track_doublet(
+            psi_new, sp_energy_for_pairing, deltaf_from_diag, lagrange_new, state.isospin,
+            state.block_ref, config.block_isospin, grid.wxyz)
 
     _, sp_kinetic = compute_sp_energies(
         psi_new, state.meanfield, state.isospin, grid, force.h2m
     )
 
     # ── 3. Pairing ────────────────────────────────────────────────────────────
-    if use_pairing:
+    if two_basis:
+        deltaf, wocc, wguv = deltaf_from_diag, wocc_tb, wguv_tb
+        pairwg, wstates = jnp.ones_like(state.pairwg), jnp.ones_like(state.wstates)
+        zero2 = jnp.zeros(2, dtype=dtypes.float)
+        pairing = Pairing(eferm=stats_tb['eferm'], epair=stats_tb['epair'], avdelt=stats_tb['avdelt'],
+                          avdeltv2=stats_tb['avdeltv2'], avg=stats_tb['avg'], lambda2=zero2, e_ln=zero2, entropy=zero2)
+    elif use_pairing:
         # deltaf: diagstep's gapmatrix diagonal is the canonical source.
         # For very early iters (before gapmatrix stabilizes), compute_pairing_gaps
         # provides the constant-gap fallback — replicated via iteration <= itrsin
@@ -897,21 +1050,37 @@ def hfb_iteration(
             nucleus_n,
             nucleus_z,
             force,
+            use_ln=config.use_ln,
+            ln_passes=config.ln_passes,
+            temperature=config.temperature,
+            blocked=blocked,
         )
     else:
         deltaf  = jnp.zeros_like(state.deltaf)
-        wocc    = state.wocc
+        wocc    = state.wocc if blocked is None else efa_hf_occupations(
+            state.wocc, sp_energy_for_pairing, state.isospin, blocked, config.block_isospin,
+            nucleus_n if config.block_isospin == 0 else nucleus_z)
         wguv    = jnp.zeros_like(state.wguv)
         pairwg  = state.pairwg
         wstates = state.wstates
         pairing = state.pairing
-    
+
 
     # 4. Compute densities
     densities = compute_densities(
         psi_new, wocc, wguv, pairwg, wstates, state.isospin, grid,
-        chunk=config.density_chunk,
+        chunk=config.density_chunk, tensor=force.tensor,
     )
+    if config.block_isospin >= 0 or use_gcg:
+        # time-even densities: EFA, and the two-basis HFB, whose pairing assumes Kramers pairs; its Ritz
+        # vectors need not be exact partners, and a spurious spin density switches on the s.T term of
+        # J^2 functionals, which then makes h unbounded at high momentum
+        densities = time_even(densities)
+    if two_basis:   # pair density from the windowed canonical orbitals (gcg.two_basis_hfb)
+        c = 0.5 * wguv[:, None, None, None] * jnp.sum(jnp.abs(psi_pair) ** 2, axis=1)
+        densities = dataclasses.replace(densities, chi=jnp.stack([jnp.sum(c[:npsi_n], 0), jnp.sum(c[npsi_n:], 0)]))
+    if config.axial_symmetry:
+        densities = _c4_average(densities)
 
     state = dataclasses.replace(state, densities=densities)
 
@@ -922,13 +1091,16 @@ def hfb_iteration(
         rho=mix * densities.rho + (1 - mix) * old_rho,
         tau=mix * densities.tau + (1 - mix) * old_tau,
         chi=mix * densities.chi + (1 - mix) * old_chi,
+        # the spin-current tensor feeds the J^2 field: unmixed, a solver that re-diagonalises h each
+        # iteration sees that channel at mixing 1
+        jsym=densities.jsym if old_jsym is None else mix * densities.jsym + (1 - mix) * old_jsym,
     )
 
     # Constraint update (if enabled)
     constraint_state, constraint_potential = _apply_constraint(
         state.constraint_state, densities, grid, config,
     )
-    
+
     # 5. Coulomb potential
     wcoul = state.wcoul
     if use_coulomb:
@@ -938,7 +1110,7 @@ def hfb_iteration(
             state.coulomb_solver,
             grid,
         )
-    
+
     # 6. Compute mean-field potentials
     from jax_hfbfft.physics.meanfield import compute_skyrme_meanfield
 
@@ -985,10 +1157,10 @@ def hfb_iteration(
             wstates=wstates,
             sp_kinetic=sp_kinetic,
             sp_energy=sp_energy,
-            # Legacy reads meanfield.ecorrp (DDDI pairing rearrangement, set by
-            # skyrme); it was wrongly read from pairing (no such attr → 0.0).
-            # Keep as traced JAX scalar: hfb_iteration is jitted.
+            # DDDI pairing rearrangement energy, set by the mean-field build
+            # (legacy reads meanfield.ecorrp). Traced scalar: hfb_iteration is jitted.
             ecorrp=meanfield.ecorrp,
+            e_ln=pairing.e_ln,
         )
     else:
         energies = state.energies
@@ -1036,6 +1208,8 @@ def hfb_iteration(
         iteration=iteration,
         converged=converged,
         efluct=efluct,
+        block_ref=state.block_ref,
+        psi_prev=state.psi if use_gcg else None,
     )
 
 
@@ -1052,12 +1226,41 @@ def apply_cm_correction(force: Force, mass_number: int) -> Force:
     return dataclasses.replace(force, h2m=force.h2m * ((mass_number - 1.0) / mass_number))
 
 
+def statics_only_terms(static, force: Optional[Force] = None) -> List[str]:
+    """
+    Warnings for a static solution about to seed TDHF/TDHFB: terms of the static
+    functional that the time-dependent propagation does not contain.
+
+    static: a SolverState, or a dict loaded from a static .npz (save_static
+    records 'lambda2' and 'zpe').  force: the propagation force, if known.
+    """
+    get = (static.get if isinstance(static, dict)
+           else lambda k, d=None: getattr(static, k, d))
+    msgs = []
+    pairing = get('pairing')
+    lam2 = np.asarray(pairing.lambda2 if pairing is not None else get('lambda2', np.zeros(2)))
+    if np.any(lam2 > 0.0):
+        msgs.append(
+            f"the static was solved with Lipkin-Nogami (lambda_2 n/p = "
+            f"{float(lam2.flat[0]):.3f}/{float(lam2.flat[-1]):.3f} MeV), which the propagation "
+            "does not contain: the state is not stationary there and will oscillate. "
+            "Re-solve the static with use_ln=False.")
+    sforce = get('force')
+    zpe = force.zpe if force is not None else (sforce.zpe if sforce is not None else get('zpe', 0))
+    if int(np.asarray(zpe)) == 3:
+        msgs.append(
+            "zpe = 3: the propagated energy carries the constant 17.3/A^0.2 c.m. estimate, "
+            "not the static's microscopic <P^2>/2mA, so total energies are offset from the "
+            "static's by a constant (the dynamics are unaffected).")
+    return msgs
+
+
 def run_hfb(
     grid: Grid,
     force,
     nucleus_z: int,
     nucleus_n: int,
-    npsi_n: int,  # Added
+    npsi_n: int,
     config: Optional[SolverConfig] = None,
     initial_state: Optional[SolverState] = None,
     callback: Optional[Callable[[SolverState], None]] = None,
@@ -1069,7 +1272,7 @@ def run_hfb(
 ) -> SolverState:
     """
     Run HFB calculation to convergence.
-    
+
     Args:
         grid: Spatial grid
         force: Force parameters
@@ -1082,7 +1285,7 @@ def run_hfb(
         use_coulomb: Whether to include Coulomb interaction
         constraint: Constraint configuration
         seed: Random seed for reproducibility (default: 42)
-        
+
     Returns:
         Converged SolverState
     """
@@ -1090,8 +1293,26 @@ def run_hfb(
         config = SolverConfig()
 
     use_pairing = force.ipair != 0
-    
+    if config is not None and config.temperature > 0.0:
+        if config.use_ln:
+            raise ValueError("Lipkin-Nogami is implemented at T = 0 only")
+        if not use_pairing:
+            raise ValueError("temperature > 0 needs the pairing solver: use ipair 5/6 "
+                             "(v0 = 0 gives finite-temperature Hartree-Fock)")
+
     tbcs_init = not use_pairing
+    if config.orbital_solver == 'two_basis':
+        if min(grid.nx % 2, grid.ny % 2, grid.nz % 2) == 0:
+            raise ValueError("orbital_solver='two_basis' needs odd grid sizes (h is Hermitian only without a Nyquist mode)")
+        if use_pairing and (float(jnp.max(jnp.asarray(force.pair_cutoff))) > 0 or config.use_ln or config.temperature > 0):
+            raise NotImplementedError("orbital_solver='two_basis' supports neither pair_cutoff (its window is "
+                                      "Force.state_cutoff), Lipkin-Nogami nor finite temperature")
+        if use_pairing and float(jnp.min(jnp.asarray(force.state_cutoff))) <= 0:
+            raise ValueError("orbital_solver='two_basis' needs a pairing window: Force.state_cutoff > 0 (~8 MeV)")
+        if constraint is not None and not config.freeze_constraint and any(
+                abs(v) > 0 for v in (constraint.multipole_constraints or {}).values()):
+            raise NotImplementedError("in-loop constraints do not hold with orbital_solver='two_basis' (their "
+                                      "multiplier feedback assumes small orbital steps); use run_constrained_scan")
 
     # Initialize constraint state
     constraint_state = build_constraint_state(
@@ -1099,14 +1320,14 @@ def run_hfb(
         grid,
         mass_number=nucleus_n + nucleus_z,
     )
-    
+
     # Initialize state
     if initial_state is None:
         # Exactly npsi_n neutron states: every array below is split at npsi_n.
         nstates_n = npsi_n
         nstates_p = max(int(round(npsi_n * nucleus_z / max(nucleus_n, 1))),
                         nucleus_z + 10)
-        
+
         state = create_initial_state(
             grid,
             nstates_n,
@@ -1116,6 +1337,8 @@ def run_hfb(
             constraint_state=constraint_state,
             seed=seed,
         )
+        if config.initial_beta2:
+            state = dataclasses.replace(state, psi=_stretch_orbitals(state.psi, grid, float(config.initial_beta2)))
     else:
         # A previous run's force is replaced by this run's on return.
         state = dataclasses.replace(initial_state, force=None)
@@ -1129,7 +1352,7 @@ def run_hfb(
                 constraint_state, lambda_crank=old_cs.lambda_crank)
         state = dataclasses.replace(state, constraint_state=constraint_state)
 
-    
+
     npsi = state.psi.shape[0]
     npsi_p = npsi - npsi_n
 
@@ -1145,9 +1368,23 @@ def run_hfb(
         state, psi=psi_new, sp_energy=new_sp_energy, lagrange=lagrange_init,
     )
 
+    blocked0 = None
+    if config.block_isospin >= 0:   # EFA: find the doublet and fill the odd nucleus
+        if state.block_ref is None:
+            raise ValueError("block_isospin needs initial_state.block_ref (see physics.blocking.run_odd)")
+        q = config.block_isospin
+        psi_b, e_b, d_b, lag_b, blocked0 = track_doublet(
+            state.psi, state.sp_energy, state.deltaf, state.lagrange, state.isospin,
+            state.block_ref, q, grid.wxyz)
+        wocc0 = efa_hf_occupations(state.wocc, e_b, state.isospin, blocked0, q,
+                                   nucleus_n if q == 0 else nucleus_z)
+        state = dataclasses.replace(state, psi=psi_b, sp_energy=e_b, deltaf=d_b, lagrange=lag_b, wocc=wocc0)
+
 
     # ── Step 2: densities + mean field ───────────────────────────────────────
-    initial_densities = compute_densities_from_state(state, grid, config.density_chunk)
+    initial_densities = compute_densities_from_state(state, grid, config.density_chunk, force.tensor)
+    if config.block_isospin >= 0:
+        initial_densities = time_even(initial_densities)
     state = dataclasses.replace(state, densities=initial_densities)
 
 
@@ -1213,6 +1450,8 @@ def run_hfb(
         wocc, wguv, pairwg, wstates, initial_pairing = solve_pairing(
             state.sp_energy, initial_deltaf, state.wstates, state.pairwg,
             state.isospin, npsi_n, npsi_p, nucleus_n, nucleus_z, force,
+            use_ln=config.use_ln, ln_passes=config.ln_passes,
+            temperature=config.temperature, blocked=blocked0,
         )
 
         state = dataclasses.replace(
@@ -1253,12 +1492,12 @@ def run_hfb(
     initial_sp_energy, initial_sp_kinetic = compute_sp_energies(
         psi_new, state.meanfield, state.isospin, grid, force.h2m
     )
-    
+
     # 2. Update state with the new SP properties
     state = dataclasses.replace(
-        state, 
+        state,
         psi=psi_new,
-        sp_energy=initial_sp_energy, 
+        sp_energy=initial_sp_energy,
         sp_kinetic=initial_sp_kinetic,
     )
 
@@ -1274,6 +1513,7 @@ def run_hfb(
         sp_kinetic=state.sp_kinetic,       # Now this contains non-zero data
         sp_energy=state.sp_energy,         # the sp_energy_for_pairing array
         ecorrp=float(state.meanfield.ecorrp),
+        e_ln=state.pairing.e_ln,
     )
 
     # 4. Update state with final initial energies
@@ -1305,6 +1545,7 @@ def run_hfb(
     prev_efluct1 = 0.0
     prev_efluct2 = 0.0
     prev_ehf = 0.0
+    e_window = []          # (E, gap_n, gap_p) of the last etol_window iterations
 
     for i in range(config.max_iterations):
 
@@ -1331,7 +1572,7 @@ def run_hfb(
         need_sinfo = config.verbose and (i + 1) % config.sinfo_interval == 0
         is_near_end = i >= config.max_iterations - 1
         # tvaryx_0 needs a fresh ehf every iteration (legacy runs with mprint=1)
-        compute_energy = need_output or need_sinfo or is_near_end or config.tvaryx_0
+        compute_energy = need_output or need_sinfo or is_near_end or config.tvaryx_0 or config.etol > 0
 
         # Use per-iteration x0dmp (potentially tripled / adapted from tvaryx_0)
         iter_config = dataclasses.replace(config, x0dmp=current_x0dmp)
@@ -1346,6 +1587,8 @@ def run_hfb(
             compute_energy=compute_energy, use_pairing=use_pairing,
             tbcs=tbcs, tdiag=tdiag, use_lagrange=use_lagrange,
             print_sinfo_flag=need_sinfo,
+            subiterate=(config.n_subiter > 0 and use_pairing and not tbcs and python_iter > config.subiter_start
+                        and config.orbital_solver == 'gradient'),
         )
 
         if hook is not None:
@@ -1370,11 +1613,17 @@ def run_hfb(
             prev_efluct1 = curr_efluct1
             prev_efluct2 = curr_efluct2
             prev_ehf = curr_ehf
-        
+
         state = dataclasses.replace(state, x0dmp=current_x0dmp)
+        if config.etol > 0:
+            e_window = (e_window + [(float(state.energies.ehfint), *map(float, state.pairing.avdeltv2))])[-config.etol_window:]
+            spread = np.ptp(np.array(e_window), axis=0)
+            settled = (len(e_window) == config.etol_window and spread[0] < config.etol
+                       and bool(np.all(spread[1:] < 0.5 * config.etol)))
+            state = dataclasses.replace(state, converged=settled or bool(state.converged))
         if callback is not None:
             callback(state)
-        
+
         if need_output:
             elapsed = time.time() - start_time
             # Compute axis-resolved Q20 to diagnose deformation axis
@@ -1388,7 +1637,7 @@ def run_hfb(
             print(f"Iter {state.iteration:4d}: E = {state.energies.ehfint:12.4f} MeV, "
                   f"fluct = {state.efluct:.2e}, time = {elapsed:.1f}s  "
                   f"Q_xx={Q_xx:.3f} Q_yy={Q_yy:.3f} Q_zz={Q_zz:.3f} fm^2")
-        
+
         if state.converged and i + 1 >= config.min_iterations:
             # Make sure we have final energy computed
             if not compute_energy:
@@ -1405,7 +1654,7 @@ def run_hfb(
                     sp_kinetic=state.sp_kinetic,
                     sp_energy=state.sp_energy,   # the sp_energy_for_pairing array
                     ecorrp=float(state.meanfield.ecorrp),
-
+                    e_ln=state.pairing.e_ln,
                 )
                 state = dataclasses.replace(state, energies=final_energies, converged=True)
             if config.verbose:
@@ -1436,13 +1685,84 @@ def run_hfb(
             sp_kinetic=state.sp_kinetic,
             sp_energy=state.sp_energy,   # the sp_energy_for_pairing array
             ecorrp=float(state.meanfield.ecorrp),
-
+            e_ln=state.pairing.e_ln,
         )
         state = dataclasses.replace(state, energies=final_energies)
 
+    # zpe == 3: microscopic c.m. correction <P^2>/2mA on the final state (SkyAx
+    # zpe=1, which the Fayans functionals were fitted with); the iterations used
+    # the 17.3/A^0.2 estimate, as SkyAx does between its zpe_cm calls.
+    if force.zpe == 3:
+        from jax_hfbfft.physics.cm_correction import microscopic_cm_energy
+        e = state.energies
+        ecm = microscopic_cm_energy(state.psi, state.wocc, state.wstates, state.isospin,
+                                    grid, force.h2m)
+        state = dataclasses.replace(state, energies=dataclasses.replace(
+            e, e_zpe=ecm, ehfint=e.ehfint + e.e_zpe - ecm, ehf=e.ehf + e.e_zpe - ecm))
+        if config.verbose:
+            print(f"Microscopic c.m. correction {float(ecm):.4f} MeV -> "
+                  f"E = {float(state.energies.ehfint):.4f} MeV")
+
+    if config.orbital_solver == 'two_basis' and use_pairing:
+        # the pairing window has to fit inside the HF basis, or the iteration can oscillate (period 2)
+        sp, lam = np.asarray(state.sp_energy), np.asarray(state.pairing.eferm)
+        cut, w = np.asarray(force.state_cutoff), float(force.softcut_range)
+        for q, sl in ((0, slice(0, npsi_n)), (1, slice(npsi_n, None))):
+            if sp[sl].max() - lam[q] < cut[q] * (1.0 + 7.0 * w):
+                warnings.warn(f"two_basis: the {'neutron' if q == 0 else 'proton'} basis ends {sp[sl].max() - lam[q]:.1f} MeV "
+                              f"above the Fermi energy, inside the pairing window ({cut[q]:.0f} MeV, width "
+                              f"{w * cut[q]:.1f}): add orbitals or narrow the window")
+
     return dataclasses.replace(state, force=force)
 
-@partial(jax.jit, static_argnums=(4, 5, 10, 11))
+def _subiterate(hmatrix, gapmatrix, sp_energy, deltaf, wocc, wguv, pairwg, wstates, iq: int,
+                n_subiter: int, args):
+    """
+    Configuration-space sub-iterations (Chen et al., CPC 2022, Sec. 3.3; FORTRAN hfb_natural).
+
+    At fixed orbitals and fields, rotate the basis by C to drive the antisymmetric part of
+    the Lagrange matrix to zero, c <- c - delta/(h_nn - h_min + E0) symcond, with C
+    re-orthonormalised (Cholesky QR) and the pairing occupations re-solved each step.  Only nst x nst
+    algebra: no grid operation.  Returns (C, sp_energy, deltaf, wocc, wguv, pairwg, wstates).
+    """
+    from jax_hfbfft.physics.pairing import solve_pairing_isospin
+    damp = (args['delstepbas'] / (sp_energy - jnp.min(sp_energy) + args['e0bas']))[:, None]
+
+    def lagrange(h, g, w, wuv):
+        lam = w[None, :] * h - wuv[None, :] * g
+        return 0.5 * (lam + jnp.conj(lam.T)), 0.5 * (lam - jnp.conj(lam.T))
+
+    def qr(X):
+        # Q of X = Q R from R^H R = X^H X: Householder's Q up to column signs, ~4x cheaper on a GPU at
+        # n ~ 100; X is a damped step from a unitary matrix, so X^H X is well conditioned
+        L = jnp.linalg.cholesky(jnp.conj(X.T) @ X)
+        return jnp.conj(jax.scipy.linalg.solve_triangular(L, jnp.conj(X.T), lower=True).T)
+
+    def step(_, st):
+        C, symcond, sp_energy, deltaf, wocc, wguv, pairwg, wstates = st
+        C = qr(C - damp * symcond)
+        hC, gC = hmatrix @ C, gapmatrix @ C
+        ht, gt = jnp.conj(C.T) @ hC, jnp.conj(C.T) @ gC
+        sp_energy, deltaf = jnp.real(jnp.diag(ht)), jnp.real(jnp.diag(gt)) * pairwg
+        _, wocc, wguv, pw, ws, _ = solve_pairing_isospin(
+            iq, args['targets'][iq], sp_energy, deltaf, wstates, pairwg,
+            pair_cutoff=args['pair_cutoff'][iq], state_cutoff=args['state_cutoff'][iq],
+            softcut_range=args['softcut_range'], smallp=args['smallp'],
+            blocked=None if args.get('blocked') is None else args['blocked'][iq])
+        pairwg = jnp.where(args['pair_cutoff'][iq] > 0, pw, pairwg)
+        wstates = jnp.where(args['state_cutoff'][iq] > 0, ws, wstates)
+        w, wuv = wocc * wstates, wguv * pairwg * wstates
+        lam_sym, _ = lagrange(ht, gt, w, wuv)
+        return C, w[None, :] * hC - wuv[None, :] * gC - C @ lam_sym, sp_energy, deltaf, wocc, wguv, pairwg, wstates
+
+    _, symcond = lagrange(hmatrix, gapmatrix, wocc * wstates, wguv * pairwg * wstates)
+    C = jnp.eye(hmatrix.shape[0], dtype=hmatrix.dtype)
+    C, _, *rest = jax.lax.fori_loop(0, n_subiter, step,
+                                    (C, symcond, sp_energy, deltaf, wocc, wguv, pairwg, wstates))
+    return (C, *rest)
+
+
+@partial(jax.jit, static_argnums=(4, 5, 10, 11, 14))
 def diagstep(
     psi: jax.Array,          # (nstates, 2, nx, ny, nz)
     meanfield: Meanfield,
@@ -1458,6 +1778,8 @@ def diagstep(
     tbcs: bool,              # static
     hampsi: jax.Array = None,      # (nstates, 2, nx, ny, nz) H_mf*psi_NEW from grstep step 4 (legacy hmfpsi)
     hampsi_old: jax.Array = None,  # (nstates, 2, nx, ny, nz) H_mf*psi_OLD from grstep step 1 (legacy hampsi)
+    n_subiter: int = 0,            # static: configuration-space sub-iterations (see _subiterate)
+    subiter_args=None,             # dict for _subiterate (targets, cutoffs, damping)
 ) -> Tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
     """
     Matches FORTRAN diagstep: Löwdin orthonormalization + optional H diagonalization.
@@ -1554,7 +1876,7 @@ def diagstep(
         # ── Apply transformation ─────────────────────────────────────────────
         psi_new_2d    = jnp.dot(psi_2d, U)
         psi_new_block = to_block(psi_new_2d)
-        
+
         # ── hmatrix in rotated basis: U† H_raw U ─────────────────────────────
         hmatrix = jnp.dot(jnp.conj(U.T), jnp.dot(H_raw, U))   # (nst, nst)
 
@@ -1565,6 +1887,14 @@ def diagstep(
             G_raw     = jnp.dot(jnp.conj(psi_2d.T), delpsi_2d) * wxyz  # (nst, nst)
             gapmatrix = jnp.dot(jnp.conj(U.T), jnp.dot(G_raw, U))
             deltaf_block = jnp.real(jnp.diag(gapmatrix)) * pairwg_block
+            if n_subiter > 0:   # rotate within the span at fixed fields, then fold the rotation in
+                C, sp_energy_block, deltaf_block, wocc_block, wguv_block, pairwg_block, wstates_block = \
+                    _subiterate(hmatrix, gapmatrix, sp_energy_block, deltaf_block, wocc_block, wguv_block,
+                                pairwg_block, wstates_block, iq, n_subiter, subiter_args)
+                psi_new_2d = jnp.dot(psi_new_2d, C)
+                psi_new_block = to_block(psi_new_2d)
+                hmatrix = jnp.dot(jnp.conj(C.T), jnp.dot(hmatrix, C))
+                gapmatrix = jnp.dot(jnp.conj(C.T), jnp.dot(gapmatrix, C))
         else:
             gapmatrix    = jnp.zeros((nst, nst), dtype=H_raw.dtype)
             deltaf_block = jnp.zeros(nst, dtype=jnp.float64)
@@ -1590,8 +1920,17 @@ def diagstep(
         # Legacy convergence measures (construct_hfb_matrices, static.py:546-551):
         # antisymmetric part of lambda → efluct1q (max), efluct2q (rms)
         lambda_asym = 0.5 * (lambda_temp - jnp.conj(lambda_temp.T))
-        efluct1q_block = jnp.max(jnp.abs(lambda_asym))
-        efluct2q_block = jnp.sqrt(jnp.sum(jnp.abs(lambda_asym) ** 2) / nst**2)
+        legacy = lambda: (jnp.max(jnp.abs(lambda_asym)),
+                          jnp.sqrt(jnp.sum(jnp.abs(lambda_asym) ** 2) / nst**2))
+
+        def residual():
+            # equal occupations (e.g. as many orbitals as particles) make lambda Hermitian and
+            # the legacy measure identically zero: use |(1 - P) h psi| instead
+            R = hmfpsi_2d - jnp.dot(psi_2d, jnp.dot(jnp.dot(U_rho, U_rho), H_raw))
+            norms = jnp.sqrt(jnp.sum(jnp.abs(R) ** 2, axis=0) * wxyz)
+            return jnp.max(norms), jnp.sqrt(jnp.mean(norms ** 2))
+
+        efluct1q_block, efluct2q_block = jax.lax.cond(jnp.ptp(w_col) < 1e-8, residual, legacy)
 
         # recombine: lagrange_2d = psi_new_2d @ lambda_mat
         lagrange_2d = jnp.dot(psi_new_2d, lambda_mat)                       # (2*nxyz, nst)
@@ -1626,6 +1965,25 @@ def diagstep(
     return psi_new, sp_energy, deltaf, lagrange, efluct1q, efluct2q
 
 
+def _exact_dQdlambda(state, force, grid, idx, use_coulomb=True):
+    """
+    d<Q_i>/dlambda_i of the frozen-multiplier inner problem for the driven constraints idx: the static
+    response chi = 2 m_-1(Q_i) with the other constraints held (physics/response.py, constraint potential
+    rebuilt from the state), and the penalty's feedback, chi / (1 + k chi), k = 2 c0 / penalty_denom.
+    """
+    from jax_hfbfft.physics.response import Response     # response imports this module
+    cs = state.constraint_state
+    fields = [jnp.transpose(cs.constr_field[i], (3, 0, 1, 2)) for i in range(cs.constr_field.shape[0])]
+    R = Response(state, force, grid, use_coulomb=use_coulomb, constraint_potential='auto')
+    out = []
+    for i in idx:
+        m, _ = R.polarizability(fields[i], constraints=[f for j, f in enumerate(fields) if j != i])
+        chi = 2.0 * m
+        k = 2.0 * float(cs.c0constr[i]) / float(cs.penalty_denom[i]) if float(cs.penalty_denom[i]) > 0 else 0.0
+        out.append(chi / (1.0 + k * chi))
+    return np.asarray(out)
+
+
 def run_constrained_scan(
     grid: Grid,
     force,
@@ -1633,7 +1991,7 @@ def run_constrained_scan(
     nucleus_n: int,
     npsi_n: int,
     targets,
-    multipole: str = 'Q20',
+    multipole='Q20',
     config: Optional[SolverConfig] = None,
     damprad: Optional[float] = None,
     dampgamma: float = 0.8,
@@ -1647,14 +2005,16 @@ def run_constrained_scan(
     c0constr: float = 0.8,
     verbose: bool = True,
     initial_state: Optional[SolverState] = None,
+    on_target: Optional[Callable[[dict, SolverState], None]] = None,
+    response_newton: Optional[bool] = None,
 ):
     """
     Constrained solutions at a sequence of multipole moments (a deformation
-    energy curve), by continuation with an outer/inner split.
+    energy curve or surface), by continuation with an outer/inner split.
 
-    OUTER: the multiplier lambda of the driven constraint, updated once per
+    OUTER: the multipliers lambda of the driven constraints, updated once per
     outer step from a converged <Q> by a secant step on the measured response,
-    lambda <- lambda + (Q_goal - Q) / (dQ/dlambda).
+    lambda_i <- lambda_i + (Q_goal_i - Q_i) / (dQ_i/dlambda_i).
 
     INNER: an SCF solve (run_hfb) with lambda frozen (freeze_constraint), so
     the Hamiltonian is fixed and the solve converges; the augmented-Lagrangian
@@ -1664,45 +2024,55 @@ def run_constrained_scan(
     Safeguards: an inner solve that runs away (density far above saturation,
     E > 0, efluct > 1, |<Q>| > 5 |goal|) is rejected and lambda halved back
     toward the best point; points are ranked on convergence first and then on
-    |<Q> - goal|; an unconverged inner solve gets more iterations instead of
-    feeding the secant; the penalty weight is stiffened (and the best point
-    restored) when the residual stops shrinking, which is what carries the
-    scan across barriers where Q(lambda) is not single-valued.
+    the largest relative |<Q> - goal|; an unconverged inner solve gets more
+    iterations instead of feeding the secant; the penalty weight is stiffened
+    (and the best point restored) when the residual stops shrinking, which is
+    what carries the scan across barriers where Q(lambda) is not single-valued.
 
-    <z> = 0 is constrained along with the driven multipole (fix_cm), since Q20
+    <z> = 0 is constrained along with the driven multipoles (fix_cm), since Q20
     alone is not translation invariant.
 
     Nor is a lab-frame moment rotation invariant: a deformed nucleus can meet
     a Q20 goal by tilting its symmetry axis away from z at no energy cost (the
     tilted 24Mg ground state, intrinsic Q20 = 112 fm^2, "hits" Q20 = 20 with
-    lambda = 0). For an axial driven multipole (mu = 0) the scan therefore also
+    lambda = 0). For axial driven multipoles (mu = 0) the scan therefore also
     constrains Q22 = 0 and the principal axes (<xy> = <xz> = <yz> = 0, which
     include the centre of mass), keeping the shape axial about z (axial).
 
     Args:
         targets: moments in fm^lambda, ordered outward from the ground state;
-            each target warm-starts from the previous one.
-        multipole: the driven multipole ('Q20', 'Q22', 'Q30', ...).
-        axial: for a mu = 0 multipole, also constrain Q22 = 0 and the principal
+            each target warm-starts from the previous one. With several driven
+            multipoles each target is a tuple, e.g. [(q20, q30), ...].
+        multipole: the driven multipole ('Q20', 'Q22', 'Q30', 'QN', ...), or a
+            tuple of them for a multi-dimensional surface (e.g. ('Q20', 'Q30')).
+        axial: for mu = 0 multipoles, also constrain Q22 = 0 and the principal
             axes (see above). Turn off only for shapes that are meant to be
             non-axial.
         n_outer: maximum multiplier updates per target.
         inner_iters: SCF iterations per inner solve (doubled, up to 800, when
             an inner solve does not converge).
-        tol: fractional accuracy on the moment at which a target is accepted.
+        tol: fractional accuracy on each moment at which a target is accepted.
         inner_quality: efluct below which an inner solve counts as converged.
         c0constr: initial penalty weight; the stiffness is c0constr / (dQ/dlambda).
             Stiffened adaptively up to 32 when the residual stalls.
         damprad: radius of the damping mask. The default scales with the
-            largest requested deformation and keeps 3 fm clear of the box edge;
-            the density must stay inside the mask for the moment to be
+            largest requested quadrupole deformation and keeps 3 fm clear of the
+            box edge; the density must stay inside the mask for the moment to be
             controlled.
         initial_state: optional converged state to start the first target from.
+        on_target: optional callback(record, state) after each target, e.g. to
+            save the state of every point of a long scan as it finishes.
+        response_newton: take dQ/dlambda of each outer step from the exact static
+            response of the converged inner state (physics/response.py), with the
+            other constraints held and the penalty's feedback included: a Newton
+            step instead of the secant. Default: on for the two-basis solver (whose
+            states the response linearises), off otherwise.
 
     Returns:
         (results, final_state). Each result is a dict with target, achieved,
-        E, lam, efluct, peak_rho, outer (steps used), zcm and the
-        single-particle energies/occupations of that point.
+        lam (scalars for one driven multipole, tuples for several), E, efluct,
+        peak_rho, outer (steps used), zcm and the single-particle
+        energies/occupations of that point.
     """
     import numpy as np
     from jax_hfbfft.core.constraint import MULTIPOLE_NAMES
@@ -1710,52 +2080,61 @@ def run_constrained_scan(
 
     if config is None:
         config = SolverConfig()
+    if response_newton is None:
+        response_newton = config.orbital_solver == 'two_basis'
+    names = (multipole,) if isinstance(multipole, str) else tuple(multipole)
+    goals = [np.atleast_1d(np.asarray(t, dtype=float)) for t in targets]
+    if any(g.shape != (len(names),) for g in goals):
+        raise ValueError(f"each target needs one value per driven multipole {names}")
     A = nucleus_z + nucleus_n
-    half_box = grid.nx * grid.dx / 2.0 - 3.0
     if damprad is None:
-        # A prolate shape at beta2 has a long semi-axis of about R0 (1 + 0.75 beta2);
-        # allow ~2 fm of surface beyond it (6.7 fm at beta2 = 0, ~12 fm at 0.6 for 16O).
+        from jax_hfbfft.physics.constraints import default_damprad
         R = 1.2 * A ** (1.0 / 3.0)
-        beta_max = 0.0
-        if len(targets):
-            conv = A * R**2 * 3.0 / np.sqrt(5.0 * np.pi)
-            beta_max = max(abs(float(t)) for t in targets) / conv
-        want = 2.2 * R * (1.0 + 0.75 * beta_max) + 2.0 * min(beta_max / 0.6, 1.0)
-        damprad = min(want, half_box)
-        if verbose and want > half_box:
-            print(f"  WARNING: deformation up to beta2 = {beta_max:.2f} needs a "
-                  f"damping radius of {want:.1f} fm but the box allows "
-                  f"{half_box:.1f} fm; enlarge the grid", flush=True)
+        conv = A * R**2 * 3.0 / np.sqrt(5.0 * np.pi)
+        quad = [i for i, n in enumerate(names) if n in ('Q20', 'Q22')]
+        beta_max = max((abs(g[i]) for g in goals for i in quad), default=0.0) / conv
+        damprad = default_damprad(A, grid, beta_max, verbose=verbose)
 
     base_inner_cfg = dataclasses.replace(
         config, max_iterations=inner_iters, freeze_constraint=True, verbose=False,
         min_iterations=min(30, inner_iters), x0dmp_min_factor=0.25,
     )
+    label = '/'.join(names)
+    out = (lambda v: float(v[0])) if len(names) == 1 else (lambda v: tuple(float(x) for x in v))
+    fmt = lambda v: ' '.join(f"{x:8.2f}" for x in np.atleast_1d(v))
+    fmt_lam = lambda v: ' '.join(f"{x:9.5f}" for x in np.atleast_1d(v))
 
     if verbose:
-        print(f"constrained scan (outer/inner): {multipole} -> {list(targets)}")
+        print(f"constrained scan (outer/inner): {label} -> {[out(g) for g in goals]}")
         print(f"  damping radius {damprad:.1f} fm, {n_outer} outer x "
               f"{inner_iters} inner iterations", flush=True)
 
     state = initial_state
-    lam = 0.0
+    lam = np.zeros(len(names))
     results = []
     rho_sat = 0.16
-    lam_mu = MULTIPOLE_NAMES[multipole]
+    keys = [MULTIPOLE_NAMES[n] for n in names]
     # The principal-axes constraints include <x>, <y>, <z> = 0, so they replace Q10.
-    with_axes = axial and lam_mu[1] == 0 and multipole != 'Q10'
-    with_cm = fix_cm and multipole != 'Q10' and not with_axes
+    with_axes = axial and all(k[1] == 0 for k in keys) and 'Q10' not in names
+    with_cm = fix_cm and 'Q10' not in names and not with_axes
 
-    for q in targets:
-        spec = {multipole: float(q)}
+    def set_lambda(st, lam_new):
+        cs = st.constraint_state
+        return dataclasses.replace(st, constraint_state=dataclasses.replace(
+            cs, lambda_crank=cs.lambda_crank.at[jnp.array(idx)].set(jnp.asarray(lam_new))))
+
+    for q in goals:
+        spec = {n: float(v) for n, v in zip(names, q)}
         if with_cm:
             spec['Q10'] = 0.0
         if with_axes:
             spec['Q22'] = 0.0
         con = Constraint.from_multipoles(spec, principal_axes=with_axes, damprad=damprad,
                                          dampgamma=dampgamma, c0constr=c0constr)
-        # get_multipole_list sorts by (lambda, mu): find the driven entry.
-        idx = [k for k, _ in con.get_multipole_list()].index(MULTIPOLE_NAMES[multipole])
+        # get_multipole_list sorts by (lambda, mu): find the driven entries.
+        order = [k for k, _ in con.get_multipole_list()]
+        idx = [order.index(k) for k in keys]
+        scale = np.maximum(np.abs(q), 1.0)
         prev = None                          # (lambda, <Q>) of the last converged step
         best = None                          # (rank key, record, state, lambda)
         good_state, good_lam = state, lam    # backtracking point
@@ -1764,12 +2143,14 @@ def run_constrained_scan(
         c0 = c0constr
         prev_resid = None
         inner_cfg = base_inner_cfg
+        iter_cap = max(800, inner_iters)
+        plateau = None                       # (E, <Q>) of the last unconverged solve at this lambda
         for outer in range(n_outer):
             trial = run_hfb(grid, force, nucleus_z=nucleus_z, nucleus_n=nucleus_n,
                             npsi_n=npsi_n, config=inner_cfg, constraint=con,
                             initial_state=state, use_coulomb=use_coulomb)
             cs = trial.constraint_state
-            got = float(compute_constraint_expectations(cs, trial.densities, grid)[idx])
+            got = np.asarray(compute_constraint_expectations(cs, trial.densities, grid))[idx]
             rho = trial.densities.rho[0] + trial.densities.rho[1]
             zcm = float(jnp.sum(rho * grid.z[None, None, :]) * grid.wxyz
                         / jnp.maximum(jnp.sum(rho) * grid.wxyz, 1e-12))
@@ -1779,38 +2160,45 @@ def run_constrained_scan(
 
             # Reject a runaway inner solve and backtrack halfway to the best point.
             if (not np.isfinite(E) or peak > 1.5 * rho_sat or fluct > 1.0 or E > 0.0
-                    or abs(got) > 5.0 * max(abs(q), 1.0)):
+                    or np.any(np.abs(got) > 5.0 * scale)):
                 if verbose:
-                    print(f"    outer {outer+1}  lam={lam:9.5f}  rejected "
-                          f"(<Q>={got:.1f}, peak rho={peak:.3f}, E={E:.1f}); "
+                    print(f"    outer {outer+1}  lam={fmt_lam(lam)}  rejected "
+                          f"(<Q>={fmt(got)}, peak rho={peak:.3f}, E={E:.1f}); "
                           f"backtracking", flush=True)
                 state, lam = good_state, 0.5 * (lam + good_lam)
                 if (state is not None and state.constraint_state is not None
-                        and state.constraint_state.lambda_crank.shape[0] > idx):
-                    cs0 = dataclasses.replace(
-                        state.constraint_state,
-                        lambda_crank=state.constraint_state.lambda_crank.at[idx].set(lam))
-                    state = dataclasses.replace(state, constraint_state=cs0)
-                step_cap = 0.5 * abs(lam - good_lam) if step_cap is None else 0.5 * step_cap
-                prev = None
+                        and state.constraint_state.lambda_crank.shape[0] > max(idx)):
+                    state = set_lambda(state, lam)
+                step_cap = 0.5 * np.abs(lam - good_lam) if step_cap is None else 0.5 * step_cap
+                prev = plateau = None
                 continue
 
             state = trial
-            rec = dict(target=float(q), achieved=got, E=E, lam=lam, efluct=fluct,
+            rec = dict(target=out(q), achieved=out(got), E=E, lam=out(lam), efluct=fluct,
                        peak_rho=peak, outer=outer + 1, zcm=zcm,
                        sp_energy=np.asarray(trial.sp_energy), wocc=np.asarray(trial.wocc),
                        isospin=np.asarray(trial.isospin))
 
-            # Rank on convergence first, then on the moment.
-            converged = fluct <= inner_quality
-            key = (0 if converged else 1, abs(got - q))
+            # Rank on convergence first, then on the largest relative miss. Two-basis inner solves
+            # also count as converged by their energy rule (etol): their efluct, the basis residual
+            # weighted by rho + |kappa|, plateaus near 1e-2 for paired states. One whose energy and
+            # moments no longer move under more iterations at the same lambda has reached its
+            # plateau and counts too, or lambda would never update.
+            two = config.orbital_solver == 'two_basis'
+            converged = fluct <= inner_quality or (two and bool(trial.converged))
+            if (not converged and two and plateau is not None and abs(E - plateau[0]) < 1e-4
+                    and np.all(np.abs(got - plateau[1]) < 1e-4 * scale)):
+                converged = True
+            plateau = None if converged else (E, got)
+            resid = float(np.max(np.abs(got - q) / scale))
+            key = (0 if converged else 1, resid)
             if best is None or key < best[0]:
                 best = (key, rec, trial, lam)
                 good_state, good_lam = trial, lam
             if verbose:
-                print(f"    outer {outer+1}  lam={lam:9.5f}  <Q>={got:8.2f}  "
+                print(f"    outer {outer+1}  lam={fmt_lam(lam)}  <Q>={fmt(got)}  "
                       f"E={E:10.3f}  efluct={fluct:.1e}  <z>={zcm:+6.3f}", flush=True)
-            if abs(got - q) <= tol * max(abs(q), 1.0) and converged:
+            if resid <= tol and converged:
                 break
 
             # Stop pushing a target whose solves are degrading after a good point.
@@ -1831,21 +2219,26 @@ def run_constrained_scan(
                     print(f"      efluct {fluct:.1e} > {inner_quality:.1e}; "
                           f"extending the inner solve", flush=True)
                 inner_cfg = dataclasses.replace(
-                    inner_cfg, max_iterations=min(inner_cfg.max_iterations * 2, 800))
+                    inner_cfg, max_iterations=min(inner_cfg.max_iterations * 2, iter_cap))
                 prev = None
                 continue
 
-            dQdl = None
-            if (prev is not None and abs(got - prev[1]) > 1e-9
-                    and abs(lam - prev[0]) > 1e-12):
-                dQdl = (got - prev[1]) / (lam - prev[0])
-            if dQdl is None or dQdl <= 0:
-                dQdl = float(linear_response(cs, trial.densities, grid, mass_number=A)[idx])
+            # Newton (exact response of this state) with response_newton; otherwise a diagonal
+            # secant per driven multiplier, and the linear response where neither is available.
+            dQdl = (_exact_dQdlambda(trial, force, grid, idx, use_coulomb) if response_newton
+                    else np.full(len(names), np.nan))
+            if prev is not None and not np.all(dQdl > 0):
+                dl, dq = lam - prev[0], got - prev[1]
+                ok = (np.abs(dq) > 1e-9) & (np.abs(dl) > 1e-12)
+                dQdl[ok] = dq[ok] / dl[ok]
+            bad = ~(dQdl > 0)
+            if np.any(bad):
+                lin = np.asarray(linear_response(cs, trial.densities, grid, mass_number=A))[idx]
+                dQdl[bad] = lin[bad]
             prev = (lam, got)
 
             # Stiffen the penalty when the residual stops shrinking (harder if
             # it grew), and restart from the best point with more iterations.
-            resid = abs(got - q)
             if prev_resid is not None and resid > 0.75 * prev_resid:
                 grew = resid > prev_resid
                 c0 = min(c0 * (4.0 if grew else 2.0), 32.0)
@@ -1858,44 +2251,44 @@ def run_constrained_scan(
                 degraded = 0
                 inner_cfg = dataclasses.replace(
                     inner_cfg,
-                    max_iterations=min(inner_cfg.max_iterations * 2, 800),
+                    max_iterations=min(inner_cfg.max_iterations * 2, iter_cap),
                     x0dmp_min_factor=max(inner_cfg.x0dmp_min_factor * 0.5, 0.05),
                     resume_x0dmp=True,
                 )
                 if verbose:
                     print(f"      residual {'grew' if grew else 'stalled'} "
-                          f"({prev_resid:.2f} -> {resid:.2f}); penalty weight -> {c0:.1f}",
+                          f"({prev_resid:.4f} -> {resid:.4f} relative); penalty weight -> {c0:.1f}",
                           flush=True)
                 prev_resid = resid
                 continue
             prev_resid = resid
 
-            # Secant step, bounded so the potential deepens by at most max_dv MeV.
-            op_scale = float(jnp.max(jnp.abs(cs.constr_field[idx])))
-            cap = float(cs.max_dv) / max(op_scale, 1e-12)
+            # Secant step, bounded so each potential deepens by at most max_dv MeV.
+            op_scale = np.array([float(jnp.max(jnp.abs(cs.constr_field[i]))) for i in idx])
+            cap = float(cs.max_dv) / np.maximum(op_scale, 1e-12)
             if step_cap is not None:
-                cap = min(cap, step_cap)
-            lam = lam + float(np.clip((q - got) / dQdl, -cap, cap))
-            cs = dataclasses.replace(cs, lambda_crank=cs.lambda_crank.at[idx].set(lam))
-            state = dataclasses.replace(trial, constraint_state=cs)
+                cap = np.minimum(cap, step_cap)
+            lam = lam + np.clip((q - got) / dQdl, -cap, cap)
+            state = set_lambda(trial, lam)
 
         if best is None:
             if verbose:
-                print(f"  {multipole}={q:8.1f}  failed: every inner solve was "
+                print(f"  {label}={fmt(q)}  failed: every inner solve was "
                       f"rejected; target skipped", flush=True)
             state, lam = good_state, good_lam
             continue
         _, rec, state, lam = best
         results.append(rec)
+        if on_target is not None:
+            on_target(rec, state)
         if verbose:
-            hit = ("hit" if (abs(rec['achieved'] - q) <= tol * max(abs(q), 1.0)
-                             and rec['efluct'] <= inner_quality) else "short")
-            print(f"  {multipole}={q:8.1f} -> {rec['achieved']:8.2f}  [{hit}]  "
-                  f"E={rec['E']:10.3f}  lam={rec['lam']:8.5f}  efluct={rec['efluct']:.1e}  "
+            hit = ("hit" if best[0][1] <= tol and rec['efluct'] <= inner_quality else "short")
+            print(f"  {label}={fmt(q)} -> {fmt(rec['achieved'])}  [{hit}]  "
+                  f"E={rec['E']:10.3f}  lam={fmt_lam(rec['lam'])}  efluct={rec['efluct']:.1e}  "
                   f"peak rho={rec['peak_rho']:.4f}  <z>={rec['zcm']:+6.3f}", flush=True)
 
-    # Consistency check: at a constrained minimum dE/dQ equals lambda.
-    if verbose and len(results) > 1:
+    # Consistency check (one driven multipole): at a constrained minimum dE/dQ equals lambda.
+    if verbose and len(names) == 1 and len(results) > 1:
         print("  check: dE/dQ between neighbouring points vs lambda (ratio ~1)")
         for a, b in zip(results[:-1], results[1:]):
             dq = b['achieved'] - a['achieved']

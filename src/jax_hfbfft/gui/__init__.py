@@ -9,7 +9,7 @@ Usage:
     # From CLI
     hfbfft gui
     hfbfft gui --port 8080
-    
+
     # From Python
     from jax_hfbfft.gui import start_server
     start_server(port=8080)

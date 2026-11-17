@@ -52,11 +52,11 @@ class NucleusInput(BaseModel):
     """Input specification for a nucleus."""
     protons: int = Field(..., ge=1, le=120, description="Number of protons (Z)")
     neutrons: int = Field(..., ge=1, le=200, description="Number of neutrons (N)")
-    
+
     @property
     def mass_number(self) -> int:
         return self.protons + self.neutrons
-    
+
     @property
     def symbol(self) -> str:
         """Get element symbol (simplified)."""
@@ -117,7 +117,7 @@ class CalculationRequest(BaseModel):
     pairing: PairingConfig = Field(default_factory=PairingConfig)
     constraint: ConstraintConfig = Field(default_factory=ConstraintConfig)
     iteration: IterationConfig = Field(default_factory=IterationConfig)
-    
+
     @field_validator("force_name")
     @classmethod
     def validate_force_name(cls, v):
@@ -151,7 +151,7 @@ class EnergyBreakdown(BaseModel):
     coulomb: float = Field(0.0, description="Coulomb energy (MeV)")
     pairing: float = Field(0.0, description="Pairing energy (MeV)")
     cm_correction: float = Field(0.0, description="Center-of-mass correction (MeV)")
-    
+
     # Skyrme decomposition
     ehf0: float = Field(0.0, description="t0 term (MeV)")
     ehf1: float = Field(0.0, description="Current term (MeV)")
@@ -204,12 +204,12 @@ class CalculationResults(BaseModel):
     deformation: DeformationResults
     pairing: PairingResults
     single_particle_spectrum: List[SingleParticleLevel] = Field(default_factory=list)
-    
+
     # Convergence info
     converged: bool = Field(False, description="Whether calculation converged")
     iterations: int = Field(0, description="Number of iterations performed")
     final_fluctuation: float = Field(0.0, description="Final energy fluctuation")
-    
+
     # Timing
     total_time_seconds: float = Field(0.0, description="Total calculation time")
     jit_time_seconds: float = Field(0.0, description="JIT compilation time")

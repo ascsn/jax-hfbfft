@@ -8,6 +8,7 @@ Hartree-Fock-Bogoliubov method with Fast Fourier Transform techniques.
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from dataclasses import dataclass, field
 from typing import Optional, Dict, Any, Tuple, Callable
 import dataclasses
@@ -29,10 +30,10 @@ if str(_legacy_path) not in sys.path:
 def angular_momentum_letter(l: int) -> str:
     """
     Convert orbital angular momentum quantum number to spectroscopic letter.
-    
+
     Args:
         l: Orbital angular momentum quantum number
-        
+
     Returns:
         Spectroscopic letter (s, p, d, f, g, h, ...)
     """
@@ -46,59 +47,59 @@ def angular_momentum_letter(l: int) -> str:
 def make_spectroscopic_label(n: int, l: int, j: float) -> str:
     """
     Create spectroscopic notation for quantum numbers.
-    
+
     Format: {n}{letter}{j_num}/{j_denom}
     Example: n=1, l=0, j=0.5 -> '1s1/2'
              n=1, l=1, j=1.5 -> '1p3/2'
-    
+
     Args:
         n: Radial quantum number (principal quantum number for the shell)
         l: Orbital angular momentum quantum number
         j: Total angular momentum
-        
+
     Returns:
         Spectroscopic label string
     """
     letter = angular_momentum_letter(l)
-    
+
     # Convert j to fraction
     j_times_2 = int(round(2 * j))
-    
+
     return f"{n}{letter}{j_times_2}/2"
 
 
 def cartesian_to_spherical_qn(i: int, j: int, k: int, is_spin: int) -> Tuple[int, int, float, float]:
     """
     Convert Cartesian harmonic oscillator quantum numbers to approximate spherical quantum numbers.
-    
+
     For Cartesian quantum numbers (i, j, k) with principal shell N = i + j + k:
     - The state contains a mixture of angular momentum values
     - We assign the maximum angular momentum l_max = N
     - Radial quantum number n = 0 (lowest radial excitation for this shell)
     - Total angular momentum j depends on l and spin
     - Parity π = (-1)^N
-    
+
     Args:
         i, j, k: Cartesian quantum numbers
         is_spin: Spin component (0 or 1)
-        
+
     Returns:
         (n, l, j, parity) tuple where:
             n: Radial quantum number
-            l: Orbital angular momentum  
+            l: Orbital angular momentum
             j: Total angular momentum
             parity: Spatial parity (-1)^l
     """
     # Principal shell number
     N = i + j + k
-    
+
     # For Cartesian states, we approximate with maximum angular momentum
     # In reality, the state contains l = N, N-2, N-4, ..., (0 or 1)
     l = N
-    
+
     # Radial quantum number (for lowest radial excitation)
     n = 0
-    
+
     # Total angular momentum: j = l ± 1/2
     # For l=0, only j=1/2 is possible
     if l == 0:
@@ -111,10 +112,10 @@ def cartesian_to_spherical_qn(i: int, j: int, k: int, is_spin: int) -> Tuple[int
             j = l + 0.5
         else:
             j = l - 0.5
-    
+
     # Parity
     parity = (-1.0) ** l
-    
+
     return n, l, j, parity
 
 
@@ -122,19 +123,19 @@ def cartesian_to_spherical_qn(i: int, j: int, k: int, is_spin: int) -> Tuple[int
 class HFBFFTState:
     """
     Internal state container for HFBFFT calculations.
-    
+
     This dataclass holds all the internal arrays and data structures
     used during HFB iterations. It is separate from the main HFBFFT class
     to allow for clean serialization and checkpointing.
     """
-    
+
     # Single-particle wavefunctions and related arrays
     psi: Optional[jax.Array] = None           # Wavefunctions [nst, 2, nx, ny, nz]
-    hampsi: Optional[jax.Array] = None        # H|psi> 
+    hampsi: Optional[jax.Array] = None        # H|psi>
     lagrange: Optional[jax.Array] = None      # Lagrange multipliers for orthogonality
     hmfpsi: Optional[jax.Array] = None        # Mean-field hamiltonian applied
     delpsi: Optional[jax.Array] = None        # Delta (pairing) field applied
-    
+
     # Densities
     rho: Optional[jax.Array] = None           # Particle density [2, nx, ny, nz]
     chi: Optional[jax.Array] = None           # Pair density
@@ -142,7 +143,7 @@ class HFBFFTState:
     current: Optional[jax.Array] = None       # Current density [2, 3, nx, ny, nz]
     sdens: Optional[jax.Array] = None         # Spin density
     sodens: Optional[jax.Array] = None        # Spin-orbit density
-    
+
     # Mean-field potentials
     upot: Optional[jax.Array] = None          # Central potential [2, nx, ny, nz]
     bmass: Optional[jax.Array] = None         # Effective mass
@@ -152,11 +153,11 @@ class HFBFFTState:
     wlspot: Optional[jax.Array] = None        # WLS field
     dbmass: Optional[jax.Array] = None        # Derivative of effective mass
     divaq: Optional[jax.Array] = None         # Divergence of A-field
-    
+
     # Coulomb
     wcoul: Optional[jax.Array] = None         # Coulomb potential
     coulomb_q: Optional[jax.Array] = None     # Coulomb kernel in k-space
-    
+
     # Single-particle properties (per state)
     sp_energy: Optional[jax.Array] = None     # Single-particle energies
     sp_kinetic: Optional[jax.Array] = None    # Kinetic energies
@@ -166,41 +167,53 @@ class HFBFFTState:
     sp_orbital: Optional[jax.Array] = None    # Orbital angular momentum
     sp_spin: Optional[jax.Array] = None       # Spin
     sp_norm: Optional[jax.Array] = None       # Normalization
-    
+
     # Quantum numbers
     sp_n: Optional[jax.Array] = None          # Radial quantum number
     sp_l: Optional[jax.Array] = None          # Orbital angular momentum quantum number
     sp_j: Optional[jax.Array] = None          # Total angular momentum
     sp_labels: Optional[list] = None          # Spectroscopic labels
-    
+
     # Occupation numbers (for HFB)
     wocc: Optional[jax.Array] = None          # Occupation probabilities
     wguv: Optional[jax.Array] = None          # u*v pairing factors
     pairwg: Optional[jax.Array] = None        # Pairing weights
     wstates: Optional[jax.Array] = None       # State weights
     deltaf: Optional[jax.Array] = None        # Pairing gaps
-    
+
     # Isospin labels
     isospin: Optional[jax.Array] = None       # Isospin of each state
     npsi: Optional[jax.Array] = None          # Number of states per isospin
     npmin: Optional[jax.Array] = None         # Starting index per isospin
 
 
+def default_npsi(nucleus: Nucleus, force: Force) -> Tuple[int, int]:
+    """
+    Default basis (npsi_n, npsi_p): exactly N and Z without pairing; with pairing
+    N + 1.65 N^(2/3) (at least 126) and Z + 1.65 Z^(2/3) (at least 82), rounded to
+    even numbers, as in the FORTRAN code.
+    """
+    if force.ipair == 0:
+        return nucleus.neutrons, nucleus.protons
+    pad = lambda n, floor: max(floor, int(2 * round((n + int(1.65 * n ** 0.666667)) / 2)))
+    return pad(nucleus.neutrons, 126), pad(nucleus.protons, 82)
+
+
 @dataclass
 class HFBFFTResults:
     """
     Results container for HFBFFT calculations.
-    
+
     This dataclass stores the final results and convergence information
     from an HFB calculation.
     """
-    
+
     # Convergence
     converged: bool = False
     iterations: int = 0
     final_fluctuation: float = 0.0
     convergence_history: Optional[jax.Array] = None
-    
+
     # Energies
     total_energy: float = 0.0
     kinetic_energy: float = 0.0
@@ -209,32 +222,47 @@ class HFBFFTResults:
     coulomb_energy: float = 0.0
     rearrangement_energy: float = 0.0
     cm_correction: float = 0.0
-    
+
     # Energy decomposition (Skyrme terms)
     ehf0: float = 0.0   # t0 term
     ehf1: float = 0.0   # current term
     ehf2: float = 0.0   # Laplacian term
     ehf3: float = 0.0   # density-dependent term
     ehfls: float = 0.0  # spin-orbit term
-    
+
     # Pairing properties
-    pairing_gap_n: float = 0.0
+    pairing_gap_n: float = 0.0       # <uv Delta>/<uv>
     pairing_gap_p: float = 0.0
+    pairing_gap_v2_n: float = 0.0    # <v^2 Delta>/<v^2>
+    pairing_gap_v2_p: float = 0.0
+    pairing_energy_n: float = 0.0
+    pairing_energy_p: float = 0.0
+    lambda2_n: float = 0.0           # Lipkin-Nogami lambda_2 (0 if LN off)
+    lambda2_p: float = 0.0
+    ln_energy: float = 0.0           # Lipkin-Nogami energy, included in total_energy
+    temperature: float = 0.0         # MeV
+    entropy: float = 0.0             # quasiparticle entropy (k_B = 1)
+    free_energy: float = 0.0         # F = E - T S (equals total_energy at T = 0)
+    zpe: int = 0                     # c.m. treatment (see _forces.yml header)
     fermi_energy_n: float = 0.0
     fermi_energy_p: float = 0.0
-    
+
     # Deformation
     beta2: float = 0.0
     gamma: float = 0.0
     q20: float = 0.0
     q22: float = 0.0
-    
+    q30: float = 0.0                 # along z about the centre of mass
+    q40: float = 0.0
+    beta3: float = 0.0
+    beta4: float = 0.0
+
     # Radii
     rms_radius_n: float = 0.0
     rms_radius_p: float = 0.0
     rms_radius_total: float = 0.0
     charge_radius: float = 0.0
-    
+
     # Angular momentum
     total_angular_momentum: Optional[jax.Array] = None
     orbital_angular_momentum: Optional[jax.Array] = None
@@ -244,14 +272,11 @@ class HFBFFTResults:
 class HFBFFT:
     """
     Main class for Hartree-Fock-Bogoliubov calculations with FFT.
-    
-    This class encapsulates all the state and methods needed to perform
-    nuclear structure calculations using the Hartree-Fock-Bogoliubov (HFB)
-    method with Skyrme-type effective interactions.
-    
-    Each HFBFFT instance is independent and can be used for parallel
-    calculations with different nuclei, forces, or constraints.
-    
+
+    Holds the state of one static Skyrme-HFB calculation (nucleus, force, grid,
+    constraint, orbitals and results). Instances are independent, so several
+    nuclei or forces can be solved one after another in one process.
+
     Attributes:
         nucleus (Nucleus): The nuclear system specification
         force (Force): The nuclear interaction
@@ -259,29 +284,19 @@ class HFBFFT:
         constraint (Constraint): Constraint configuration
         state (HFBFFTState): Internal calculation state
         results (HFBFFTResults): Calculation results
-        
+
     Examples:
         >>> # Basic calculation for Sn-132
         >>> from jax_hfbfft import HFBFFT, Nucleus, Force
-        >>> 
+        >>>
         >>> calc = HFBFFT(
         ...     nucleus=Nucleus(protons=50, neutrons=82),
         ...     force=Force.from_name("SLy4")
         ... )
         >>> calc.run(max_iterations=1000)
         >>> print(f"E = {calc.results.total_energy:.3f} MeV")
-        
-        >>> # Multiple calculations in parallel
-        >>> nuclei = [
-        ...     Nucleus.from_symbol("Ca", 40),
-        ...     Nucleus.from_symbol("Ca", 48),
-        ...     Nucleus.from_symbol("Sn", 132),
-        ... ]
-        >>> calcs = [HFBFFT(nucleus=n, force=force) for n in nuclei]
-        >>> for calc in calcs:
-        ...     calc.run()
     """
-    
+
     def __init__(
         self,
         nucleus: Nucleus,
@@ -311,7 +326,7 @@ class HFBFFT:
     ):
         """
         Initialize an HFBFFT calculation.
-        
+
         Args:
             nucleus: Nuclear system specification
             force: Nuclear interaction (if None, uses force_name)
@@ -328,7 +343,7 @@ class HFBFFT:
             use_fft: Whether to use FFT-based derivatives
         """
         self.nucleus = nucleus
-        
+
         # Initialize force
         if force is None:
             self.force = Force.from_name(
@@ -340,7 +355,7 @@ class HFBFFT:
             )
         else:
             self.force = force
-        
+
         # Initialize grid
         if grid is None:
             self.grid = Grid.create(
@@ -349,32 +364,20 @@ class HFBFFT:
             )
         else:
             self.grid = grid
-        
+
         # Initialize constraint (arrays built at solver runtime)
         if constraint is None:
             self.constraint = Constraint.spherical()
         else:
             self.constraint = constraint
-        
+
         # Configuration
         self.include_coulomb = include_coulomb
         self.use_fft = use_fft
-        
+
         # Calculate basis size
         if npsi is None:
-            # Check if pairing is disabled
-            if self.force.ipair == 0:
-                # No pairing: only need exactly N and Z states
-                n_basis = nucleus.neutrons
-                p_basis = nucleus.protons
-            else:
-                # With pairing: need extra states for the pairing window
-                # Use formula from original code, round to nearest even integer
-                def round_even(x):
-                    return int(2 * round(x / 2))
-                n_basis = max(126, round_even(nucleus.neutrons + int(1.65 * (nucleus.neutrons ** 0.666667))))
-                p_basis = max(82, round_even(nucleus.protons + int(1.65 * (nucleus.protons ** 0.666667))))
-            self._npsi = (n_basis, p_basis)
+            self._npsi = default_npsi(nucleus, self.force)
         else:
             self._npsi = npsi
             # Warn if npsi is smaller than particle numbers
@@ -384,16 +387,16 @@ class HFBFFT:
             if self._npsi[1] < nucleus.protons:
                 print(f"Warning: npsi[1]={self._npsi[1]} < Z={nucleus.protons}. "
                       "May not have enough proton states.")
-        
+
         self._nstmax = self._npsi[0] + self._npsi[1]
-        
+
         # Initialize internal state
         self.state = HFBFFTState()
         self._initialize_state()
-        
+
         # Results container
         self.results = HFBFFTResults()
-        
+
         # Iteration tracking
         self._iteration = 0
         self._converged = False
@@ -408,15 +411,22 @@ class HFBFFT:
         # Pairing annealing
         self.iteranneal: int = 0
         self.pairenhance: float = 0.0
+        # Lipkin-Nogami correction (SolverConfig.use_ln / ln_passes)
+        self.use_ln: bool = False
+        self.ln_passes: int = 12
+        # Temperature in MeV (SolverConfig.temperature)
+        self.temperature: float = 0.0
+        # HFB preconditioner floor (SolverConfig.precond_floor); ~1e-8 for TDHFB statics
+        self.precond_floor: float = 0.1
 
         # Callbacks for monitoring
         self._callbacks: list = []
-    
+
     def _initialize_state(self):
         """Initialize all internal arrays to their starting values."""
         nx, ny, nz = self.grid.shape
         nstmax = self._nstmax
-        
+
         # Wavefunction arrays
         shape5d = (nstmax, 2, nx, ny, nz)
         self.state.psi = jnp.zeros(shape5d, dtype=jnp.complex128)
@@ -424,7 +434,7 @@ class HFBFFT:
         self.state.lagrange = jnp.zeros(shape5d, dtype=jnp.complex128)
         self.state.hmfpsi = jnp.zeros(shape5d, dtype=jnp.complex128)
         self.state.delpsi = jnp.zeros(shape5d, dtype=jnp.complex128)
-        
+
         # Density arrays
         shape4d = (2, nx, ny, nz)
         shape5d_vec = (2, 3, nx, ny, nz)
@@ -434,7 +444,7 @@ class HFBFFT:
         self.state.current = jnp.zeros(shape5d_vec, dtype=jnp.float64)
         self.state.sdens = jnp.zeros(shape5d_vec, dtype=jnp.float64)
         self.state.sodens = jnp.zeros(shape5d_vec, dtype=jnp.float64)
-        
+
         # Mean-field arrays
         self.state.upot = jnp.zeros(shape4d, dtype=jnp.float64)
         self.state.bmass = jnp.zeros(shape4d, dtype=jnp.float64)
@@ -444,10 +454,10 @@ class HFBFFT:
         self.state.wlspot = jnp.zeros(shape5d_vec, dtype=jnp.float64)
         self.state.dbmass = jnp.zeros(shape5d_vec, dtype=jnp.float64)
         self.state.divaq = jnp.zeros(shape4d, dtype=jnp.float64)
-        
+
         # Coulomb
         self.state.wcoul = jnp.zeros((nx, ny, nz), dtype=jnp.float64)
-        
+
         # Single-particle properties
         self.state.sp_energy = jnp.zeros(nstmax, dtype=jnp.float64)
         self.state.sp_kinetic = jnp.zeros(nstmax, dtype=jnp.float64)
@@ -457,34 +467,34 @@ class HFBFFT:
         self.state.sp_orbital = jnp.zeros((nstmax, 3), dtype=jnp.float64)
         self.state.sp_spin = jnp.zeros((nstmax, 3), dtype=jnp.float64)
         self.state.sp_norm = jnp.zeros(nstmax, dtype=jnp.float64)
-        
+
         # Quantum numbers
         self.state.sp_n = jnp.zeros(nstmax, dtype=jnp.int32)
         self.state.sp_l = jnp.zeros(nstmax, dtype=jnp.int32)
         self.state.sp_j = jnp.full(nstmax, 0.5, dtype=jnp.float64)
         self.state.sp_labels = None
-        
+
         # Occupation numbers
         self.state.wocc = jnp.zeros(nstmax, dtype=jnp.float64)
         self.state.wguv = jnp.zeros(nstmax, dtype=jnp.float64)
         self.state.pairwg = jnp.ones(nstmax, dtype=jnp.float64)
         self.state.wstates = jnp.ones(nstmax, dtype=jnp.float64)
         self.state.deltaf = jnp.zeros(nstmax, dtype=jnp.float64)
-        
+
         # Isospin assignments
         self.state.isospin = jnp.zeros(nstmax, dtype=jnp.int32)
         self.state.isospin = self.state.isospin.at[self._npsi[0]:].set(1)
-        
+
         # Basis indices
         self.state.npsi = jnp.array(self._npsi)
         self.state.npmin = jnp.array([0, self._npsi[0]])
-        
+
         # Initial occupations
         self.state.wocc = self.state.wocc.at[:self.nucleus.neutrons].set(1.0)
         self.state.wocc = self.state.wocc.at[
             self._npsi[0]:self._npsi[0] + self.nucleus.protons
         ].set(1.0)
-    
+
     def initialize_wavefunctions(
         self,
         method: str = "harmonic_oscillator",
@@ -492,7 +502,7 @@ class HFBFFT:
     ):
         """
         Initialize single-particle wavefunctions.
-        
+
         Args:
             method: Initialization method. Options:
                 - "harmonic_oscillator": Use harmonic oscillator basis
@@ -509,7 +519,7 @@ class HFBFFT:
             self._load_from_file(**kwargs)
         else:
             raise ValueError(f"Unknown initialization method: {method}")
-    
+
     def _init_harmonic_oscillator(
         self,
         radinx: float = 3.0,
@@ -519,7 +529,7 @@ class HFBFFT:
     ):
         """
         Initialize wavefunctions using harmonic oscillator basis.
-        
+
         Creates proper shell structure by multiplying Gaussian by polynomials
         x^i * y^j * z^k for each state, matching the FORTRAN legacy code.
         """
@@ -527,40 +537,40 @@ class HFBFFT:
         x = self.grid.x
         y = self.grid.y
         z = self.grid.z
-        
+
         # Create base Gaussian on 3D grid
         x_mesh = x[:, jnp.newaxis, jnp.newaxis]
         y_mesh = y[jnp.newaxis, :, jnp.newaxis]
         z_mesh = z[jnp.newaxis, jnp.newaxis, :]
-        
+
         gaussian = jnp.exp(
-            -(x_mesh / radinx)**2 - 
-             (y_mesh / radiny)**2 - 
+            -(x_mesh / radinx)**2 -
+             (y_mesh / radiny)**2 -
              (z_mesh / radinz)**2
         )
-        
+
         # Normalize the base Gaussian
         norm = jnp.sqrt(jnp.sum(gaussian**2) * self.grid.wxyz)
         gaussian = gaussian / norm
-        
+
         # Generate shell quantum numbers for each isospin
         # Pre-allocate quantum number array for the full basis
         nshell = jnp.zeros((3, self._nstmax), dtype=jnp.int32)
-        
+
         # Also initialize quantum number and parity arrays
         sp_n_array = jnp.zeros(self._nstmax, dtype=jnp.int32)
         sp_l_array = jnp.zeros(self._nstmax, dtype=jnp.int32)
         sp_j_array = jnp.zeros(self._nstmax, dtype=jnp.float64)
         sp_parity_array = jnp.zeros(self._nstmax, dtype=jnp.float64)
         sp_labels_list = []
-        
+
         nst = 0  # Global state counter
-        
+
         # Loop over isospins
         for iq in range(2):
             nps = int(self._npsi[iq])
             nst_start = nst
-            
+
             # Generate quantum numbers in shell order
             done = False
             for ka in range(nps + 10):  # ka is the shell number
@@ -581,28 +591,28 @@ class HFBFFT:
                                     if states_in_this_isospin > nps:
                                         done = True
                                         break
-                                    
+
                                     if nst < self._nstmax:
                                         nshell = nshell.at[0, nst].set(i)
                                         nshell = nshell.at[1, nst].set(j)
                                         nshell = nshell.at[2, nst].set(k)
-                                        
+
                                         # Calculate spectroscopic quantum numbers
                                         n_qn, l_qn, j_qn, parity = cartesian_to_spherical_qn(i, j, k, is_spin)
                                         sp_n_array = sp_n_array.at[nst].set(n_qn)
                                         sp_l_array = sp_l_array.at[nst].set(l_qn)
                                         sp_j_array = sp_j_array.at[nst].set(j_qn)
                                         sp_parity_array = sp_parity_array.at[nst].set(parity)
-                                        
+
                                         # Generate spectroscopic label
                                         label = make_spectroscopic_label(n_qn, l_qn, j_qn)
                                         sp_labels_list.append(label)
-                                        
+
                                         nst += 1
                                     else:
                                         done = True
                                         break
-        
+
         # Now initialize all states using shell structure
         for iq in range(2):
             if iq == 0:
@@ -611,7 +621,7 @@ class HFBFFT:
             else:
                 nst_start = int(self._npsi[0])
                 nst_end = self._nstmax
-            
+
             for nst in range(nst_start, min(nst_end, self._nstmax)):
                 if nst == nst_start:
                     # Lowest state: pure Gaussian in first spin component
@@ -622,41 +632,41 @@ class HFBFFT:
                 else:
                     # Higher states: Gaussian * polynomial
                     is_component = (nst - nst_start) % 2
-                    
+
                     i_qn = int(nshell[0, nst])
                     j_qn = int(nshell[1, nst])
                     k_qn = int(nshell[2, nst])
-                    
+
                     # Create polynomial factors
                     if i_qn == 0:
                         xx = jnp.ones_like(x)
                     else:
                         xx = x ** i_qn
-                    
+
                     if j_qn == 0:
                         yy = jnp.ones_like(y)
                     else:
                         yy = y ** j_qn
-                    
+
                     if k_qn == 0:
                         zz = jnp.ones_like(z)
                     else:
                         zz = z ** k_qn
-                    
+
                     # Create 3D polynomial
-                    polynomial = (xx[:, jnp.newaxis, jnp.newaxis] * 
-                                  yy[jnp.newaxis, :, jnp.newaxis] * 
+                    polynomial = (xx[:, jnp.newaxis, jnp.newaxis] *
+                                  yy[jnp.newaxis, :, jnp.newaxis] *
                                   zz[jnp.newaxis, jnp.newaxis, :])
-                    
+
                     # Create wavefunction: Gaussian * polynomial
                     wave_func = gaussian * polynomial
-                    
+
                     # Set in appropriate spin component
                     self.state.psi = self.state.psi.at[nst, is_component, :, :, :].set(
                         wave_func.astype(jnp.complex128)
                     )
                     self.state.psi = self.state.psi.at[nst, 1 - is_component, :, :, :].set(0.0)
-                
+
                 # Normalize
                 psi_norm = jnp.sqrt(
                     jnp.sum(jnp.abs(self.state.psi[nst])**2) * self.grid.wxyz
@@ -665,41 +675,40 @@ class HFBFFT:
                     self.state.psi = self.state.psi.at[nst].set(
                         self.state.psi[nst] / psi_norm
                     )
-        
+
         # Store quantum numbers and labels in state
         self.state.sp_n = sp_n_array
         self.state.sp_l = sp_l_array
         self.state.sp_j = sp_j_array
         self.state.sp_parity = sp_parity_array
         self.state.sp_labels = sp_labels_list
-    
+
     def _init_random(self, seed: int = 42):
         """Initialize wavefunctions with random values."""
         key = jax.random.PRNGKey(seed)
-        
+
         nx, ny, nz = self.grid.shape
         nstmax = self._nstmax
-        
+
         # Generate random complex wavefunctions
         key, subkey = jax.random.split(key)
         psi_real = jax.random.normal(subkey, (nstmax, 2, nx, ny, nz))
         key, subkey = jax.random.split(key)
         psi_imag = jax.random.normal(subkey, (nstmax, 2, nx, ny, nz))
-        
+
         psi = psi_real + 1j * psi_imag
-        
+
         # Normalize each state
         for nst in range(nstmax):
             norm = jnp.sqrt(jnp.sum(jnp.abs(psi[nst])**2) * self.grid.wxyz)
             psi = psi.at[nst].set(psi[nst] / norm)
-        
+
         self.state.psi = psi
-    
+
     def _load_from_file(self, filename: str):
-        """Load wavefunctions from a restart file."""
-        # Placeholder for restart functionality
-        raise NotImplementedError("Restart from file not yet implemented")
-    
+        """Load wavefunctions from a restart file (see load_checkpoint)."""
+        self.load_checkpoint(filename)
+
     def run(
         self,
         max_iterations: int = 1000,
@@ -753,8 +762,10 @@ class HFBFFT:
             seed=seed,
             save_dir=save_dir,
             save_interval=save_interval,
+            checkpoint_interval=checkpoint_interval,
+            checkpoint_file=checkpoint_file,
         )
-    
+
     def _run_modern(
         self,
         max_iterations: int = 1000,
@@ -765,6 +776,8 @@ class HFBFFT:
         seed: int = 42,
         save_dir: Optional[str] = None,
         save_interval: int = 5,
+        checkpoint_interval: int = 0,
+        checkpoint_file: Optional[str] = None,
     ) -> HFBFFTResults:
         """Run the calculation using the modern OOP implementation."""
         from jax_hfbfft.physics.solver import (
@@ -772,9 +785,9 @@ class HFBFFT:
         )
         from jax_hfbfft.physics.coulomb import CoulombSolver
         import dataclasses
-        
+
         start_time = time.time()
-        
+
         force = self.solver_force
 
         print(f"Starting HFB calculation for {self.nucleus}")
@@ -782,7 +795,7 @@ class HFBFFT:
         print(f"Grid: {self.grid.nx}x{self.grid.ny}x{self.grid.nz}")
         print(f"Basis size: {self._npsi[0]} neutrons, {self._npsi[1]} protons")
         print("-" * 60)
-        
+
         # Create solver configuration
         config = SolverConfig(
             max_iterations=max_iterations,
@@ -798,8 +811,12 @@ class HFBFFT:
             tvaryx_0=self.tvaryx_0,
             iteranneal=self.iteranneal,
             pairenhance=self.pairenhance,
+            use_ln=self.use_ln,
+            ln_passes=self.ln_passes,
+            temperature=self.temperature,
+            precond_floor=self.precond_floor,
         )
-        
+
         # Prepare initial state if wavefunctions exist
         initial_state = None
         if self.state.psi is not None:
@@ -812,10 +829,10 @@ class HFBFFT:
              from jax_hfbfft.physics.coulomb import CoulombSolver
              from jax_hfbfft.physics.energies import Energies
              from jax_hfbfft.physics.constraints import build_constraint_state
-             
+
              # Map occupations to SolverState
              # In initialization, method="harmonic_oscillator" sets wocc correctly
-             
+
              initial_state = SolverState(
                  psi=self.state.psi,
                  lagrange=self.state.lagrange,
@@ -1198,6 +1215,9 @@ class HFBFFT:
                     print(f"Callback error: {e}")
             if write_checkpoint is not None and state.iteration % save_interval == 0:
                 write_checkpoint(state)
+            if (checkpoint_file is not None and checkpoint_interval > 0
+                    and state.iteration > 0 and state.iteration % checkpoint_interval == 0):
+                self._save_solver_state(checkpoint_file, state)
 
         # Run the HFB solver (use 'force' with CM correction applied)
         final_state = run_hfb(
@@ -1207,15 +1227,18 @@ class HFBFFT:
             nucleus_n=self.nucleus.neutrons,
             npsi_n=int(self._npsi[0]),
             config=config,
-            initial_state=initial_state,  # Added
-            callback=iteration_callback if (self._callbacks or write_checkpoint is not None) else None,
+            initial_state=initial_state,
+            callback=(iteration_callback
+                      if (self._callbacks or write_checkpoint is not None
+                          or (checkpoint_file is not None and checkpoint_interval > 0))
+                      else None),
             preloop_callback=preloop_cb,
             use_coulomb=self.include_coulomb,
             constraint=self.constraint,
             seed=seed,
             hook=hook,
         )
-        
+
         elapsed = time.time() - start_time
 
         if write_final is not None:
@@ -1223,12 +1246,15 @@ class HFBFFT:
 
         # Store the solver state
         self._solver_state = final_state
-        
+        self._warn_unreached_constraints(final_state)
+        if checkpoint_file is not None:
+            self._save_solver_state(checkpoint_file, final_state)
+
         # Calculate radii and deformations
         from jax_hfbfft.physics.energies import compute_radii
         from jax_hfbfft.physics.constraints import compute_constraint_expectations
         radii = compute_radii(final_state.densities, self.grid)
-        
+
         # Convert to HFBFFTResults
         self.results = HFBFFTResults(
             converged=final_state.converged,
@@ -1237,10 +1263,10 @@ class HFBFFT:
             total_energy=float(final_state.energies.ehf),
             kinetic_energy=float(final_state.energies.ehft),
             potential_energy=float(
-                final_state.energies.ehf0 + 
-                final_state.energies.ehf1 + 
-                final_state.energies.ehf2 + 
-                final_state.energies.ehf3 + 
+                final_state.energies.ehf0 +
+                final_state.energies.ehf1 +
+                final_state.energies.ehf2 +
+                final_state.energies.ehf3 +
                 final_state.energies.ehfls
             ),
             pairing_energy=float(jnp.sum(final_state.pairing.epair)),
@@ -1254,6 +1280,18 @@ class HFBFFT:
             ehfls=float(final_state.energies.ehfls),
             pairing_gap_n=float(final_state.pairing.avdelt[0]),
             pairing_gap_p=float(final_state.pairing.avdelt[1]),
+            pairing_gap_v2_n=float(final_state.pairing.avdeltv2[0]),
+            pairing_gap_v2_p=float(final_state.pairing.avdeltv2[1]),
+            pairing_energy_n=float(final_state.pairing.epair[0]),
+            pairing_energy_p=float(final_state.pairing.epair[1]),
+            lambda2_n=float(final_state.pairing.lambda2[0]),
+            lambda2_p=float(final_state.pairing.lambda2[1]),
+            ln_energy=float(jnp.sum(final_state.pairing.e_ln)),
+            temperature=self.temperature,
+            entropy=float(jnp.sum(final_state.pairing.entropy)),
+            free_energy=float(final_state.energies.ehf)
+                        - self.temperature * float(jnp.sum(final_state.pairing.entropy)),
+            zpe=int(self.force.zpe),
             fermi_energy_n=float(final_state.pairing.eferm[0]),
             fermi_energy_p=float(final_state.pairing.eferm[1]),
             # Radii and deformation
@@ -1265,6 +1303,10 @@ class HFBFFT:
             gamma=radii.gamma,
             q20=radii.q20,
             q22=radii.q22,
+            q30=radii.q30,
+            q40=radii.q40,
+            beta3=radii.beta3,
+            beta4=radii.beta4,
         )
 
         # If constrained, report Q20/Q22 and beta2 from constraint expectations
@@ -1285,24 +1327,29 @@ class HFBFFT:
                     q22_val = float(expectations[q22_index])
                     self.results.q22 = q22_val
                     self.results.gamma = float(jnp.arctan2(jnp.sqrt(3.0) * q22_val, self.results.q20) * 180.0 / jnp.pi)
-        
+
         self._iteration = final_state.iteration
         self._converged = final_state.converged
-        
+
         # Store the final densities in self.state for later access (e.g., visualization)
         self.state.rho = final_state.densities.rho
         self.state.tau = final_state.densities.tau
         self.state.psi = final_state.psi
         self.state.sp_energy = final_state.sp_energy
         self.state.wocc = final_state.wocc
-        
+        # Everything a second run() needs to resume from this state
+        self.state.wguv = final_state.wguv
+        self.state.wstates = final_state.wstates
+        self.state.pairwg = final_state.pairwg
+        self.state.isospin = final_state.isospin
+
         print("-" * 60)
         print(f"Calculation {'converged' if self._converged else 'completed'}")
         print(f"Total energy: {self.results.total_energy:.5f} MeV")
         print(f"Time elapsed: {elapsed:.2f} seconds")
-        
+
         return self.results
-    
+
     def _run_with_legacy(
         self,
         max_iterations: int = 1000,
@@ -1312,20 +1359,20 @@ class HFBFFT:
         """Run the calculation using the legacy implementation."""
         import sys
         import os
-        
+
         # Find the legacy modules directory (workspace root)
         # Try to find it relative to this package
         package_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-        
+
         # Add to path if not already there
         if package_dir not in sys.path:
             sys.path.insert(0, package_dir)
-        
+
         # Also add legacy subdirectory
         legacy_dir = os.path.join(package_dir, 'legacy')
         if os.path.isdir(legacy_dir) and legacy_dir not in sys.path:
             sys.path.insert(0, legacy_dir)
-        
+
         # Import legacy modules
         try:
             from legacy.params import init_params
@@ -1361,15 +1408,15 @@ class HFBFFT:
                     f"Tried adding '{package_dir}' and '{legacy_dir}' to Python path. "
                     "Make sure the legacy code is in the 'legacy/' folder."
                 )
-        
+
         start_time = time.time()
-        
+
         print(f"Starting HFB calculation for {self.nucleus}")
         print(f"Force: {self.force.name}")
         print(f"Grid: {self.grid.nx}x{self.grid.ny}x{self.grid.nz}")
         print(f"Basis size: {self._npsi[0]} neutrons, {self._npsi[1]} protons")
         print("-" * 60)
-        
+
         # Build configuration for legacy code
         params_config = {
             'imode': 1,
@@ -1378,7 +1425,7 @@ class HFBFFT:
             'tfft': self.use_fft,
             'nof': 0,  # Number of force iterations
         }
-        
+
         grids_config = {
             'nx': self.grid.nx,
             'ny': self.grid.ny,
@@ -1387,7 +1434,7 @@ class HFBFFT:
             'dy': self.grid.dy,
             'dz': self.grid.dz,
         }
-        
+
         force_config = {
             'name': self.force.name,
             'ipair': self.force.ipair,
@@ -1395,13 +1442,13 @@ class HFBFFT:
             'v0neut': self.force.v0neut,
             'tbcs': self.force.tbcs,
         }
-        
+
         levels_config = {
             'nneut': self.nucleus.neutrons,
             'nprot': self.nucleus.protons,
             'npsi': list(self._npsi),
         }
-        
+
         static_config = {
             'maxiter': max_iterations,
             'serr': convergence_threshold,
@@ -1412,7 +1459,7 @@ class HFBFFT:
             'radiny': 6.0,
             'radinz': 6.0,
         }
-        
+
         # Initialize legacy objects
         params = init_params(**params_config)
         grids = init_grids(params, **grids_config)
@@ -1425,22 +1472,22 @@ class HFBFFT:
         forces, static = init_static(forces, levels, **static_config)
         pairs = Pairs()
         moment = init_moment(jnp.zeros(3))
-        
+
         # Initialize wavefunctions using harmonic oscillator
         levels = harmosc(grids, levels, params, static)
-        
+
         # Run the static HFB iteration
         result = statichf(
-            coulomb, densities, energies, forces, grids, 
+            coulomb, densities, energies, forces, grids,
             levels, meanfield, moment, params, static, pairs
         )
-        
+
         # Unpack results (statichf returns 10 values, pairs is passed in-place)
-        (coulomb, densities, energies, forces, grids, 
+        (coulomb, densities, energies, forces, grids,
          levels, meanfield, moment, params, static) = result
-        
+
         elapsed = time.time() - start_time
-        
+
         # Store legacy objects for access
         self._legacy_objects = {
             'coulomb': coulomb,
@@ -1455,7 +1502,7 @@ class HFBFFT:
             'static': static,
             'pairs': pairs,
         }
-        
+
         # Convert to HFBFFTResults
         self.results = HFBFFTResults(
             converged=float(energies.efluct1[0]) < convergence_threshold,
@@ -1478,55 +1525,17 @@ class HFBFFT:
             fermi_energy_n=float(pairs.eferm[0]),
             fermi_energy_p=float(pairs.eferm[1]),
         )
-        
+
         self._iteration = int(params.iteration)
         self._converged = self.results.converged
-        
+
         print("-" * 60)
         print(f"Calculation {'converged' if self._converged else 'completed'}")
         print(f"Total energy: {self.results.total_energy:.5f} MeV")
         print(f"Time elapsed: {elapsed:.2f} seconds")
-        
+
         return self.results
-    
-    def _iterate(self) -> float:
-        """
-        Perform a single HFB iteration.
-        
-        Returns:
-            Energy fluctuation for convergence check
-        """
-        # This is a placeholder that shows the structure
-        # Real implementation would call the static.py routines
-        
-        # 1. Calculate densities from wavefunctions
-        # self._calculate_densities()
-        
-        # 2. Calculate mean-field potentials
-        # self._calculate_meanfield()
-        
-        # 3. Apply Hamiltonian and update wavefunctions
-        # self._gradient_step()
-        
-        # 4. Orthogonalize wavefunctions
-        # self._orthogonalize()
-        
-        # 5. Calculate pairing (if enabled)
-        # self._calculate_pairing()
-        
-        # 6. Calculate energies
-        # self._calculate_energies()
-        
-        # 7. Return fluctuation
-        return 1.0  # Placeholder
-    
-    def _finalize_results(self):
-        """Calculate final observables after convergence."""
-        # Calculate radii
-        # Calculate deformation parameters
-        # Calculate angular momenta
-        pass
-    
+
     @property
     def solver_force(self) -> Force:
         """The force run_hfb is given: self.force with the c.m. correction applied.
@@ -1542,70 +1551,151 @@ class HFBFFT:
         """The SolverState returned by the last run(), or None before one."""
         return getattr(self, '_solver_state', None)
 
+    def project_particle_number(self, n_gauge: int = 11) -> dict:
+        """
+        Particle-number projection after variation of the last run() (even-even, T = 0):
+        physics.project_particle_number with total_energy, the static total energy with
+        the projection correction in place of the Lipkin-Nogami energy.
+        """
+        from jax_hfbfft.physics.projection import project_particle_number
+        out = project_particle_number(self.solver_state, self.grid, self.solver_force, n_gauge,
+                                      use_coulomb=self.include_coulomb)
+        out['total_energy'] = self.results.total_energy - self.results.ln_energy + out['correction']
+        return out
+
     @property
     def total_energy(self) -> float:
         """Return the current total energy."""
         return self.results.total_energy
-    
+
     @property
     def iteration(self) -> int:
         """Return the current iteration number."""
         return self._iteration
-    
+
     @property
     def converged(self) -> bool:
         """Return whether the calculation has converged."""
         return self._converged
-    
+
     def add_callback(self, callback: Callable):
         """
         Add a callback function to be called after each iteration.
-        
+
         Args:
             callback: Function with signature (hfbfft, iteration, fluctuation)
         """
         self._callbacks.append(callback)
-    
+
+    def _warn_unreached_constraints(self, state) -> None:
+        """Warn when a driven (nonzero-goal) constraint ends more than 5% off its goal."""
+        cs = state.constraint_state
+        if cs is None or cs.goal_crank.shape[0] == 0:
+            return
+        from jax_hfbfft.physics.constraints import compute_constraint_expectations
+        got = np.asarray(compute_constraint_expectations(cs, state.densities, self.grid))
+        goal = np.asarray(cs.goal_crank)
+        miss = (goal != 0) & (np.abs(got - goal) > 0.05 * np.abs(goal))
+        if miss.any():
+            pairs = ', '.join(f"{g:.1f} -> {a:.1f}" for g, a in zip(goal[miss], got[miss]))
+            print(f"WARNING: constrained moments not reached (goal -> achieved: {pairs}). The "
+                  f"in-loop multiplier update can stall short of the goal; use "
+                  f"physics.run_constrained_scan for accurate constrained points.")
+
+    def _checkpoint_meta(self) -> dict:
+        f = self.force
+        return dict(Z=self.nucleus.protons, N=self.nucleus.neutrons,
+                    npsi_n=int(self._npsi[0]), npsi_p=int(self._npsi[1]),
+                    dy=float(self.grid.dy), dz=float(self.grid.dz),
+                    ipair=int(f.ipair), v0=float(f.v0neut), v0p=float(f.v0prot),
+                    rho0pr=float(f.rho0pr))
+
+    def _save_solver_state(self, filename: str, state) -> None:
+        from jax_hfbfft.core.tdhfb import save_static
+        save_static(filename, state, self.grid, functional=self.force.name,
+                    **self._checkpoint_meta())
+
     def save_checkpoint(self, filename: str):
-        """Save current state to a checkpoint file."""
-        # Placeholder for checkpointing
-        pass
-    
+        """
+        Save the current orbitals and occupations to an .npz file.
+
+        The file is core.tdhfb's static format, so it restarts a static run
+        (load_checkpoint, or initialize_wavefunctions("restart", filename=...))
+        and also seeds TDHFB.from_static(filename).
+        """
+        st = getattr(self, '_solver_state', None)
+        if st is None:
+            if self.state.psi is None or not bool(jnp.any(self.state.psi != 0)):
+                raise RuntimeError("nothing to save: call run() or initialize_wavefunctions() first")
+            from types import SimpleNamespace
+            n = self.state.psi.shape[0]
+            st = SimpleNamespace(
+                psi=self.state.psi, wocc=self.state.wocc, wguv=self.state.wguv,
+                pairwg=self.state.pairwg, wstates=self.state.wstates,
+                isospin=self.state.isospin,
+                sp_energy=(self.state.sp_energy if self.state.sp_energy is not None
+                           else jnp.zeros(n)),
+                energies=SimpleNamespace(ehfint=float('nan')), efluct=float('nan'))
+        self._save_solver_state(filename, st)
+
     def load_checkpoint(self, filename: str):
-        """Load state from a checkpoint file."""
-        # Placeholder for checkpointing
-        pass
-    
+        """
+        Load orbitals and occupations from a save_checkpoint (or save_static)
+        file; the next run() resumes from them.  The grid, nucleus and basis
+        size must match this calculation.
+        """
+        d = np.load(filename)
+        g = self.grid
+        shape = (int(d['nx']), int(d['ny']), int(d['nz']))
+        if shape != (g.nx, g.ny, g.nz):
+            raise ValueError(f"{filename}: grid {shape} != this calculation's {(g.nx, g.ny, g.nz)}")
+        spacing = (float(d['dx']), float(d.get('dy', d['dx'])), float(d.get('dz', d['dx'])))
+        if not np.allclose(spacing, (g.dx, g.dy, g.dz), atol=1e-9):
+            raise ValueError(f"{filename}: spacing {spacing} != {(g.dx, g.dy, g.dz)}")
+        if 'Z' in d and (int(d['Z']), int(d['N'])) != (self.nucleus.protons, self.nucleus.neutrons):
+            raise ValueError(f"{filename}: Z, N = {int(d['Z'])}, {int(d['N'])} != "
+                             f"{self.nucleus.protons}, {self.nucleus.neutrons}")
+        iso = np.asarray(d['isospin'])
+        npsi = (int(np.sum(iso == 0)), int(np.sum(iso == 1)))
+        if npsi != (int(self._npsi[0]), int(self._npsi[1])):
+            raise ValueError(f"{filename}: basis {npsi} != this calculation's "
+                             f"{(int(self._npsi[0]), int(self._npsi[1]))}; pass npsi={npsi}")
+        self.state.psi = jnp.asarray(d['psi'])
+        for k in ('wocc', 'wguv', 'pairwg', 'wstates', 'sp_energy'):
+            setattr(self.state, k, jnp.asarray(d[k]))
+        self.state.isospin = jnp.asarray(iso)
+        self._solver_state = None
+
     def get_density(self, isospin: int = -1) -> jax.Array:
         """
         Get the particle density.
-        
+
         Args:
             isospin: 0 for neutrons, 1 for protons, -1 for total
-            
+
         Returns:
             Density array with shape (nx, ny, nz)
         """
         if isospin == -1:
             return self.state.rho[0] + self.state.rho[1]
         return self.state.rho[isospin]
-    
+
     def get_wavefunction(self, state_index: int) -> jax.Array:
         """
         Get a single-particle wavefunction.
-        
+
         Args:
             state_index: Index of the state
-            
+
         Returns:
             Wavefunction array with shape (2, nx, ny, nz)
         """
         return self.state.psi[state_index]
-    
+
     def copy(self) -> "HFBFFT":
         """
         Create a deep copy of this HFBFFT instance.
-        
+
         Returns:
             New HFBFFT instance with copied state
         """
@@ -1618,7 +1708,7 @@ class HFBFFT:
             include_coulomb=self.include_coulomb,
             use_fft=self.use_fft,
         )
-        
+
         # Deep copy state
         new_calc.state = dataclasses.replace(
             self.state,
@@ -1626,9 +1716,9 @@ class HFBFFT:
             rho=self.state.rho.copy() if self.state.rho is not None else None,
             # ... copy other arrays ...
         )
-        
+
         return new_calc
-    
+
     def __repr__(self) -> str:
         return (
             f"HFBFFT(nucleus={self.nucleus}, force={self.force.name}, "

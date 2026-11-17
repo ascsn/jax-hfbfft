@@ -42,12 +42,12 @@ async def get_history(
 ):
     """
     Get calculation history with filtering and pagination.
-    
+
     Returns a paginated list of historical calculations with optional
     filtering by nucleus, force, status, and date range.
     """
     storage = await get_storage()
-    
+
     # Parse nucleus string if provided (e.g., "O-16", "Ca40", "O16")
     parsed_element = element
     parsed_a = None
@@ -58,10 +58,10 @@ async def get_history(
         if match:
             parsed_element = match.group(1).capitalize()
             parsed_a = int(match.group(2))
-    
+
     # Use force alias if force_name not provided
     effective_force = force_name or force
-    
+
     # Build filter
     filter_obj = None
     if any([parsed_element, min_a, max_a, parsed_a, effective_force, status, from_date, to_date]):
@@ -74,7 +74,7 @@ async def get_history(
                     status_code=400,
                     detail=f"Invalid status: {status}"
                 )
-        
+
         # If we parsed a specific mass number, use it as both min and max
         eff_min_a = parsed_a if parsed_a else min_a
         eff_max_a = parsed_a if parsed_a else max_a
@@ -88,7 +88,7 @@ async def get_history(
                     status_code=400,
                     detail=f"Invalid run type: {run_type}"
                 )
-        
+
         filter_obj = HistoryFilter(
             element=parsed_element,
             min_a=eff_min_a,
@@ -99,7 +99,7 @@ async def get_history(
             to_date=to_date,
             run_type=run_type_enum,
         )
-    
+
     return await storage.get_history(
         filter=filter_obj,
         page=page,
@@ -113,19 +113,19 @@ async def get_history(
 async def get_historical_calculation(calc_id: str):
     """
     Get a historical calculation by ID.
-    
+
     Args:
         calc_id: The calculation ID.
-        
+
     Returns:
         Full calculation status and results.
     """
     storage = await get_storage()
     status = await storage.get_calculation(calc_id)
-    
+
     if not status:
         raise HTTPException(status_code=404, detail="Calculation not found in history")
-    
+
     return status
 
 
@@ -133,22 +133,22 @@ async def get_historical_calculation(calc_id: str):
 async def get_historical_results(calc_id: str):
     """
     Get the results of a historical calculation.
-    
+
     Args:
         calc_id: The calculation ID.
-        
+
     Returns:
         Calculation results.
     """
     storage = await get_storage()
     results = await storage.get_results(calc_id)
-    
+
     if not results:
         raise HTTPException(
             status_code=404,
             detail="Results not found for this calculation"
         )
-    
+
     return results
 
 
@@ -171,19 +171,19 @@ async def get_historical_surface(calc_id: str):
 async def delete_from_history(calc_id: str):
     """
     Delete a calculation from history.
-    
+
     Args:
         calc_id: The calculation ID.
-        
+
     Returns:
         Confirmation message.
     """
     storage = await get_storage()
     success = await storage.delete_calculation(calc_id)
-    
+
     if not success:
         raise HTTPException(status_code=404, detail="Calculation not found in history")
-    
+
     return {"message": "Calculation deleted from history", "calculation_id": calc_id}
 
 
@@ -191,12 +191,12 @@ async def delete_from_history(calc_id: str):
 async def get_history_stats():
     """
     Get summary statistics about calculation history.
-    
+
     Returns counts by status, common nuclei, etc.
     """
     storage = await get_storage()
     await storage.initialize()
-    
+
     # Query for stats
     stats = {
         "total_calculations": 0,
@@ -204,7 +204,7 @@ async def get_history_stats():
         "by_element": {},
         "by_force": {},
     }
-    
+
     # Get counts by status
     async with storage._db.execute(
         "SELECT phase, COUNT(*) as count FROM calculations GROUP BY phase"
@@ -212,23 +212,23 @@ async def get_history_stats():
         async for row in cursor:
             stats["by_status"][row["phase"]] = row["count"]
             stats["total_calculations"] += row["count"]
-    
+
     # Get counts by element (top 10)
     async with storage._db.execute(
-        """SELECT element_symbol, COUNT(*) as count 
-           FROM calculations 
-           GROUP BY element_symbol 
-           ORDER BY count DESC 
+        """SELECT element_symbol, COUNT(*) as count
+           FROM calculations
+           GROUP BY element_symbol
+           ORDER BY count DESC
            LIMIT 10"""
     ) as cursor:
         async for row in cursor:
             stats["by_element"][row["element_symbol"]] = row["count"]
-    
+
     # Get counts by force
     async with storage._db.execute(
         "SELECT force_name, COUNT(*) as count FROM calculations GROUP BY force_name"
     ) as cursor:
         async for row in cursor:
             stats["by_force"][row["force_name"]] = row["count"]
-    
+
     return stats

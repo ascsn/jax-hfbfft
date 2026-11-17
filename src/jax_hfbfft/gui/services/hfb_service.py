@@ -43,36 +43,36 @@ class ActiveCalculation:
     cancel_event: threading.Event = field(default_factory=threading.Event)
     start_time: float = field(default_factory=time.time)
     hfbfft_instance: Any = None  # Store HFBFFT instance for density extraction
-    
+
 
 class HFBService:
     """
     Service for managing HFB calculations.
-    
+
     This service handles:
     - Starting new calculations
     - Tracking calculation progress
     - Cancelling calculations
     - Converting results to API models
-    
+
     Example:
         service = HFBService()
-        
+
         # Start a calculation
         calc_id = await service.start_calculation(request)
-        
+
         # Monitor progress
         async for progress in service.stream_progress(calc_id):
             print(f"Iteration {progress.iteration}")
-        
+
         # Get results
         status = await service.get_calculation(calc_id)
     """
-    
+
     def __init__(self, max_concurrent: int = 4):
         """
         Initialize the HFB service.
-        
+
         Args:
             max_concurrent: Maximum concurrent calculations.
         """
@@ -80,7 +80,7 @@ class HFBService:
         self._executor = ThreadPoolExecutor(max_workers=max_concurrent)
         self._progress_callbacks: Dict[str, List[Callable]] = {}
         self._lock = asyncio.Lock()
-    
+
     async def start_calculation(
         self,
         request: CalculationRequest,
@@ -88,17 +88,17 @@ class HFBService:
     ) -> str:
         """
         Start a new HFB calculation.
-        
+
         Args:
             request: Calculation request parameters.
             progress_callback: Async callback for progress updates.
-            
+
         Returns:
             Calculation ID.
         """
         calc_id = str(uuid.uuid4())
         now = datetime.now()
-        
+
         # Create initial status
         status = CalculationStatus(
             id=calc_id,
@@ -113,22 +113,22 @@ class HFBService:
             started_at=now,
             run_type=RunType.CALCULATION,
         )
-        
+
         # Create active calculation tracker
         active = ActiveCalculation(
             id=calc_id,
             request=request,
             status=status,
         )
-        
+
         async with self._lock:
             self._calculations[calc_id] = active
             if progress_callback:
                 self._progress_callbacks[calc_id] = [progress_callback]
-        
+
         # Start the calculation in background
         asyncio.create_task(self._run_calculation(active))
-        
+
         return calc_id
 
     async def start_beta_surface(
@@ -168,12 +168,12 @@ class HFBService:
         asyncio.create_task(self._run_beta_surface(active))
 
         return calc_id
-    
+
     async def _run_calculation(self, active: ActiveCalculation):
         """Run a calculation in the background."""
         calc_id = active.id
         request = active.request
-        
+
         try:
             # Phase 1: Ensure JIT warmup
             await self._update_progress(
@@ -184,15 +184,15 @@ class HFBService:
                     message="Warming up JIT compiler...",
                 ),
             )
-            
+
             warmup_manager = get_warmup_manager()
             if not warmup_manager.is_ready:
                 await ensure_warmup(timeout=180.0)
-            
+
             if active.cancel_event.is_set():
                 await self._mark_cancelled(calc_id)
                 return
-            
+
             # Phase 2: Initialize
             await self._update_progress(
                 calc_id,
@@ -202,7 +202,7 @@ class HFBService:
                     message="Initializing calculation...",
                 ),
             )
-            
+
             # Run the actual calculation in thread pool
             # Pass the event loop so the sync function can schedule callbacks
             loop = asyncio.get_event_loop()
@@ -210,11 +210,11 @@ class HFBService:
                 self._executor,
                 lambda: self._run_hfb_sync(active, loop),
             )
-            
+
             if active.cancel_event.is_set():
                 await self._mark_cancelled(calc_id)
                 return
-            
+
             # Phase 3: Complete
             async with self._lock:
                 if calc_id in self._calculations:
@@ -231,7 +231,7 @@ class HFBService:
                         energy=results.energies.total,
                         message="Calculation converged",
                     )
-            
+
             # Save to storage for history
             try:
                 from jax_hfbfft.gui.services.storage import get_storage
@@ -239,12 +239,12 @@ class HFBService:
                 await storage.save_calculation(self._calculations[calc_id].status, request=request)
             except Exception as e:
                 print(f"Warning: Failed to save calculation to history: {e}")
-            
+
             await self._notify_callbacks(
                 calc_id,
                 self._calculations[calc_id].status.progress,
             )
-            
+
         except Exception as e:
             import traceback
             error_msg = f"{type(e).__name__}: {str(e)}"
@@ -481,28 +481,28 @@ class HFBService:
             force_name=request.force_name,
             points=points,
         )
-    
+
     def _run_hfb_sync(self, active: ActiveCalculation, main_loop: asyncio.AbstractEventLoop) -> CalculationResults:
         """
         Run HFB calculation synchronously.
-        
+
         This runs in a thread pool worker.
-        
+
         Args:
             active: The active calculation context.
             main_loop: The main event loop for scheduling async callbacks.
         """
         request = active.request
-        
+
         # Import here to avoid loading JAX at module import
         from jax_hfbfft import HFBFFT, Nucleus, Force, Constraint
-        
+
         # Create nucleus
         nucleus = Nucleus(
             protons=request.nucleus.protons,
             neutrons=request.nucleus.neutrons,
         )
-        
+
         # Create force
         force = Force.from_name(
             request.force_name,
@@ -510,7 +510,7 @@ class HFBService:
             v0neut=request.pairing.v0_neutron,
             v0prot=request.pairing.v0_proton,
         )
-        
+
         # Grid config
         grid_config = {}
         if not request.grid.auto:
@@ -533,7 +533,7 @@ class HFBService:
                 "dy": 1.0,
                 "dz": 1.0,
             }
-        
+
         # Create constraint
         constraint = None
         if request.constraint.type.value != "none":
@@ -554,7 +554,7 @@ class HFBService:
                         beta2=request.constraint.beta2,
                         gamma=request.constraint.gamma or 0.0,
                     )
-        
+
         # Create calculation
         calc = HFBFFT(
             nucleus=nucleus,
@@ -562,19 +562,19 @@ class HFBService:
             constraint=constraint,
             **grid_config,
         )
-        
+
         # Initialize
         calc.initialize_wavefunctions(method="harmonic_oscillator")
-        
+
         # Set up progress callback
         start_time = time.time()
         jit_time = 0.0
-        
+
         def iteration_callback(iteration, energy, fluctuation):
             """Called after each iteration."""
             if active.cancel_event.is_set():
                 raise InterruptedError("Calculation cancelled")
-            
+
             # Update progress
             progress = CalculationProgress(
                 calculation_id=active.id,
@@ -586,7 +586,7 @@ class HFBService:
             )
             active.status.progress = progress
             active.status.phase = CalculationPhase.ITERATING
-            
+
             # Notify callbacks (for websocket updates) - use thread-safe call
             if main_loop is not None:
                 try:
@@ -600,21 +600,21 @@ class HFBService:
                     main_loop.call_soon_threadsafe(schedule_callback)
                 except Exception:
                     pass  # Ignore callback errors in thread
-        
+
         # Run calculation
         calc._callbacks.append(iteration_callback)
-        
+
         hfb_results = calc.run(
             max_iterations=request.iteration.max_iterations,
             convergence_threshold=request.iteration.convergence_threshold,
             print_interval=request.iteration.print_interval,
         )
-        
+
         end_time = time.time()
-        
+
         # Store the HFBFFT instance for density extraction
         active.hfbfft_instance = calc
-        
+
         # Clear JAX memory to prevent OOM on subsequent runs (but keep calc in memory for now)
         try:
             import jax
@@ -624,13 +624,13 @@ class HFBService:
             gc.collect()
         except Exception as e:
             print(f"Warning: Could not clear JAX memory: {e}")
-        
+
         # Convert to API results
         return self._convert_results(calc, hfb_results, end_time - start_time, jit_time)
-    
+
     def _convert_results(self, calc, hfb_results, total_time: float, jit_time: float) -> CalculationResults:
         """Convert HFBFFT results to API model."""
-        
+
         # Energy breakdown
         energies = EnergyBreakdown(
             total=float(hfb_results.total_energy),
@@ -645,7 +645,7 @@ class HFBService:
             ehf3=float(hfb_results.ehf3),
             ehfls=float(hfb_results.ehfls),
         )
-        
+
         # Radii
         radii = RadiiResults(
             neutron=float(hfb_results.rms_radius_n),
@@ -653,7 +653,7 @@ class HFBService:
             total=float(hfb_results.rms_radius_total),
             charge=float(hfb_results.charge_radius),
         )
-        
+
         # Deformation
         deformation = DeformationResults(
             beta2=float(hfb_results.beta2),
@@ -661,7 +661,7 @@ class HFBService:
             q20=float(hfb_results.q20),
             q22=float(hfb_results.q22),
         )
-        
+
         # Pairing
         pairing = PairingResults(
             gap_neutron=float(hfb_results.pairing_gap_n),
@@ -669,31 +669,31 @@ class HFBService:
             fermi_neutron=float(hfb_results.fermi_energy_n),
             fermi_proton=float(hfb_results.fermi_energy_p),
         )
-        
+
         # Single-particle spectrum
         sp_spectrum = []
         if calc.state.sp_energy is not None:
             import jax.numpy as jnp
-            
+
             # Get spectroscopic labels from state (already computed during initialization)
             labels = calc.state.sp_labels if calc.state.sp_labels is not None else []
-            
+
             # Check if quantum numbers are available
             has_quantum_numbers = (
-                calc.state.sp_n is not None and 
-                calc.state.sp_l is not None and 
+                calc.state.sp_n is not None and
+                calc.state.sp_l is not None and
                 calc.state.sp_j is not None
             )
-            
+
             for i in range(calc._nstmax):
                 isospin = "neutron" if calc.state.isospin[i] == 0 else "proton"
                 occupation = float(calc.state.wocc[i])
-                
+
                 # Only include occupied or near-occupied states
                 if occupation > 0.01:
                     # Get label with fallback
                     label = labels[i] if labels and i < len(labels) else f"State {i}"
-                    
+
                     # Get quantum numbers with fallbacks
                     if has_quantum_numbers:
                         n = int(calc.state.sp_n[i])
@@ -703,7 +703,7 @@ class HFBService:
                     else:
                         # Default values if quantum numbers not available
                         n, l, j, parity = 0, 0, 0.5, 1
-                    
+
                     sp_spectrum.append(SingleParticleLevel(
                         index=i,
                         isospin=isospin,
@@ -715,7 +715,7 @@ class HFBService:
                         j=j,
                         label=label,
                     ))
-        
+
         return CalculationResults(
             energies=energies,
             radii=radii,
@@ -728,7 +728,7 @@ class HFBService:
             total_time_seconds=total_time,
             jit_time_seconds=jit_time,
         )
-    
+
     def _pairing_type_to_int(self, pairing_type) -> int:
         """Convert pairing type enum to integer."""
         from jax_hfbfft.gui.models import PairingType
@@ -738,7 +738,7 @@ class HFBService:
             PairingType.DDDI: 6,
         }
         return mapping.get(pairing_type, 0)
-    
+
     def _auto_grid_size(self, mass_number: int) -> int:
         """Auto-calculate grid size based on nucleus size."""
         if mass_number <= 20:
@@ -749,16 +749,16 @@ class HFBService:
             return 28
         else:
             return 32
-    
+
     async def _update_progress(self, calc_id: str, progress: CalculationProgress):
         """Update calculation progress."""
         async with self._lock:
             if calc_id in self._calculations:
                 self._calculations[calc_id].status.progress = progress
                 self._calculations[calc_id].status.phase = progress.phase
-        
+
         await self._notify_callbacks(calc_id, progress)
-    
+
     async def _notify_callbacks(self, calc_id: str, progress: CalculationProgress):
         """Notify all registered callbacks."""
         callbacks = self._progress_callbacks.get(calc_id, [])
@@ -767,7 +767,7 @@ class HFBService:
                 await callback(progress)
             except Exception:
                 pass  # Ignore callback errors
-    
+
     async def _mark_cancelled(self, calc_id: str):
         """Mark a calculation as cancelled."""
         async with self._lock:
@@ -780,7 +780,7 @@ class HFBService:
                     phase=CalculationPhase.CANCELLED,
                     message="Calculation cancelled by user",
                 )
-    
+
     async def _mark_failed(self, calc_id: str, error: str, traceback: str = ""):
         """Mark a calculation as failed."""
         async with self._lock:
@@ -796,7 +796,7 @@ class HFBService:
                     phase=CalculationPhase.FAILED,
                     message=f"Calculation failed: {error}",
                 )
-        
+
         # Save to storage for history
         try:
             from jax_hfbfft.gui.services.storage import get_storage
@@ -805,14 +805,14 @@ class HFBService:
                 await storage.save_calculation(self._calculations[calc_id].status, request=self._calculations[calc_id].request if hasattr(self._calculations[calc_id].request, 'nucleus') else None)
         except Exception as e:
             print(f"Warning: Failed to save failed calculation to history: {e}")
-    
+
     async def get_calculation(self, calc_id: str) -> Optional[CalculationStatus]:
         """Get the status of a calculation."""
         async with self._lock:
             if calc_id in self._calculations:
                 return self._calculations[calc_id].status
         return None
-    
+
     async def cancel_calculation(self, calc_id: str) -> bool:
         """Cancel a running calculation."""
         async with self._lock:
@@ -820,12 +820,12 @@ class HFBService:
                 self._calculations[calc_id].cancel_event.set()
                 return True
         return False
-    
+
     async def list_calculations(self) -> List[CalculationStatus]:
         """List all calculations."""
         async with self._lock:
             return [calc.status for calc in self._calculations.values()]
-    
+
     async def add_progress_callback(
         self,
         calc_id: str,
@@ -836,7 +836,7 @@ class HFBService:
             if calc_id not in self._progress_callbacks:
                 self._progress_callbacks[calc_id] = []
             self._progress_callbacks[calc_id].append(callback)
-    
+
     async def remove_progress_callback(
         self,
         calc_id: str,
@@ -849,7 +849,7 @@ class HFBService:
                     self._progress_callbacks[calc_id].remove(callback)
                 except ValueError:
                     pass
-    
+
     async def get_density_data(
         self,
         calc_id: str,
@@ -858,28 +858,28 @@ class HFBService:
     ) -> Optional[Dict[str, Any]]:
         """
         Extract density data from a completed calculation.
-        
+
         Args:
             calc_id: Calculation ID
             density_type: Type of density to extract
             downsample: Optional grid size to downsample to
-            
+
         Returns:
             Dictionary with density data or None if not available
         """
         async with self._lock:
             if calc_id not in self._calculations:
                 return None
-            
+
             calc = self._calculations[calc_id]
             hfb = calc.hfbfft_instance
-            
+
             if hfb is None or hfb.state.rho is None:
                 return None
-            
+
             # Extract the requested density
             import jax.numpy as jnp
-            
+
             if density_type == "neutron":
                 density = hfb.state.rho[0]  # Neutron density
             elif density_type == "proton":
@@ -894,10 +894,10 @@ class HFBService:
                 density = hfb.state.tau[0] + hfb.state.tau[1]  # Total kinetic
             else:
                 return None
-            
+
             # Convert to numpy
             density_np = jnp.array(density)
-            
+
             # Downsample if requested
             if downsample is not None and downsample < hfb.grid.nx:
                 from scipy.ndimage import zoom
@@ -910,14 +910,14 @@ class HFBService:
             else:
                 dx, dy, dz = hfb.grid.dx, hfb.grid.dy, hfb.grid.dz
                 nx, ny, nz = hfb.grid.nx, hfb.grid.ny, hfb.grid.nz
-            
+
             # Convert to Python lists for JSON serialization
             density_list = density_np.tolist()
-            
+
             # Calculate metadata
             min_val = float(jnp.min(density_np))
             max_val = float(jnp.max(density_np))
-            
+
             return {
                 "density": density_list,
                 "grid": {

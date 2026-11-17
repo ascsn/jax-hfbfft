@@ -15,7 +15,7 @@ from jax_hfbfft.gui.services.storage import RunStorage
 
 __all__ = [
     "JITWarmupManager",
-    "WarmupConfig", 
+    "WarmupConfig",
     "WarmupState",
     "WarmupStatus",
     "get_warmup_manager",

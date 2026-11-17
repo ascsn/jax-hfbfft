@@ -27,13 +27,13 @@ from jax_hfbfft.physics.meanfield import compute_laplacian, compute_divergence, 
 class Energies:
     """
     Container for energy contributions.
-    
+
     All energies are in MeV.
     """
     # Integrated energy contributions (from energy density functional)
     ehft: float       # Kinetic energy
     ehf0: float       # t0 (central) contribution
-    ehf1: float       # t1/t2 (momentum-dependent) contribution  
+    ehf1: float       # t1/t2 (momentum-dependent) contribution
     ehf2: float       # Gradient (Laplacian) contribution
     ehf3: float       # t3 (density-dependent) contribution
     ehfls: float      # Spin-orbit contribution (time-even)
@@ -42,27 +42,27 @@ class Energies:
     ehfc: float       # Coulomb energy
     ecorc: float      # Exchange correlation
     ehfint: float     # Total integrated energy
-    
+
     # Single-particle energies and derived quantities
     ehf: float        # Total energy from s.p. levels
     tke: float        # Total kinetic energy (summed)
     e3corr: float     # Rearrangement energy correction
     e_zpe: float      # Center-of-mass correction
-    
+
     # Convergence measures
     efluct1: jax.Array    # Max |lambda_minus|
     efluct1q: jax.Array   # Max |lambda_minus| per isospin
     efluct2: jax.Array    # RMS of lambda_minus
     efluct2q: jax.Array   # RMS per isospin
-    
+
     # Angular momentum
     orbital: jax.Array     # Orbital angular momentum (Lx, Ly, Lz)
     spin: jax.Array        # Spin angular momentum (Sx, Sy, Sz)
     total_angmom: jax.Array  # Total angular momentum (Jx, Jy, Jz)
-    
+
     # Pairing
     epair: jax.Array  # Pairing energy per isospin
-    
+
     # Coupling constant contributions (for analysis)
     ehfCrho0: float
     ehfCrho1: float
@@ -74,7 +74,8 @@ class Energies:
     ehfCdJ1: float
     ehfCj0: float
     ehfCj1: float
-    
+    ehfj2: float = 0.0  # J^2 (tensor) contribution, with its time-odd partner s.T
+
     @classmethod
     def zeros(cls) -> "Energies":
         """Create zero-initialized energies."""
@@ -87,6 +88,7 @@ class Energies:
             ehf3=0.0,
             ehfls=0.0,
             ehflsodd=0.0,
+            ehfj2=0.0,
             ehf_odd=0.0,
             ehfc=0.0,
             ecorc=0.0,
@@ -114,7 +116,7 @@ class Energies:
             ehfCj0=0.0,
             ehfCj1=0.0,
         )
-    
+
     @property
     def total(self) -> float:
         """Return total energy (Koopman formula, matches FORTRAN 'Total energy' output)."""
@@ -135,12 +137,13 @@ def compute_integrated_energy(
     sp_kinetic: Optional[jax.Array] = None,
     sp_energy: Optional[jax.Array] = None,
     ecorrp: float = 0.0,   # Pairing rearrangement energy (from DDDI)
+    e_ln: Optional[jax.Array] = None,   # Lipkin-Nogami energy per isospin (Pairing.e_ln)
 ) -> "Energies":
     """
     Compute integrated energy from the Skyrme energy density functional.
 
     This integrates the energy density over the spatial grid to get the
-    total nuclear binding e`nergy, and also computes the Koopman sum (ehf, tke)
+    total nuclear binding energy, and also computes the Koopman sum (ehf, tke)
     when single-particle level information is provided.
 
     Args:
@@ -161,66 +164,73 @@ def compute_integrated_energy(
         Energies object with all contributions.
         ehf and tke are correctly populated when wocc/wstates/sp_kinetic are given.
     """
+    if getattr(force, 'functional', 'skyrme') != 'skyrme':
+        # an autodiff functional (physics/edf.py): energy and Koopman rearrangement from its energy density
+        from jax_hfbfft.physics import edf
+        return edf.integrated_energy(densities, force, grid, coulomb_potential, mass_number, use_coulomb,
+                                     wocc, wstates, sp_kinetic, sp_energy, e_ln)
     rho_floor = 1.0e-25  # keeps rho^alpha differentiable where rho = 0
+    # complex (gauge-rotated) densities of the number projection take the principal branch
+    pos = (lambda x, floor: x) if jnp.iscomplexobj(densities.rho) else jnp.maximum
     dtypes = get_dtypes()
     wxyz = grid.wxyz
-    
+
     # Total and isoscalar/isovector densities
     rho_n = densities.rho[0]
     rho_p = densities.rho[1]
     rho_tot = rho_n + rho_p
     rho0 = rho_tot  # Isoscalar
     rho1 = rho_p - rho_n  # Isovector
-    
+
     tau_n = densities.tau[0]
     tau_p = densities.tau[1]
     tau0 = tau_n + tau_p
     tau1 = tau_p - tau_n
-    
+
     # Laplacians
     d2rho_n = compute_laplacian(rho_n, grid)
     d2rho_p = compute_laplacian(rho_p, grid)
     d2rho = d2rho_n + d2rho_p
     d2rho0 = d2rho
     d2rho1 = d2rho_p - d2rho_n
-    
+
     # =========================================================================
     # t0 (central) contribution
     # =========================================================================
     ehf0 = wxyz * jnp.sum(
         (force.b0 * rho_tot**2 - force.b0p * (rho_p**2 + rho_n**2)) / 2.0
     )
-    
+
     # C^rho contributions (alternative representation)
     ehfCrho0 = wxyz * jnp.sum(
-        (force.Crho0 + force.Crho0D * jnp.maximum(rho0, rho_floor)**force.power) * rho0**2
+        (force.Crho0 + force.Crho0D * pos(rho0, rho_floor)**force.power) * rho0**2
     )
     ehfCrho1 = wxyz * jnp.sum(
-        (force.Crho1 + force.Crho1D * jnp.maximum(rho0, rho_floor)**force.power) * rho1**2
+        (force.Crho1 + force.Crho1D * pos(rho0, rho_floor)**force.power) * rho1**2
     )
-    
+
     # =========================================================================
     # t3 (density-dependent) contribution
     # =========================================================================
     ehf3 = wxyz * jnp.sum(
-        jnp.maximum(rho_tot, rho_floor)**force.power *
+        pos(rho_tot, rho_floor)**force.power *
         (force.b3 * rho_tot**2 - force.b3p * (rho_p**2 + rho_n**2)) / 3.0
     )
     # Rearrangement correction: e3corr = -(power/2)*ehf3
     # Used in Koopman sum but NOT subtracted from ehfint.
     e3corr = -force.power * ehf3 / 2.0
-    
+
     # =========================================================================
     # Gradient (t1/t2 Laplacian) contribution
     # =========================================================================
     ehf2 = wxyz * jnp.sum(
-        (-force.b2 * rho_tot * d2rho + 
+        (-force.b2 * rho_tot * d2rho +
          force.b2p * (rho_p * d2rho_p + rho_n * d2rho_n)) / 2.0
     )
-    
+
     ehfCdrho0 = wxyz * jnp.sum(force.Cdrho0 * rho0 * d2rho0)
     ehfCdrho1 = wxyz * jnp.sum(force.Cdrho1 * rho1 * d2rho1)
-    
+
     # =========================================================================
     # t1/t2 (momentum-dependent/kinetic) contribution
     # =========================================================================
@@ -228,59 +238,72 @@ def compute_integrated_energy(
         force.b1 * rho_tot * tau0 -
         force.b1p * (rho_n * tau_n + rho_p * tau_p)
     )
-    
+
     ehfCtau0 = wxyz * jnp.sum(force.Ctau0 * tau0 * rho0)
     ehfCtau1 = wxyz * jnp.sum(force.Ctau1 * tau1 * rho1)
-    
+
     # Current contribution to C^j
     j_n = densities.current[0]  # (3, nx, ny, nz)
     j_p = densities.current[1]
     j_tot = j_n + j_p
     j_diff = j_p - j_n
-    
+
     j_tot_sq = jnp.sum(j_tot**2, axis=0)  # Sum over spatial components
     j_diff_sq = jnp.sum(j_diff**2, axis=0)
-    
+
     ehfCj0 = -wxyz * jnp.sum(force.Ctau0 * j_tot_sq)
     ehfCj1 = -wxyz * jnp.sum(force.Ctau1 * j_diff_sq)
-    
+
     # =========================================================================
     # Spin-orbit (time-even) contribution
     # =========================================================================
     div_J_n = compute_divergence(densities.sodens[0], grid)
     div_J_p = compute_divergence(densities.sodens[1], grid)
     div_J_tot = div_J_n + div_J_p
-    
+
     ehfls = wxyz * jnp.sum(
         -force.b4 * rho_tot * div_J_tot -
         force.b4p * (rho_n * div_J_n + rho_p * div_J_p)
     )
-    
+
+    # J^2 terms: 1/2 sum_t CJ_t J_t^2 (vector part of sum_mu,nu J_mu,nu^2, see Force.CJ0)
+    J0 = densities.sodens[0] + densities.sodens[1]
+    J1 = densities.sodens[1] - densities.sodens[0]
+    ehfj2 = 0.5 * wxyz * jnp.sum(force.CJ0 * J0**2 + force.CJ1 * J1**2)
+    if densities.jsym is not None:      # symmetric part of J_mu,nu (Force.tensor)
+        sq = lambda j: jnp.sum(j[:3]**2, axis=0) + 2.0 * jnp.sum(j[3:]**2, axis=0)
+        js0, js1 = densities.jsym[0] + densities.jsym[1], densities.jsym[1] - densities.jsym[0]
+        ehfj2 = ehfj2 + wxyz * jnp.sum(force.CJ0 * sq(js0) + force.CJ1 * sq(js1))
+    if densities.tspin is not None:     # s.T, the time-odd partner: C^T_t = -CJ_t
+        s0, s1 = densities.sdens[0] + densities.sdens[1], densities.sdens[1] - densities.sdens[0]
+        T0, T1 = densities.tspin[0] + densities.tspin[1], densities.tspin[1] - densities.tspin[0]
+        ehfj2 = ehfj2 - wxyz * jnp.sum(force.CJ0 * s0 * T0 + force.CJ1 * s1 * T1)
+
     ehfCdJ0 = wxyz * jnp.sum(force.CdJ0 * rho_tot * div_J_tot)
     ehfCdJ1 = wxyz * jnp.sum(
         force.CdJ1 * (rho_p - rho_n) * (div_J_p - div_J_n)
     )
-    
+
     # =========================================================================
     # Spin-orbit (time-odd) contribution: s · curl(j)
     # =========================================================================
     curl_j_n = compute_curl(j_n, grid)
     curl_j_p = compute_curl(j_p, grid)
     curl_j_tot = curl_j_n + curl_j_p
-    
+
     s_n = densities.sdens[0]  # (3, nx, ny, nz)
     s_p = densities.sdens[1]
     s_tot = s_n + s_p
-    
+
     s_curl_j_nn = jnp.sum(s_n * curl_j_n, axis=0)
     s_curl_j_pp = jnp.sum(s_p * curl_j_p, axis=0)
     s_curl_j_tot = jnp.sum(s_tot * curl_j_tot, axis=0)
-    
+
     ehflsodd = wxyz * jnp.sum(
         -force.b4 * s_curl_j_tot -
         force.b4p * (s_curl_j_nn + s_curl_j_pp)
     )
-    
+
     ehfls = ehfls + ehflsodd
 
     # =========================================================================
@@ -294,7 +317,7 @@ def compute_integrated_energy(
     s_0_sq = jnp.sum(s_0**2, axis=0)
     s_1_sq = jnp.sum(s_1**2, axis=0)
 
-    rho_tot_pow = jnp.maximum(densities.rho[0] + densities.rho[1], rho_floor) ** force.power
+    rho_tot_pow = pos(densities.rho[0] + densities.rho[1], rho_floor) ** force.power
     ehf_odd_s2 = wxyz * jnp.sum(
         (force.c_s0 + force.c_ds0 * rho_tot_pow) * s_0_sq
         + (force.c_s1 + force.c_ds1 * rho_tot_pow) * s_1_sq
@@ -314,43 +337,46 @@ def compute_integrated_energy(
     # =========================================================================
     ehfc = 0.0
     ecorc = 0.0
-    
+
     if use_coulomb and coulomb_potential is not None:
         # Direct Coulomb
         ehfc = wxyz * jnp.sum(0.5 * rho_p * coulomb_potential)
-        
+
         # Slater exchange
         if force.ex != 0:
             slater_coeff = -3.0 / 4.0 * force.slate
-            ehfc = ehfc + wxyz * jnp.sum(slater_coeff * rho_p**(4.0/3.0))
-            ecorc = wxyz * jnp.sum(slater_coeff / 3.0 * rho_p**(4.0/3.0))
-    
+            ehfc = ehfc + wxyz * jnp.sum(slater_coeff * pos(rho_p, 0.0)**(4.0/3.0))   # clamp: see meanfield.py
+            ecorc = wxyz * jnp.sum(slater_coeff / 3.0 * pos(rho_p, 0.0)**(4.0/3.0))
+
     # =========================================================================
     # Kinetic energy (free nucleon masses)
     # =========================================================================
     ehft = wxyz * jnp.sum(
         force.h2m[0] * tau_n + force.h2m[1] * tau_p
     )
-    
+
     # =========================================================================
     # Center-of-mass correction (simple estimate)
     # =========================================================================
+    # zpe == 3 uses this estimate during the iterations; run_hfb replaces it
+    # with the microscopic <P^2>/2mA on the final state (cm_correction.py).
     e_zpe = jnp.where(
-        (force.zpe == 1) & (mass_number > 1),
+        ((force.zpe == 1) | (force.zpe == 3)) & (mass_number > 1),
         17.3 / jnp.maximum(1.0, mass_number)**0.2,
         0.0
     )
-    
+
     # =========================================================================
     # Total integrated energy (density functional)
     epair_arr = pairing_energy if pairing_energy is not None else jnp.zeros(2, dtype=dtypes.float)
     epair_total = jnp.sum(epair_arr)
     # Current (j^2) energy: the Galilean partner of the rho*tau terms
     ehf_curr = ehfCj0 + ehfCj1
+    # Lipkin-Nogami correction, -4 lambda_2 Tr rho(1-rho); zero when LN is off
+    eln_total = jnp.sum(e_ln) if e_ln is not None else 0.0
 
-
-    ehfint = (ehft + ehf0 + ehf1 + ehf2 + ehf3 + ehfls + ehf_odd + ehf_curr
-              + ehfc - epair_total - e_zpe)
+    ehfint = (ehft + ehf0 + ehf1 + ehf2 + ehf3 + ehfls + ehfj2 + ehf_odd + ehf_curr
+              + ehfc - epair_total - e_zpe + eln_total)
 
     # =========================================================================
     # Koopman sum: tke and ehf
@@ -365,13 +391,13 @@ def compute_integrated_energy(
         tke = jnp.sum(wocc * wstates * sp_kinetic)
         ehf = (jnp.sum(wocc * wstates * (sp_kinetic + sp_energy)) / 2.0
                + e3corr + ecorrp + ecorc
-               - epair_total - e_zpe)
+               - epair_total - e_zpe + eln_total)
     else:
         # Fallback: tke from tau integral, ehf unknown.
         # Caller must update these fields separately if wocc/sp_kinetic unavailable.
         tke = ehft
         ehf = 0.0
-    
+
     return Energies(
         ehft=ehft,
         ehf0=ehf0,
@@ -380,6 +406,7 @@ def compute_integrated_energy(
         ehf3=ehf3,
         ehfls=ehfls,
         ehflsodd=ehflsodd,
+        ehfj2=ehfj2,
         ehf_odd=ehf_odd,
         ehfc=ehfc,
         ecorc=ecorc,
@@ -421,7 +448,7 @@ def _print_sinfo_impl(
     """
     # Explicitly cast 0D JAX arrays to Python types for f-string formatting
     iter_val = int(iteration)
-    
+
     efluct1 = float(jnp.max(energies.efluct1))
     efluct2 = float(jnp.max(energies.efluct2))
     e3corr  = float(energies.e3corr)
@@ -481,21 +508,21 @@ def _print_sinfo_impl(
 def print_sinfo(
     energies: "Energies",
     iteration: int,
-    pairing=None,      
+    pairing=None,
     ecorrp: float = 0.0,
 ) -> None:
     """
     Print the FORTRAN sinfo-style iteration summary.
 
     This function wraps the standard Python I/O implementation in `jax.debug.callback`
-    to ensure it functions correctly without raising Tracer errors when called 
+    to ensure it functions correctly without raising Tracer errors when called
     inside a JIT-compiled loop or execution context.
     """
     jax.debug.callback(
-        _print_sinfo_impl, 
-        energies, 
-        iteration, 
-        pairing, 
+        _print_sinfo_impl,
+        energies,
+        iteration,
+        pairing,
         ecorrp
     )
 
@@ -512,10 +539,10 @@ def compute_sp_energy(
 ) -> float:
     """
     Compute total energy from single-particle energies.
-    
+
     This uses the Kohn-Sham relation:
     E = (1/2) sum_i n_i (epsilon_i + t_i) + E_rearrange
-    
+
     Args:
         sp_kinetic: Single-particle kinetic energies
         sp_potential: Single-particle potential energies
@@ -526,16 +553,16 @@ def compute_sp_energy(
         ecorc: Exchange correlation correction
         pairing_energy: Pairing energy per isospin
         e_zpe: Center-of-mass correction
-        
+
     Returns:
         Total binding energy
     """
     total_pairing = jnp.sum(pairing_energy)
-    
+
     ehf = jnp.sum(
         wocc * wstates * (sp_kinetic + sp_potential)
     ) / 2.0 + e3corr + ecorrp + ecorc - total_pairing - e_zpe
-    
+
     return float(ehf)
 
 
@@ -547,27 +574,27 @@ def compute_angular_momentum(
 ) -> tuple:
     """
     Compute total angular momentum from single-particle values.
-    
+
     Args:
         sp_orbital: Orbital angular momentum per state (nstates, 3)
         sp_spin: Spin angular momentum per state (nstates, 3)
         wocc: BCS occupation factors
         wstates: State degeneracy weights
-        
+
     Returns:
         (orbital, spin, total) angular momentum vectors
     """
     weights = wocc * wstates
-    
+
     orbital = jnp.zeros(3)
     spin = jnp.zeros(3)
-    
+
     for i in range(3):
         orbital = orbital.at[i].set(jnp.sum(weights * sp_orbital[:, i]))
         spin = spin.at[i].set(jnp.sum(weights * sp_spin[:, i]))
-    
+
     total = orbital + spin
-    
+
     return orbital, spin, total
 
 
@@ -594,7 +621,12 @@ def compute_radii(densities: Densities, grid: Grid) -> "Radii":
     rms_p = jnp.sqrt(jnp.sum(rho_p * r2) * wxyz / (p_counts + 1e-10))
     rms_tot = jnp.sqrt(jnp.sum(rho_tot * r2) * wxyz / (tot_counts + 1e-10))
 
-    charge = jnp.sqrt(rms_p**2 + 0.64)
+    # Charge radius from the point-proton radius (no spin-orbit term):
+    #   r_ch^2 = r_p^2 + <r^2>_P + (N/Z) <r^2>_N + 3/4 (hbar/m_p c)^2
+    # proton 0.8409^2 fm^2 (CODATA 2018), neutron -0.1155 fm^2 (PDG),
+    # Darwin-Foldy 0.0332 fm^2.
+    n_over_z = n_counts / jnp.maximum(p_counts, 1e-10)
+    charge = jnp.sqrt(rms_p**2 + 0.8409**2 - 0.1155 * n_over_z + 0.0332)
 
     A = tot_counts
 
@@ -618,12 +650,22 @@ def compute_radii(densities: Densities, grid: Grid) -> "Radii":
     q20_eig = jnp.sqrt(5.0 / (16.0 * jnp.pi)) * eigvals[2]
     q22_eig = jnp.sqrt(5.0 / (96.0 * jnp.pi)) * (eigvals[1] - eigvals[0])
 
-    beta = q20_eig * (4.0 * jnp.pi) / (5.0 * rms_tot**2 * A + 1e-30)
+    beta20 = q20_eig * (4.0 * jnp.pi) / (5.0 * rms_tot**2 * A + 1e-30)
     beta22 = q22_eig * (4.0 * jnp.pi) / (5.0 * rms_tot**2 * A + 1e-30)
-    gamma = jnp.arctan2(jnp.sqrt(2.0) * beta22, beta) * 180.0 / jnp.pi
+    # Bohr (beta, gamma): beta20 = beta cos(gamma), beta22 = beta sin(gamma) / sqrt(2), with z
+    # along the largest eigenvalue, so an axial oblate shape has gamma = 60 deg
+    beta = jnp.sqrt(beta20**2 + 2.0 * beta22**2)
+    gamma = jnp.arctan2(jnp.sqrt(2.0) * beta22, beta20) * 180.0 / jnp.pi
 
-    # Z-fixed Q20 (= Q_zz = ∫ρ(2z²-x²-y²)dV) kept for debug comparison
-    q20_zfixed = Q_zz
+    # Octupole and hexadecapole along z about the centre of mass, Q_l0 = 2 r^l P_l(cos theta),
+    # and beta_l = Q_l0 sqrt((2l+1) pi) / (3 A R^l), R = 1.2 A^(1/3) (as Constraint and HFBTHO)
+    cm = [jnp.sum(rho_tot * c) * wxyz / A for c in (X, Y, Z)]
+    xs, ys, zs = X - cm[0], Y - cm[1], Z - cm[2]
+    rs2 = xs**2 + ys**2 + zs**2
+    q30 = jnp.sum(rho_tot * (2 * zs**3 - 3 * zs * (xs**2 + ys**2))) * wxyz
+    q40 = jnp.sum(rho_tot * (35 * zs**4 - 30 * zs**2 * rs2 + 3 * rs2**2) / 4) * wxyz
+    R = 1.2 * A ** (1.0 / 3.0)
+    beta3, beta4 = (q * jnp.sqrt((2 * l + 1) * jnp.pi) / (3 * A * R**l) for q, l in ((q30, 3), (q40, 4)))
 
     return Radii(
         rms_n=float(rms_n),
@@ -633,7 +675,11 @@ def compute_radii(densities: Densities, grid: Grid) -> "Radii":
         q20=float(q20_eig),
         q22=float(q22_eig),
         beta2=float(beta),
-        gamma=float(gamma)
+        gamma=float(gamma),
+        q30=float(q30),
+        q40=float(q40),
+        beta3=float(beta3),
+        beta4=float(beta4),
     )
 
 
@@ -645,8 +691,12 @@ class Radii:
     rms_p: float
     rms_tot: float
     charge: float
-    
+
     q20: float
     q22: float
     beta2: float
     gamma: float
+    q30: float = 0.0    # along z about the centre of mass
+    q40: float = 0.0
+    beta3: float = 0.0
+    beta4: float = 0.0

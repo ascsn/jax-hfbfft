@@ -1,0 +1,42 @@
+{
+  "_about": "HFBTHO references (20 HO shells, 60 MeV quasiparticle cutoff, mixed pairing, no LN/PNP; one CPU core) and the validated two-basis settings. E in MeV, gaps <v2 Delta> in MeV, time = HFBTHO CPU minutes. Two-basis pairing strengths v0 (window state_cutoff = 8 MeV) were tuned to the HFBTHO neutron gap of the 'tuned_on' nucleus.",
+  "sets": {
+    "ca_unedf1": {
+      "functional": "UNEDF1", "v0n": 266.33, "v0p_ratio": 1.110190, "grid": [33, 0.8], "npsi": 140, "mixing": 0.15,
+      "tuned_on": "Ca44", "chain": ["Ca42", "Ca44", "Ca46"], "odd": {"Ca43": ["Ca42", 1.5], "Ca45": ["Ca44", 1.5]},
+      "hfbtho": {
+        "Ca42": {"E": -361.094175, "gap_n": 0.779270},
+        "Ca44": {"E": -379.865587, "gap_n": 0.869271},
+        "Ca46": {"E": -397.107579, "gap_n": 0.747740},
+        "Ca43": {"E": -369.934275, "time": 3.94},
+        "Ca45": {"E": -387.953670, "time": 3.83}
+      }
+    },
+    "sn120_unedf1": {
+      "functional": "UNEDF1", "v0n": 266.33, "v0p_ratio": 1.110190, "grid": [33, 0.8], "npsi": 260, "mixing": 0.15,
+      "chain": ["Sn120"],
+      "hfbtho": {"Sn120": {"E": -1019.197843, "gap_n": 0.822810}}
+    },
+    "ca_unedf2": {
+      "functional": "UNEDF2", "v0n": 305.0, "v0p_ratio": 1.102643, "grid": [33, 0.8], "npsi": 160, "mixing": 0.15,
+      "tuned_on": "Ca44", "chain": ["Ca40", "Ca42", "Ca44", "Ca46", "Ca48", "Ca50"],
+      "hfbtho": {
+        "Ca40": {"E": -340.745629, "gap_n": 0.0, "time": 2.845},
+        "Ca42": {"E": -360.731463, "gap_n": 0.910952, "time": 2.814},
+        "Ca44": {"E": -379.658067, "gap_n": 1.014142, "time": 3.290},
+        "Ca46": {"E": -397.658122, "gap_n": 0.864738, "time": 3.374},
+        "Ca48": {"E": -414.776145, "gap_n": 0.0, "time": 4.211},
+        "Ca50": {"E": -427.112322, "gap_n": 0.455171, "time": 4.600}
+      }
+    },
+    "dy_sly4": {
+      "functional": "SLy4", "v0n": 516.7, "v0p": 525.9, "grid": [37, 0.8], "npsi": 330, "mixing": 0.15,
+      "initial_beta2": 0.3, "axial": true, "tuned_on": "Dy164", "chain": ["Dy162", "Dy164"], "odd": {"Dy163": ["Dy162", 0.5]},
+      "hfbtho": {
+        "Dy162": {"E": -1318.995200, "gap_n": 1.275, "gap_p": 1.005, "beta2": 0.3189, "time": 3.82},
+        "Dy164": {"E": -1332.411410, "gap_n": 1.217, "gap_p": 0.963, "beta2": 0.3242, "time": 3.54},
+        "Dy163": {"E": -1324.695603, "beta2": 0.3222, "time": 3.45}
+      }
+    }
+  }
+}
